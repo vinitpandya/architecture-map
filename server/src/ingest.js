@@ -5,6 +5,7 @@ import Ajv from 'ajv/dist/2020.js'
 import addFormats from 'ajv-formats'
 import { SCHEMA_FILE } from './config.js'
 import { db } from './db.js'
+import { linkPass } from './link.js'
 
 /* ────────────────────────────────────────────────────── validation
 
@@ -129,7 +130,7 @@ export function ingestManifest(json, sourceFile = null) {
 
   // The link pass is global and cheap, and ownership and drift are only
   // correct across the whole estate, so it runs after every single ingest.
-  runLinkPass(now)
+  linkPass(now)
   rebuildSearch()
 
   return result
@@ -296,12 +297,8 @@ const upsertTopology = db.transaction((json, sourceFile, now) => {
   }
 })
 
-/* Phases 2 and 4 replace these; ingest already calls them so the wiring is
-   in place and an ingest is one operation from the caller's side. */
-
-function runLinkPass(now) {
-  void now
-}
+/* Phase 4 replaces this; ingest already calls it so the wiring is in place and
+   an ingest stays one operation from the caller's side. */
 
 function rebuildSearch() {}
 
