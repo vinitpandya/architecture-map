@@ -19,8 +19,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 135 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 48 more
+npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 156 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 64 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run build && npm start           # production build, UI and API on one port
@@ -55,27 +55,32 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 135 assertions across four stages, all passing.**
+**`npm run verify` — 156 assertions across four stages, all passing.**
 
-*Ingest (17, in-process against a fresh database).* `validate.mjs` exits 0 on the
-example and 1 on a `kind` typo naming `/edges/0/kind`. A quarantined manifest
+*Ingest (20, in-process against a fresh database).* A fresh install answers
+`coverage` as two numbers rather than `{total: 0, covered: null}`, which is what
+SQLite's SUM over zero rows gives you. `validate.mjs` exits 0 on the example and
+1 on a `kind` typo naming `/edges/0/kind`. A quarantined manifest
 leaves one row and zero nodes, edges and evidence. Re-ingesting leaves one active
 manifest, doubles nothing, and leaves every `edges.id` and `first_seen`
 unchanged when the manifest's edges and evidence are reordered. The contract
 version is in `contract_bindings`, not on the node.
 
-*The estate (36, over HTTP).* Every §14 count — 10 services, 9 topics, 5
+*The estate (49, over HTTP).* Every §14 count — 10 services, 9 topics, 5
 contracts, 6 endpoints, 8 databases, 2 caches, 3 externals, 0 quarantined, 3
 unresolved. Exactly one `no-producer` (`topic:risk.flagged.v1`), exactly one
 `shared-database` (`db:postgres/ledger`), three `version-skew` including
 `OrderMatched` at 3.2.0 vs 2.8.1 and `UserCreated` at 3.2.0 vs 3.0.0, zero
 `multiple-owners`. `/api/graph?focus=svc:order-service&depth=1` returns 11 nodes,
-all adjacent. Five searches including `@KafkaListener` and `GET /v1/rates/{}`
+all adjacent, with every kind asked for — and 10 without, because §8 makes
+contracts opt-in. `?repos=` narrows to that repo and an unknown repo is empty
+rather than everything. A repeated `?kind=` is 200 and means both. A malformed
+override is a 400 that writes nothing. Five searches including `@KafkaListener` and `GET /v1/rates/{}`
 return hits rather than an FTS5 syntax error. **An override changes
 `/api/node` and a re-ingest of that repo does not revert it** — the single most
 important test in the suite.
 
-*Processes (50, over HTTP).* `validate.mjs` says which schema it picked. A
+*Processes (61, over HTTP).* `validate.mjs` says which schema it picked. A
 four-segment code exits 1 naming the path, quarantines the pack and imports zero
 processes. An all-`L`-prefixed copy ingests onto the same rows. **Ingesting a
 pack creates no rows in `nodes` or `edges`** — asserted before and after, and the
@@ -88,8 +93,10 @@ number: 3 packs, 46 processes at 3/9/34, one missing component from 3.1.1 for
 `topic:trades.enriched.v1`, one missing interaction from 3.2.3, zero
 orphan/duplicate/no-detail codes, exactly two uncovered topics, no service
 without a process. `code=L2` reads the same process as `code=2`. Searching
-`2.3.3`, `L2.3.3` and `orders.matched.v1` all work. The authoring prompt keeps
-its placeholder legend, carries the schema exactly once, and comes back with
+`2.3.3`, `L2.3.3` and `orders.matched.v1` all work. A pack-only ingest moves
+`lastIngestAt`, so the four screens that key their refresh on it do refresh.
+`kind:process` narrows to processes rather than returning nothing. The authoring
+prompt keeps its placeholder legend, carries the schema exactly once, and comes back with
 every placeholder in its body filled — the pack id, the components and the codes
 already taken. `--remove` clears packs,
 processes, the join tables and every process finding.
@@ -108,7 +115,7 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-**`npm run verify:ui` — 48 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 64 checks in Chromium at 1280×900, all passing.**
 
 Two fresh loads of the map put all 35 nodes at byte-identical transforms. A
 `kafka.consume` edge's arrow head lands 72px from the service and 275px from the
@@ -119,7 +126,12 @@ the tree, a process at each level, a node with processes, the Process map page,
 Health, Scan, Search — renders in dark mode with no horizontal scroll and no
 console errors. A component that is not in the map renders as unresolved rather
 than vanishing — and a missing *interaction* leaves its two real ends as
-working links, saying only that the relationship is not in the map.
+working links, saying only that the relationship is not in the map. A level 1
+offers its diagram and draws four steps, which is the case §8 names. The Scan
+page has a drop zone, a file input and a sweep that reports per file, with
+relative times in the Repositories table. A service with no citation of its own
+does not claim the tool is broken. An empty filtered map points at the filter
+row rather than at the seeder.
 
 **By hand.** The inbox round trip: a manifest, a pack and a broken pack swept
 together, each routed by shape, the broken one quarantined with its ajv path and
@@ -135,9 +147,9 @@ they produce.
 
 ## Nothing is failing
 
-No verification step is left failing and nothing was weakened to pass. Twelve
-defects were found and fixed rather than worked around. Five came out of
-running the thing:
+No verification step is left failing and nothing was weakened to pass.
+Thirty-two defects were found and fixed rather than worked around. Five came out
+of running the thing:
 
 - **`/api/graph` ignored `depth`.** The BFS grew its frontier while iterating the
   edge list, so one pass walked the whole connected component and `depth=1`
@@ -172,6 +184,49 @@ version:
 - **A pack whose `pack` field was not a string took the whole inbox sweep down**
   as a bind parameter SQLite refuses.
 - **A widget was labelled "Process steps"**, which §12.3 says there are none of.
+
+Twenty more came out of an adversarial review — six dimensions read the code
+against the spec, and every finding was put to three skeptics told to refute it,
+surviving only on a majority. **Eight on the API:**
+
+- **`/api/graph` ignored `repos` entirely**, while §8 documents it, §10 puts a
+  Repos multi-select in the filter row, the client sent it on every request and
+  `/api/nodes` honoured it — so the same control worked on one page and silently
+  did nothing on the map.
+- **A repeated query parameter was a 500.** Express parses `?kind=a&kind=b` as
+  an array; better-sqlite3 spreads an array into the placeholder list. Both
+  filters now mean what they say: two kinds is an `IN`.
+- **`PUT /override` could be made to write a row nobody asked for**, with a 200.
+  Overrides are the one table §15.4 says must survive a re-ingest.
+- **`kind:process` always returned nothing**, on a heading the search page shows.
+- **`coverage.covered` was null on a fresh install**, against a contract that
+  declares it a number. **`/api/graph` nodes carried no `degree`**, which §8's
+  node shape names. **The default `kinds` included contracts**, which §8 makes
+  opt-in — a fourth place the spec disagrees with itself, since §14's by-hand
+  count of 11 includes one. Both clauses are implemented and both asserted.
+
+**Twelve on the frontend**, the four worst of them:
+
+- **Four screens went stale after a pack arrived.** They key their refresh on
+  `lastIngestAt`, which was `MAX(ingested_at)` over manifests only — and a pack
+  writes neither. A pack-only sweep left the tree, the ingest log, the process
+  picker and the pack list showing the estate as it was before.
+- **The node page accused the tool of a bug** — "Nothing should reach this
+  state" — on four of the ten demo services, for a situation DECISIONS.md
+  records as a gap in the schema and the map inspector words correctly.
+- **The Scan page had no Inbox section**, which §10 requires. The sweep button
+  threw its per-file results away, so a quarantined document's ajv path — the
+  one thing that says what to fix — existed nowhere but the database.
+- **A level 1 never offered its diagram**, which is the case §8 names outright
+  ("L2 draws four boxes"). The `Note over` branch written for it was
+  unreachable, and emitted a participant it had never declared.
+
+The rest: blank bullets on the duplicate-code finding, a count that measured
+level instead of provenance, an empty filtered map telling you to re-seed, a
+selection that faded the whole canvas once its node was filtered out, two
+widgets claiming no packs were loaded when three were, a coverage cell that
+counted a component and then showed nothing, a lowest-version marker that sorted
+3.10.0 below 3.9.0, and a raw ISO timestamp where §10 asks for relative time.
 
 ## Things worth knowing before you touch it
 

@@ -264,6 +264,32 @@ that does reach every one of them.
   in practice: a scanned component's description containing `-->` would close
   the comment early and spill the rest into the prompt body.
 
+### The review pass
+
+Twenty more defects, from six review dimensions read against the spec with every
+finding put to three skeptics told to refute it. Most were plain bugs and are in
+the git log rather than here. Three were judgement calls:
+
+- **`/api/graph`'s `repos` filter exempts the focus, as `kinds` does.** A focused
+  map whose focus is owned by another repo would otherwise come back empty, and
+  the same exemption is already how every other filter on that endpoint behaves.
+- **The Show picker's empty state reads "All but contracts".** It used to say
+  "Everything" and the server used to mean it. Now that the API honours §8's
+  default, an empty selection excludes contracts — so the label had to say so.
+  Contracts are still one tick away, which is what "opt-in" means.
+- **A dropped file is ingested through the API, not written to `inbox/`.** §10
+  asks the Scan page for a drop zone. There is no upload endpoint and adding one
+  would mean the browser writing into a directory the sweep owns; instead the
+  document is routed by shape — `repo` to `/api/ingest`, `pack` to
+  `/api/ingest/process-pack` — which is the same rule `inboxKind()` applies, and
+  gets the same validation and the same quarantine.
+- **The coverage widget shows the deepest level present, not level 3.** Filtering
+  to level 3 was a de-duplication: the rollup means a component reached by a
+  level 3 is also listed under its ancestors. But a component named directly by
+  a level 1 — which §5 allows — then had no chip at all, while the summary line
+  counted it as covered. The most specific level present keeps the
+  de-duplication and cannot be empty.
+
 ## Working
 
 - **`npm run verify` was added** — SPEC.md §14 as a runnable check, over HTTP,
