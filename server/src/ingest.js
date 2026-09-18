@@ -297,10 +297,67 @@ const upsertTopology = db.transaction((json, sourceFile, now) => {
   }
 })
 
-/* Phase 4 replaces this; ingest already calls it so the wiring is in place and
-   an ingest stays one operation from the caller's side. */
+/* ────────────────────────────────────────────────────────────── search
 
-function rebuildSearch() {}
+   FTS5, rebuilt wholesale after each ingest. At estate scale that is a few
+   hundred rows and cheaper than working out which subjects an ingest touched
+   — a repo's manifest can change another repo's node through ownership, so
+   "affected" is wider than it looks.
+
+   The evidence snippets are the point. Searching `@KafkaListener` or a table
+   name has to find the code; an index of names alone throws away most of the
+   value of having collected the evidence at all. */
+
+export function rebuildSearch() {
+  const evidence = new Map()
+  for (const e of db.prepare('SELECT subject_kind, subject_id, file, snippet FROM evidence').all()) {
+    const key = `${e.subject_kind}|${e.subject_id}`
+    if (!evidence.has(key)) evidence.set(key, [])
+    evidence.get(key).push(`${e.file} ${e.snippet}`)
+  }
+  const cited = (kind, id) => evidence.get(`${kind}|${id}`) ?? []
+
+  const nodes = db.prepare('SELECT * FROM nodes').all()
+  const named = new Map(nodes.map((n) => [n.id, n.name]))
+  const label = (id) => named.get(id) ?? id.slice(id.indexOf(':') + 1)
+
+  const write = db.transaction(() => {
+    db.prepare('DELETE FROM search_index').run()
+    const add = db.prepare(
+      'INSERT INTO search_index (subject_kind, subject_id, title, body, repo) VALUES (?, ?, ?, ?, ?)'
+    )
+
+    for (const n of nodes) {
+      const body = [
+        n.id,
+        n.description,
+        n.kind,
+        n.engine,
+        n.method,
+        n.path,
+        n.contract_type,
+        n.language,
+        n.team,
+        n.owner_repo,
+        ...cited('node', n.id),
+      ]
+      add.run('node', n.id, n.name, body.filter(Boolean).join('\n'), n.owner_repo ?? '')
+    }
+
+    for (const e of db.prepare('SELECT * FROM edges').all()) {
+      const snippets = cited('edge', e.id)
+      if (!e.description && !snippets.length) continue
+      const body = [e.kind, e.description, e.from_id, e.to_id, e.contract_id, e.repo, ...snippets]
+      add.run('edge', e.id, `${label(e.from_id)} → ${label(e.to_id)}`, body.filter(Boolean).join('\n'), e.repo)
+    }
+
+    for (const u of db.prepare('SELECT * FROM unresolved').all()) {
+      const body = [u.expected, u.reason, u.repo, ...cited('unresolved', String(u.id))]
+      add.run('unresolved', String(u.id), u.raw, body.filter(Boolean).join('\n'), u.repo)
+    }
+  })
+  write()
+}
 
 /* ────────────────────────────────────────────────────── inbox */
 

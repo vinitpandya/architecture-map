@@ -16,7 +16,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ROOT } from '../src/config.js'
 import { db } from '../src/db.js'
-import { ingestManifest, validateManifest } from '../src/ingest.js'
+import { ingestManifest, rebuildSearch, validateManifest } from '../src/ingest.js'
 import { linkPass } from '../src/link.js'
 import { buildManifests } from './demo/manifests.mjs'
 import { SERVICES } from './demo/estate.mjs'
@@ -84,6 +84,7 @@ function remove() {
     ).run()
   })()
   linkPass()
+  rebuildSearch()
 
   let removed = 0
   if (fs.existsSync(DIR)) {

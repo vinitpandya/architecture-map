@@ -307,24 +307,110 @@ function ftsQuery(raw) {
   return terms.map((t) => `"${t.replace(/"/g, '')}"${t.length >= 3 ? '*' : ''}`).join(' ')
 }
 
+/**
+ * What a person types to mean a kind. Node kinds are filtered by their id
+ * prefix, which every id carries, so nothing has to be stored twice.
+ */
+const KIND_PREFIX = {
+  service: 'svc', svc: 'svc',
+  topic: 'topic', 'kafka.topic': 'topic', kafka: 'topic',
+  database: 'db', db: 'db',
+  cache: 'cache',
+  endpoint: 'api', api: 'api', http: 'api',
+  contract: 'contract',
+  external: 'ext', ext: 'ext',
+}
+
+/** `kind:topic settled` — the filter comes off the front, the rest is the query. */
+function parseQuery(raw, explicit) {
+  let text = String(raw ?? '').trim()
+  const kinds = explicit ? [String(explicit)] : []
+  let m
+  while ((m = /^kind:([a-z.]+)\s*/i.exec(text))) {
+    kinds.push(m[1].toLowerCase())
+    text = text.slice(m[0].length)
+  }
+  return { text, kinds }
+}
+
 router.get('/search', wrap(async (req, res) => {
-  const q = ftsQuery(req.query.q ?? '')
-  if (!q) return res.json({ hits: [] })
+  const { text, kinds } = parseQuery(req.query.q, req.query.kind)
+  const where = []
+  const args = []
+
+  for (const k of kinds) {
+    if (k === 'edge' || k === 'unresolved' || k === 'node') {
+      where.push('subject_kind = ?')
+      args.push(k)
+    } else if (KIND_PREFIX[k]) {
+      where.push(`subject_kind = 'node' AND subject_id LIKE ?`)
+      args.push(`${KIND_PREFIX[k]}:%`)
+    } else {
+      // An unknown kind matches nothing, which beats silently ignoring it.
+      return res.json({ hits: [] })
+    }
+  }
+
+  const q = ftsQuery(text)
+  if (!q && !where.length) return res.json({ hits: [] })
+
   try {
-    const rows = db
-      .prepare(
-        `SELECT subject_kind, subject_id, title, repo,
-                snippet(search_index, 3, '<mark>', '</mark>', '…', 12) AS excerpt
-         FROM search_index WHERE search_index MATCH ?
-         ORDER BY bm25(search_index) LIMIT ?`
-      )
-      .all(q, Number(req.query.limit) || 50)
-    res.json({ hits: rows })
+    // A bare `kind:` with no search terms lists that kind rather than nothing;
+    // MATCH needs a term, so the two cases are different statements.
+    const rows = q
+      ? db
+          .prepare(
+            `SELECT subject_kind, subject_id, title, repo,
+                    snippet(search_index, 3, '<mark>', '</mark>', '…', 12) AS snippet
+             FROM search_index
+             WHERE search_index MATCH ? ${where.map((w) => `AND (${w})`).join(' ')}
+             ORDER BY bm25(search_index) LIMIT ?`
+          )
+          .all(q, ...args, Number(req.query.limit) || 50)
+      : db
+          .prepare(
+            `SELECT subject_kind, subject_id, title, repo, '' AS snippet
+             FROM search_index WHERE ${where.map((w) => `(${w})`).join(' AND ')}
+             ORDER BY title LIMIT ?`
+          )
+          .all(...args, Number(req.query.limit) || 50)
+
+    // An edge hit is a relationship, not a place: carry both ends so the UI
+    // can link somewhere that exists. There is no edge page in v1.
+    const edgeIds = rows.filter((r) => r.subject_kind === 'edge').map((r) => r.subject_id)
+    const ends = new Map(
+      edgeIds.length
+        ? db
+            .prepare(`SELECT id, from_id, to_id FROM edges WHERE id IN (${edgeIds.map(() => '?').join(',')})`)
+            .all(...edgeIds)
+            .map((e) => [e.id, e])
+        : []
+    )
+
+    res.json({
+      hits: rows.map((r) => ({
+        ...r,
+        kind: subjectKind(r),
+        from: ends.get(r.subject_id)?.from_id ?? null,
+        to: ends.get(r.subject_id)?.to_id ?? null,
+      })),
+    })
   } catch {
     // A malformed query is an empty result, never a 500.
     res.json({ hits: [] })
   }
 }))
+
+/** The node kind behind a hit, so the UI can badge it without a second fetch. */
+function subjectKind(row) {
+  if (row.subject_kind !== 'node') return row.subject_kind
+  const prefix = row.subject_id.split(':', 1)[0]
+  return (
+    { svc: 'service', topic: 'kafka.topic', db: 'database', cache: 'cache', api: 'endpoint', contract: 'contract', ext: 'external' }[
+      prefix
+    ] ?? 'external'
+  )
+}
 
 /* ───────────────────────────────────────────────────────── graph */
 

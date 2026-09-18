@@ -135,3 +135,10 @@
   text-transform: uppercase;
   color: var(--text-muted);
 }
+
+.search-hits li.active {
+  margin: -4px -8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--selected-wash);
+}

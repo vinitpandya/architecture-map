@@ -167,11 +167,17 @@ export type ContractVersions = {
 }
 
 export type SearchHit = {
-  subject_kind: string
+  subject_kind: 'node' | 'edge' | 'unresolved'
   subject_id: string
   title: string
   repo: string
-  excerpt: string
+  /** The FTS5 highlight of the matching text, with <mark> already in it. */
+  snippet: string
+  /** Node kind for a node hit, otherwise the subject kind. */
+  kind: NodeKind | 'edge' | 'unresolved'
+  /** Both ends of an edge hit; null on anything else. */
+  from: string | null
+  to: string | null
 }
 
 export type UnresolvedRow = {
