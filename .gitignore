@@ -8,3 +8,9 @@ repos.json
 *.log
 .DS_Store
 tsconfig.tsbuildinfo
+
+# Scratch probes written into the repo root while working — browser walkthroughs,
+# throwaway packs. Never part of the build, and six of them reached a commit
+# through `git add -A` before this rule existed.
+/.*.mjs
+/.probe-*.json
