@@ -3,6 +3,9 @@
 You are building the app described in [SPEC.md](SPEC.md). Read it fully before
 you start. This file is about *how* to work, not what to build.
 
+If you arrived here first, go to [START-HERE.md](START-HERE.md) instead — it is
+the entry point and routes you through everything in order.
+
 ## The situation
 
 The author kicked this off and is away. Nobody will answer questions. Your job

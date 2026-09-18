@@ -18,20 +18,27 @@ one by hand — the app cannot tell the difference and does not need to.
 
 ## Status
 
-Being built. [SPEC.md](SPEC.md) is the build specification;
-[AGENTS.md](AGENTS.md) is how to work on it. Neither is documentation of a
-finished thing yet.
+Being built. The shell, page system and widget framework are working; the
+business logic underneath is not.
+
+**Building on this?** Start at [START-HERE.md](START-HERE.md) — it orients you,
+routes you through the other documents, and tells you where to begin.
+[SPEC.md](SPEC.md) is the build specification, [AGENTS.md](AGENTS.md) is how to
+work here. Neither is documentation of a finished thing yet.
 
 ## Quick start
 
 ```bash
 npm install
-npm run seed:demo     # a fictional 10-service estate, so there is something to look at
 npm run dev
 ```
 
 - UI → http://localhost:5173
 - API → http://localhost:8787
+
+The shell comes up with five pages and a working widget grid, every widget in
+an empty state — nothing has been ingested yet. `npm run seed:demo` will fill it
+with a fictional ten-service estate once that seeder is built (SPEC.md §12).
 
 ## How it fits together
 
