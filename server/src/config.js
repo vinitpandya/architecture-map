@@ -17,6 +17,7 @@ export const INBOX_DIR = process.env.INBOX_DIR
   : path.join(ROOT, 'inbox')
 
 export const SCHEMA_FILE = path.join(ROOT, 'schema', 'manifest.schema.json')
+export const PROCESS_SCHEMA_FILE = path.join(ROOT, 'schema', 'process-pack.schema.json')
 
 /** The web dev server, for CORS-free local development. */
 export const WEB_ORIGIN = process.env.WEB_ORIGIN || 'http://localhost:5173'

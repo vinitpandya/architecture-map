@@ -590,6 +590,27 @@ router.post('/ingest/sweep', wrap(async (req, res) => {
   res.json({ results: sweepInbox(INBOX_DIR) })
 }))
 
+/* ────────────────────────────────────────────── layer B: process packs */
+
+router.post('/ingest/process-pack', wrap(async (req, res) => {
+  const { ingestProcessPack } = await import('./processes.js')
+  res.json(ingestProcessPack(req.body, req.body?.pack ? `${req.body.pack}.json` : null))
+}))
+
+router.get('/process-packs', wrap(async (req, res) => {
+  res.json({
+    packs: db
+      .prepare(
+        `SELECT p.id, p.pack, p.name, p.description, p.authored_at, p.ingested_at, p.prompt_version,
+                p.producer_kind, p.producer_detail, p.source, p.source_file, p.status, p.errors,
+                (SELECT COUNT(*) FROM processes x WHERE x.pack_id = p.id) AS processes
+         FROM process_packs p ORDER BY p.ingested_at DESC, p.id DESC LIMIT ?`
+      )
+      .all(Number(req.query.limit) || 100)
+      .map((r) => ({ ...r, errors: parse(r.errors, null), source: parse(r.source, null) })),
+  })
+}))
+
 /* ───────────────────────────────────────────────────────── pages */
 
 const dashboardRow = (r) => ({

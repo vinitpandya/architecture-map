@@ -6,6 +6,10 @@ import addFormats from 'ajv-formats'
 import { SCHEMA_FILE } from './config.js'
 import { db } from './db.js'
 import { linkPass } from './link.js'
+// Cyclic with processes.js, which imports this module for edgeId() and the
+// shared ajv. Safe because every reference on both sides is inside a function
+// body, so nothing is touched until both modules have finished evaluating.
+import { ingestProcessPack } from './processes.js'
 
 /* ────────────────────────────────────────────────────── validation
 
@@ -18,13 +22,21 @@ import { linkPass } from './link.js'
 const ajv = new Ajv({ allErrors: true, strict: false })
 addFormats(ajv)
 
-let validator = null
-function validate() {
-  if (!validator) {
-    validator = ajv.compile(JSON.parse(fs.readFileSync(SCHEMA_FILE, 'utf8')))
+const compiled = new Map()
+
+/**
+ * One ajv, one configuration, for every schema in the project. Layer B
+ * validates through this too, so a pack and a manifest are held to the same
+ * standard of error reporting.
+ */
+export function compileSchema(file) {
+  if (!compiled.has(file)) {
+    compiled.set(file, ajv.compile(JSON.parse(fs.readFileSync(file, 'utf8'))))
   }
-  return validator
+  return compiled.get(file)
 }
+
+const validate = () => compileSchema(SCHEMA_FILE)
 
 /** Readable one-liners from ajv's output, for the UI and the CLI. */
 export function explainErrors(errors) {
@@ -361,6 +373,21 @@ export function rebuildSearch() {
 
 /* ────────────────────────────────────────────────────── inbox */
 
+/**
+ * What a file in the inbox is, by shape rather than by filename or folder —
+ * one drop point and nothing to remember.
+ */
+export function inboxKind(json) {
+  if (json && typeof json === 'object') {
+    if ('repo' in json) return 'manifest'
+    if ('pack' in json) return 'process-pack'
+  }
+  return null
+}
+
+export const NOT_INGESTABLE =
+  'not a scan manifest (no `repo`) or a process pack (no `pack`)'
+
 /** Ingest every *.json in the inbox, filing each by outcome. */
 export function sweepInbox(dir) {
   const results = []
@@ -372,13 +399,21 @@ export function sweepInbox(dir) {
     try {
       parsed = JSON.parse(fs.readFileSync(full, 'utf8'))
     } catch (err) {
-      results.push({ file, ok: false, errors: [{ path: '/', message: `Not valid JSON: ${err.message}` }] })
+      results.push({ file, kind: null, ok: false, errors: [{ path: '/', message: `Not valid JSON: ${err.message}` }] })
       fs.renameSync(full, path.join(dir, 'quarantine', file))
       continue
     }
 
-    const result = ingestManifest(parsed, file)
-    results.push({ file, ...result })
+    const kind = inboxKind(parsed)
+    if (!kind) {
+      results.push({ file, kind: null, ok: false, errors: [{ path: '/', message: NOT_INGESTABLE }] })
+      fs.renameSync(full, path.join(dir, 'quarantine', file))
+      continue
+    }
+
+    const result =
+      kind === 'process-pack' ? ingestProcessPack(parsed, file) : ingestManifest(parsed, file)
+    results.push({ file, kind, ...result })
     fs.renameSync(full, path.join(dir, result.ok ? 'ingested' : 'quarantine', file))
   }
   return results

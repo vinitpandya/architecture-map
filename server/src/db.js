@@ -9,6 +9,21 @@ export const db = new Database(path.join(DATA_DIR, 'architecture.sqlite'))
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 
+/**
+ * The original spec created `processes` and `process_steps` as placeholders
+ * with an entirely different shape, and nothing ever wrote to them. Layer B
+ * replaces them, so they are dropped — but only when the legacy shape is what
+ * is actually there. An unconditional drop would throw away the real processes
+ * on every restart.
+ */
+const legacy = db
+  .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'processes'`)
+  .get()
+if (legacy && db.prepare('PRAGMA table_info(processes)').all().some((c) => c.name === 'key')) {
+  db.exec('DROP TABLE IF EXISTS process_steps; DROP TABLE IF EXISTS processes;')
+}
+db.exec('DROP TABLE IF EXISTS process_steps;')
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS app_config (
   key   TEXT PRIMARY KEY,
@@ -136,27 +151,78 @@ CREATE TABLE IF NOT EXISTS overrides (
   PRIMARY KEY (subject_kind, subject_id, field)
 );
 
--- ─────────────────────────────────────── layer B (created now, unused in v1)
+-- ─────────────────────────────────────────────── layer B: pack ingest log
+
+CREATE TABLE IF NOT EXISTS process_packs (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  pack            TEXT NOT NULL,
+  name            TEXT,
+  description     TEXT,
+  authored_at     TEXT,
+  ingested_at     TEXT NOT NULL,
+  schema_version  INTEGER,
+  prompt_version  TEXT,
+  producer_kind   TEXT,
+  producer_detail TEXT,
+  source          TEXT,            -- JSON, the pack-level default
+  source_file     TEXT,
+  status          TEXT NOT NULL,   -- active | superseded | quarantined
+  raw             TEXT NOT NULL,
+  errors          TEXT
+);
+CREATE INDEX IF NOT EXISTS process_packs_pack ON process_packs (pack, status);
+
+-- ─────────────────── the hierarchy: one row per process, at every level.
+-- There is no step table. A step IS a process: the levels are decomposition,
+-- so a level 3 is already the atomic unit of work.
 
 CREATE TABLE IF NOT EXISTS processes (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  key         TEXT UNIQUE NOT NULL,
-  level       INTEGER NOT NULL,
-  parent_id   INTEGER REFERENCES processes(id) ON DELETE CASCADE,
+  id          TEXT PRIMARY KEY,          -- 'proc:2.1.1'
+  code        TEXT NOT NULL UNIQUE,      -- '2.1.1', the L stripped
+  level       INTEGER NOT NULL,          -- derived: segment count, 1-3
+  parent_id   TEXT,                      -- derived: 'proc:2.1'; NULL at level 1
+  sort_key    TEXT NOT NULL,             -- zero-padded; never order by code
   name        TEXT NOT NULL,
   description TEXT,
-  sort        INTEGER NOT NULL DEFAULT 0
+  owner       TEXT,
+  actor       TEXT,
+  trigger     TEXT,
+  outcome     TEXT,
+  node_id     TEXT,                      -- may not exist in nodes; that is a finding
+  edge_id     TEXT,                      -- resolved via edgeId(); NULL when unresolved
+  edge_from   TEXT,                      -- the interaction kept verbatim, so an
+  edge_kind   TEXT,                      -- unresolved one is still displayable and
+  edge_to     TEXT,                      -- still explains what the author meant
+  optional    INTEGER NOT NULL DEFAULT 0,
+  notes       TEXT,
+  tags        TEXT,                      -- JSON array
+  source      TEXT,                      -- JSON; the pack's when the process has none
+  pack_id     INTEGER NOT NULL REFERENCES process_packs(id) ON DELETE CASCADE,
+  first_seen  TEXT NOT NULL,
+  last_seen   TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS processes_parent ON processes (parent_id);
+CREATE INDEX IF NOT EXISTS processes_sort   ON processes (sort_key);
+CREATE INDEX IF NOT EXISTS processes_node   ON processes (node_id);
 
-CREATE TABLE IF NOT EXISTS process_steps (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  process_id  INTEGER NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
-  seq         INTEGER NOT NULL,
-  name        TEXT NOT NULL,
-  description TEXT,
-  node_id     TEXT,
-  edge_id     TEXT
+-- ───────────────────────────── the join between the layers, rebuilt whole
+-- by the link pass. Derived, never authored.
+
+CREATE TABLE IF NOT EXISTS process_components (
+  process_id TEXT NOT NULL,
+  node_id    TEXT NOT NULL,
+  via        TEXT NOT NULL,   -- node | interaction | touches | exposes | rollup
+  PRIMARY KEY (process_id, node_id)
 );
+CREATE INDEX IF NOT EXISTS process_components_node ON process_components (node_id);
+
+CREATE TABLE IF NOT EXISTS process_edges (
+  process_id TEXT NOT NULL,
+  edge_id    TEXT NOT NULL,
+  via        TEXT NOT NULL,   -- interaction | rollup
+  PRIMARY KEY (process_id, edge_id)
+);
+CREATE INDEX IF NOT EXISTS process_edges_edge ON process_edges (edge_id);
 
 -- ───────────────────────────────────────────────────────────────── pages
 
