@@ -146,9 +146,18 @@ function rebuildProcessRollup() {
 
   const { touches } = fromActivePacks()
   const kindOf = new Map(db.prepare('SELECT id, kind FROM nodes').all().map((n) => [n.id, n.kind]))
-  const exposedBy = new Map(
-    db.prepare(`SELECT to_id, from_id FROM edges WHERE kind = 'http.expose'`).all().map((e) => [e.to_id, e.from_id])
-  )
+  // Every exposer, not the last one written. Two services exposing one route is
+  // a topology Layer A already models and reports as `multiple-owners`, and
+  // collapsing the map on `to_id` meant the rollup kept whichever edge row the
+  // scan returned last — so a process could lose the service that actually
+  // serves the endpoint it calls, and gain a false `uncovered-component`, on
+  // nothing but the order the manifests were ingested in. §5's rule stops at
+  // endpoints on purpose; it never said to pick one of them.
+  const exposedBy = new Map()
+  for (const e of db.prepare(`SELECT to_id, from_id FROM edges WHERE kind = 'http.expose'`).all()) {
+    if (!exposedBy.has(e.to_id)) exposedBy.set(e.to_id, [])
+    exposedBy.get(e.to_id).push(e.from_id)
+  }
 
   const comps = new Map()
   const edges = new Map()
@@ -189,8 +198,7 @@ function rebuildProcessRollup() {
     // Snapshotted, because addComp writes into the map being read.
     for (const nodeId of [...bag(comps, p.id).keys()]) {
       if (kindOf.get(nodeId) !== 'endpoint') continue
-      const service = exposedBy.get(nodeId)
-      if (service) addComp(p.id, service, 'exposes')
+      for (const service of exposedBy.get(nodeId) ?? []) addComp(p.id, service, 'exposes')
     }
   }
 

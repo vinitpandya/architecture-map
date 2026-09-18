@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Process } from '../lib/api'
 import { displayCode, idValue, nodeHref, processHref } from '../lib/nodes'
@@ -23,9 +23,39 @@ export function ProcessTree({
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set())
 
+  // Keyed on which processes are here, not on the array's identity. The widget
+  // fetches `/processes` through the shared scope params, so touching any
+  // control in the filter row — none of which `/processes` reads — produced a
+  // new array of byte-identical rows and threw away whatever the reader had
+  // collapsed. Newly seen processes open to `openToLevel`; everything already
+  // on screen keeps the state the reader put it in.
+  const shape = useMemo(() => processes.map((p) => p.id).join(','), [processes])
+  const seen = useRef<Set<string>>(new Set())
+
   useEffect(() => {
+    setOpen((prev) => {
+      const next = new Set(prev)
+      for (const p of processes) {
+        if (seen.current.has(p.id)) continue
+        seen.current.add(p.id)
+        if (p.level <= openToLevel) next.add(p.id)
+      }
+      return next
+    })
+    // `shape` stands in for `processes`: same ids, same tree, no reset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shape, openToLevel])
+
+  // A change to how far to open is a deliberate instruction, so it does start
+  // over — that is what the Stages/Actions control on /processes is for.
+  const level = useRef(openToLevel)
+  useEffect(() => {
+    if (level.current === openToLevel) return
+    level.current = openToLevel
+    seen.current = new Set(processes.map((p) => p.id))
     setOpen(new Set(processes.filter((p) => p.level <= openToLevel).map((p) => p.id)))
-  }, [processes, openToLevel])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openToLevel])
 
   const children = useMemo(() => {
     const by = new Map<string, Process[]>()

@@ -4,6 +4,7 @@ import { api, type Process, type ProcessComponent, type ProcessDetail, type Proc
 import { Card, Empty } from '../components/ui'
 import { DataGrid } from '../components/DataGrid'
 import { relative } from '../lib/format'
+import { driftTitle } from '../lib/drift'
 import { ProcessFlow } from '../graph/ProcessFlow'
 import {
   KIND_PLURAL,
@@ -203,7 +204,7 @@ export function ProcessPage() {
           <ul className="stack" style={{ gap: 6, margin: 0, paddingLeft: 18 }}>
             {drift.map((f) => (
               <li key={f.id}>
-                <strong>{f.kind}</strong> — {f.detail}
+                <strong>{driftTitle(f.kind)}</strong> — {f.detail}
               </li>
             ))}
           </ul>

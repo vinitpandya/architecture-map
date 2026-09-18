@@ -409,6 +409,69 @@ for (const [code, expected] of [['2', 4], ['2.1', 4]]) {
   await setScope('map', null)
 }
 
+/* ---- the two demo findings are the cross-check the process layer exists for,
+   and on the Health page they used to arrive as bare slugs with no title and no
+   explanation of what to do about them. */
+{
+  const { ctx, page } = await open(`/d/${pageId('health')}`)
+  await page.waitForSelector('[data-grid-id], .drift-group, .empty', { timeout: 20000 })
+  await page.waitForTimeout(600)
+  const text = await page.evaluate(() => document.body.innerText)
+  is(
+    'no drift finding is shown as a raw slug',
+    /process-missing-(component|interaction)|uncovered-component|process-(orphan|duplicate|no-detail)/.test(text),
+    false
+  )
+  is(
+    '  …the missing component has a title in the reader\'s terms',
+    text.includes('Processes naming a component that is gone'),
+    true
+  )
+  is(
+    '  …and so does the missing interaction',
+    text.includes('Calls a document describes and no code makes'),
+    true
+  )
+  await ctx.close()
+}
+
+/* ---- and the same on a process page, which printed the slug too */
+{
+  const { ctx, page } = await open('/process?code=3.2.3')
+  await page.waitForSelector('.proc-binding', { timeout: 15000 })
+  const text = await page.evaluate(() => document.body.innerText)
+  is('a process page names its finding rather than its slug', text.includes('process-missing-interaction'), false)
+  is('  …', text.includes('Calls a document describes and no code makes'), true)
+  await ctx.close()
+}
+
+/* ---- collapsing a branch survives an unrelated filter change. The widget
+   fetches /processes through the shared scope params, so any control in the
+   filter row refetched it and the reset threw the collapse away. */
+{
+  const { ctx, page } = await open(`/d/${pageId('processes')}`)
+  await page.waitForSelector('.proc-tree', { timeout: 20000 })
+  await page.waitForTimeout(500)
+  const rows = () => page.$$eval('.proc-tree .proc-row', (els) => els.length)
+  const before = await rows()
+  const caret = await page.$('.proc-tree button[aria-expanded="true"]')
+  ok('the tree has a branch to collapse', !!caret)
+  await caret.click()
+  await page.waitForTimeout(300)
+  const collapsed = await rows()
+  ok('collapsing a branch hides its children', collapsed < before, `${before} → ${collapsed}`)
+  // Any control the tree does not read. includeExternal is the cheapest.
+  const external = await page.$('.scope-bar input[type=checkbox]')
+  if (external) {
+    await external.click()
+    await page.waitForTimeout(900)
+    is('  …and an unrelated filter change does not re-expand it', await rows(), collapsed)
+  } else {
+    pass('  …(no filter-row checkbox on this page to test with)')
+  }
+  await ctx.close()
+}
+
 await browser.close()
 console.log(`\n  ${checks - failures}/${checks} checks passed\n`)
 process.exit(failures ? 1 : 0)

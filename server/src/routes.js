@@ -563,14 +563,29 @@ router.get('/graph', wrap(async (req, res) => {
     )
   }
 
-  if (focus) {
+  // Inside a process, the walk is over the process's own edges. Walking the
+  // whole estate and clipping afterwards counts hops through components that
+  // are not in the process, so depth=2 could return a node whose only route to
+  // the focus went outside and arrives with no edge at all — a node floating
+  // unconnected on the overlay — and depth=all made the focus a no-op, because
+  // the global walk reaches everything and the clip leaves the whole process.
+  // §8: "the existing focus/depth controls still work within that subgraph".
+  const walkEdges = withinProcess
+    ? allEdges.filter((e) => withinProcess.has(e.from_id) && withinProcess.has(e.to_id))
+    : allEdges
+
+  //
+  // A focus the process does not contain selects nothing, so the filter stands
+  // alone and the whole process comes back — "the process wins as the filter
+  // and `focus` only selects", with nothing to select.
+  if (focus && (!withinProcess || withinProcess.has(focus))) {
     keep = new Set([focus])
     for (let hop = 0; hop < depth && hop < 12; hop++) {
       // Each hop's finds are collected separately and merged at the end of the
       // pass. Adding them to `keep` as we go would let one pass walk the whole
       // graph, and depth would stop meaning anything.
       const next = new Set()
-      for (const e of allEdges) {
+      for (const e of walkEdges) {
         if (keep.has(e.from_id) === keep.has(e.to_id)) continue
         next.add(keep.has(e.from_id) ? e.to_id : e.from_id)
       }
@@ -708,13 +723,18 @@ router.get('/prompt', wrap(async (req, res) => {
     ? taken.map((p) => `- \`L${p.code}\` · ${p.name}`).join('\n')
     : '_No process codes are in use yet._'
 
-  const fill = (part) =>
-    part
-      .replace(/\{\{SCHEMA\}\}/g, schema)
-      .replace(/\{\{REPO\}\}/g, String(req.query.repo || '<repo>'))
-      .replace(/\{\{PACK\}\}/g, String(req.query.pack || '<pack>'))
-      .replace(/\{\{COMPONENTS\}\}/g, components)
-      .replace(/\{\{PROCESSES\}\}/g, processes)
+  // Every replacement goes in through a function, because in the two-argument
+  // string form `$&`, `$\``, `$'`, `$$` and `$1` are expanded as patterns — and
+  // these values are a query parameter, a schema file and rows out of the
+  // database. A pack id of `$\`` spliced the whole document back into itself.
+  const values = {
+    SCHEMA: schema,
+    REPO: String(one(req.query.repo) || '<repo>'),
+    PACK: String(one(req.query.pack) || '<pack>'),
+    COMPONENTS: components,
+    PROCESSES: processes,
+  }
+  const fill = (part) => part.replace(/\{\{(SCHEMA|REPO|PACK|COMPONENTS|PROCESSES)\}\}/g, (_, k) => values[k])
 
   // Every prompt opens with an HTML comment that documents its placeholders by
   // name. Filling those in destroys the legend and pastes a second copy of the
@@ -815,12 +835,24 @@ router.get('/processes', wrap(async (req, res) => {
   const args = []
   if (req.query.root) {
     const root = normaliseCode(one(req.query.root))
+    // The second half is a LIKE pattern, so the value has to be a code and not
+    // just a string: `%` and `_` are wildcards, and a typo containing one used
+    // to return a subtree nobody asked for rather than an empty tree.
+    if (!/^[1-9][0-9]*(\.[1-9][0-9]*){0,2}$/.test(root)) {
+      return res.status(400).json({ error: `\`root\` must be a process code, e.g. 2 or 2.1.1 — got ${root}` })
+    }
     where.push('(p.code = ? OR p.code LIKE ?)')
     args.push(root, `${root}.%`)
   }
-  if (req.query.maxLevel) {
+  if (req.query.maxLevel !== undefined && req.query.maxLevel !== '') {
+    // NaN bound into `level <= ?` matches nothing, so `maxLevel=abc` answered
+    // with an empty tree rather than saying what was wrong with it.
+    const maxLevel = Number(one(req.query.maxLevel))
+    if (!Number.isInteger(maxLevel) || maxLevel < 1) {
+      return res.status(400).json({ error: '`maxLevel` must be a whole number of 1 or more' })
+    }
     where.push('p.level <= ?')
-    args.push(Number(req.query.maxLevel))
+    args.push(maxLevel)
   }
   const owners = list(req.query.owner)
   if (owners.length) {
@@ -891,9 +923,15 @@ router.get('/process', wrap(async (req, res) => {
     // answer to "how many teams does this process cross".
     services: components.filter((c) => c.kind === 'service'),
     drift: db.prepare('SELECT * FROM drift WHERE subject_id = ?').all(row.id).map((r) => ({ ...r, data: parse(r.data, null) })),
-    pack: db
-      .prepare('SELECT id, pack, name, description, authored_at, ingested_at, source FROM process_packs WHERE id = ?')
-      .get(row.pack_id) ?? null,
+    // `source` is JSON in the column and an object everywhere else it is
+    // returned — /api/process-packs parses it, processRow parses it, and the
+    // declared type says object. This one was handing back the raw string.
+    pack: (() => {
+      const r = db
+        .prepare('SELECT id, pack, name, description, authored_at, ingested_at, source FROM process_packs WHERE id = ?')
+        .get(row.pack_id)
+      return r ? { ...r, source: parse(r.source, null) } : null
+    })(),
   })
 }))
 

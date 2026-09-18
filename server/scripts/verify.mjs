@@ -593,6 +593,33 @@ if (stage === 'processes') {
     0
   )
 
+  /* ---- a `$`-bearing value must not be expanded as a replacement pattern.
+     The pack box on /scan is free text, and `$\`` spliced the whole document
+     back into itself. */
+  for (const [label, value] of [
+    ['a back-tick dollar', '$`'],
+    ['a dollar-ampersand', '$&'],
+    ['a dollar-quote', "$'"],
+  ]) {
+    const { body } = await get(`/prompt?name=author-processes&pack=${encodeURIComponent(value)}`)
+    // Past the legend, which keeps its `{{PACK}}` on purpose.
+    const after = body.text.slice(body.text.indexOf('-->') + 3)
+    ok(
+      `${label} pack id is inserted literally, not expanded`,
+      after.includes(`authoring the pack \`${value}\``) && !after.includes('{{PACK}}'),
+      `${body.text.length} chars`
+    )
+  }
+  is(
+    '  …and none of them changes the prompt\'s length',
+    new Set(
+      await Promise.all(
+        ['plain', '$`', '$&'].map(async (v) => (await get(`/prompt?name=author-processes&pack=${encodeURIComponent(v)}`)).body.text.length - v.length)
+      )
+    ).size,
+    1
+  )
+
   /* ---- the authoring prompt (§8): it is the whole of how a pack gets written,
      and it is rendered rather than served flat. */
   const { body: prompt } = await get('/prompt?name=author-processes&pack=onboarding')
@@ -620,6 +647,49 @@ if (stage === 'processes') {
     body.includes('`svc:order-service`') && body.includes('`L2.1.1`'),
     'components or codes missing'
   )
+
+  /* ---- §8: "the existing focus/depth controls still work within that
+     subgraph". Walking the whole estate and clipping afterwards counted hops
+     through components outside the process, so a node could come back with no
+     edge touching it at all. */
+  {
+    const { body } = await get(
+      `/graph?process=1&focus=${encodeURIComponent('svc:gateway-api')}&depth=2`
+    )
+    const touched = new Set(body.edges.flatMap((e) => [e.from, e.to]))
+    const stranded = body.nodes.map((n) => n.id).filter((id) => id !== 'svc:gateway-api' && !touched.has(id))
+    is('a focused process graph strands no node', stranded.join(', '), '')
+    ok(
+      '  …and every node it returns is in the process',
+      body.nodes.length > 0 && body.process === '1',
+      `${body.nodes.length} nodes, process ${body.process}`
+    )
+  }
+  {
+    // A focus the process does not contain selects nothing, so the filter
+    // stands alone rather than emptying the canvas. matching-engine is in
+    // order-and-execution, not in reporting.
+    const plain = (await get('/graph?process=3')).body
+    ok(
+      'the focus for this check really is outside the process',
+      !plain.nodes.some((n) => n.id === 'svc:matching-engine'),
+      'matching-engine turned out to be in process 3'
+    )
+    const { body } = await get(`/graph?process=3&focus=${encodeURIComponent('svc:matching-engine')}`)
+    is('a focus outside the process leaves the process whole', body.nodes.length, plain.nodes.length)
+  }
+
+  /* ---- a `root` that is not a code, and a `maxLevel` that is not a number */
+  is('processes?root=% is a 400, not 43 rows', (await get('/processes?root=%25')).status, 400)
+  is('processes?maxLevel=abc is a 400, not an empty tree', (await get('/processes?maxLevel=abc')).status, 400)
+  is('processes?root=2 still works', (await get('/processes?root=2')).body.processes.length, 20)
+
+  /* ---- pack.source is an object here as it is everywhere else */
+  {
+    const { body } = await get('/process?code=2')
+    is('/process returns pack.source parsed', typeof body.pack?.source, 'object')
+    ok('  …with the fields the card reads', !!body.pack?.source?.asOf, JSON.stringify(body.pack?.source))
+  }
 
   /* ---- removal */
   const removed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs'), '--remove'], {
@@ -830,6 +900,57 @@ if (stage === 'packs') {
     n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-detail' AND subject_id = 'proc:5'`),
     1
   )
+
+  /* ---- two services exposing one route. The rollup used to collapse the
+     exposer map on `to_id`, so a process kept whichever expose edge the scan
+     returned last — losing the service that actually serves the endpoint it
+     calls, and gaining a false uncovered-component, on ingest order alone. */
+  {
+    const { edgeId } = await import('../src/ingest.js')
+    const { linkPass } = await import('../src/link.js')
+    const endpoint = 'api:pricing-service/GET /v1/rates/{}'
+    const mid = db.prepare(`SELECT id FROM manifests WHERE repo = 'gateway-api' AND status = 'active'`).get().id
+    const expose = (from, repo) =>
+      db
+        .prepare(
+          `INSERT OR REPLACE INTO edges (id, manifest_id, from_id, to_id, kind, repo, confidence, first_seen, last_seen)
+           VALUES (?, ?, ?, ?, 'http.expose', ?, 'high', '2026-01-01', '2026-01-01')`
+        )
+        .run(edgeId(from, 'http.expose', endpoint), mid, from, endpoint, repo)
+    const pricingRows = () =>
+      db
+        .prepare(`SELECT process_id FROM process_components WHERE node_id = 'svc:pricing-service' ORDER BY process_id`)
+        .all()
+        .map((r) => r.process_id)
+        .join(' ')
+    const baseline = pricingRows()
+    is('pricing-service is reached by the process that calls its endpoint', baseline, 'proc:2 proc:2.1 proc:2.1.2')
+
+    expose('svc:gateway-api', 'gateway-api')
+    linkPass()
+    is('a second exposer does not displace the first', pricingRows(), baseline)
+    is(
+      '  …it is added beside it',
+      n(`SELECT COUNT(*) n FROM process_components WHERE node_id = 'svc:gateway-api' AND via = 'exposes'`) > 0,
+      true
+    )
+    is(
+      '  …and raises no false uncovered-component',
+      n(`SELECT COUNT(*) n FROM drift WHERE kind = 'uncovered-component' AND subject_id = 'svc:pricing-service'`),
+      0
+    )
+
+    // The same estate with the rows written the other way round must answer the
+    // same, or the link pass is not the deterministic rebuild it claims to be.
+    db.prepare('DELETE FROM edges WHERE id = ?').run(edgeId('svc:pricing-service', 'http.expose', endpoint))
+    expose('svc:pricing-service', 'pricing-service')
+    linkPass()
+    is('  …whichever order the two expose edges were written in', pricingRows(), baseline)
+
+    db.prepare('DELETE FROM edges WHERE id = ?').run(edgeId('svc:gateway-api', 'http.expose', endpoint))
+    linkPass()
+    is('  …and removing it restores the estate exactly', pricingRows(), baseline)
+  }
 
   /* ---- and removing a pack has the same hole as re-ingesting one: the row
      it was holding may be a code somebody else still declares. */

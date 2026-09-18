@@ -19,8 +19,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 156 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 64 more
+npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 175 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 72 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run build && npm start           # production build, UI and API on one port
@@ -55,7 +55,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 156 assertions across four stages, all passing.**
+**`npm run verify` — 175 assertions across four stages, all passing.**
 
 *Ingest (20, in-process against a fresh database).* A fresh install answers
 `coverage` as two numbers rather than `{total: 0, covered: null}`, which is what
@@ -80,7 +80,7 @@ return hits rather than an FTS5 syntax error. **An override changes
 `/api/node` and a re-ingest of that repo does not revert it** — the single most
 important test in the suite.
 
-*Processes (61, over HTTP).* `validate.mjs` says which schema it picked. A
+*Processes (74, over HTTP).* `validate.mjs` says which schema it picked. A
 four-segment code exits 1 naming the path, quarantines the pack and imports zero
 processes. An all-`L`-prefixed copy ingests onto the same rows. **Ingesting a
 pack creates no rows in `nodes` or `edges`** — asserted before and after, and the
@@ -101,7 +101,7 @@ every placeholder in its body filled — the pack id, the components and the cod
 already taken. `--remove` clears packs,
 processes, the join tables and every process finding.
 
-*Packs (26, in-process).* The situations the demo estate cannot contain, because
+*Packs (32, in-process).* The situations the demo estate cannot contain, because
 its packs are well-formed on purpose. A pack whose `pack` field is not a string
 quarantines instead of throwing, and a malformed file in the inbox does not stop
 the good file behind it from landing. A typo in `touches` raises
@@ -115,7 +115,7 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-**`npm run verify:ui` — 64 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 72 checks in Chromium at 1280×900, all passing.**
 
 Two fresh loads of the map put all 35 nodes at byte-identical transforms. A
 `kafka.consume` edge's arrow head lands 72px from the service and 275px from the
@@ -148,8 +148,8 @@ they produce.
 ## Nothing is failing
 
 No verification step is left failing and nothing was weakened to pass.
-Thirty-two defects were found and fixed rather than worked around. Five came out
-of running the thing:
+Forty-three defects were found and fixed rather than worked around. Five came
+out of running the thing:
 
 - **`/api/graph` ignored `depth`.** The BFS grew its frontier while iterating the
   edge list, so one pass walked the whole connected component and `depth=1`
@@ -227,6 +227,39 @@ selection that faded the whole canvas once its node was filtered out, two
 widgets claiming no packs were loaded when three were, a coverage cell that
 counted a component and then showed nothing, a lowest-version marker that sorted
 3.10.0 below 3.9.0, and a raw ISO timestamp where §10 asks for relative time.
+
+A second review, of Layer B specifically, found **eleven more**. The two that
+matter most were both about determinism and both invisible on the demo data:
+
+- **The rollup kept one exposer per endpoint.** The `to_id → from_id` map
+  collapsed on collision, so when two services expose one route — a topology
+  Layer A already models and reports as `multiple-owners` — a process kept
+  whichever expose edge the scan returned last. Reproduced: it dropped
+  `svc:pricing-service` from all three of its rows and raised a false
+  `uncovered-component` saying nothing documented touches it, while
+  order-and-execution plainly calls it. The answer depended on the order the
+  manifests were ingested in, which is exactly what a rebuilt-from-scratch link
+  pass is supposed to preclude. Every exposer is kept now, and the verification
+  asserts the same answer under both edge orderings.
+- **`/api/graph?process=` walked the whole estate and clipped afterwards**, so
+  `depth` counted hops through components outside the process — returning nodes
+  with no edge touching them, floating unconnected on the overlay. The walk is
+  over the process's own edges now.
+
+And **the two demo findings arrived on the Health page as bare slugs.**
+`DRIFT_KINDS` had all eight Layer A kinds and none of the six Layer B ones, so
+`process-missing-component` and `process-missing-interaction` — the cross-check
+§11 calls "the demo of the cross-check that justifies this whole layer" — were
+the only findings in the tool with no title and no explanation of what to do
+about them. The table is shared between the widget and the process page now.
+
+Also: the process tree threw away whatever the reader had collapsed whenever any
+unrelated filter changed; a `$`-bearing pack id was expanded as a `String.replace`
+replacement pattern, splicing the whole prompt back into itself; `?root=%`
+returned 43 of 46 processes because the value reached a LIKE pattern unvalidated;
+`?maxLevel=abc` answered with a silently empty tree; `/api/process` returned
+`pack.source` as an unparsed JSON string; an unresolvable widget code rendered a
+blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
 
 ## Things worth knowing before you touch it
 

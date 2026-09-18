@@ -140,8 +140,11 @@ contracts" rather than "Everything".
 - **Superseded packs stay in the log, so the derived rows go explicitly.** §4
   says a superseded pack's rows "cascade away", but a cascade only fires on
   DELETE and the pack row is kept for the ingest log, exactly as a manifest is.
-  `DELETE FROM processes WHERE pack_id IN (…)` does it, the same way Layer A
-  does.
+  The rows therefore have to go without one. This started as
+  `DELETE FROM processes WHERE pack_id IN (…)`, the same way Layer A does it,
+  and that turned out to be wrong for a reason Layer A does not have: see
+  **`processes` is a function of the active packs, rebuilt whole** in the polish
+  pass below, which is what the code does now.
 - **`touches` is read back off the pack's raw body.** §3's schema has no column
   for it and only the link pass consumes it, so denormalising it would create a
   table nothing else would ever read.
@@ -289,6 +292,35 @@ the git log rather than here. Three were judgement calls:
   a level 1 — which §5 allows — then had no chip at all, while the summary line
   counted it as covered. The most specific level present keeps the
   de-duplication and cannot be empty.
+
+### The Layer B review
+
+- **§5's `exposes` rule keeps every exposer, not one of them.** The rule reads
+  "the service that exposes it", singular, because that is the expected
+  topology — but it is expected, not guaranteed, and Layer A already models and
+  reports two services claiming one route. The rule's deliberate limit is that
+  it stops at endpoints and does not generalise to topics or stores; it was never
+  about picking one service. With a single exposer the output is byte-identical.
+- **A focus inside a process walks the process's own edges.** §8 says "the
+  existing focus/depth controls still work within that subgraph", and walking the
+  estate and intersecting afterwards is not the same thing: it counts hops
+  through components the process does not contain. A focus the process does not
+  contain now selects nothing, so the filter stands alone and the whole process
+  comes back — "the process wins as the filter and `focus` only selects", with
+  nothing to select.
+- **`DRIFT_KINDS` moved to `web/src/lib/drift.ts`.** The drift widget and the
+  process page list the same findings, and the page was printing the raw `kind`
+  slug. One table, two readers, rather than a copy in each.
+- **A `root` that is not a process code is a 400.** The value reaches a LIKE
+  pattern, so `%` and `_` are wildcards and a typo returned a subtree nobody
+  asked for. Parameterising it was never the issue; validating the grammar is.
+  Same for `maxLevel`: a non-number bound into `level <= ?` matches nothing, and
+  an empty tree is a worse answer than saying what was wrong with the request.
+- **Every `{{…}}` substitution goes through a replacer function.** In the
+  two-argument string form `$&`, `` $` ``, `$'` and `$n` are expanded as
+  patterns, and the values here are a query parameter, a schema file and rows out
+  of the database. The pack box on /scan is free text, so a pack id of `` $` ``
+  spliced the whole prompt back into itself.
 
 ## Working
 

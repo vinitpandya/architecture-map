@@ -10,6 +10,7 @@ import { MapCanvas } from '../graph/MapCanvas'
 import { ProcessFlow } from '../graph/ProcessFlow'
 import { ProcessTree } from '../components/ProcessTree'
 import { full } from '../lib/format'
+import { DRIFT_KINDS } from '../lib/drift'
 import type {
   ContractVersions,
   CoverageRow,
@@ -589,45 +590,7 @@ function ContractVersionsBody({ widget }: { widget: WidgetConfig }) {
   )
 }
 
-/**
- * What each kind of finding means, in the terms someone reading it at 9am
- * needs. A finding nobody can act on is noise, and noise is how a map stops
- * being opened.
- */
-const DRIFT_KINDS: Record<string, { title: string; why: string }> = {
-  'no-producer': {
-    title: 'Topics with no producer',
-    why: 'Something is listening to a topic nothing in the scanned set writes. Either it crosses a team boundary, or the listener is dead.',
-  },
-  'no-consumer': {
-    title: 'Topics with no consumer',
-    why: 'Published, and nothing in the scanned set reads it.',
-  },
-  'version-skew': {
-    title: 'Contracts bound at more than one version',
-    why: 'One payload, several versions in production. The oldest binding is what constrains any change to it.',
-  },
-  'shared-database': {
-    title: 'Databases more than one service writes',
-    why: 'Every change to that schema is now a cross-team change, whether or not anyone has noticed.',
-  },
-  'multiple-owners': {
-    title: 'Contested ownership',
-    why: 'Two repositories claim the same thing. One of them is wrong.',
-  },
-  'near-miss': {
-    title: 'Ids that might be the same thing',
-    why: 'Two ids that normalise identically. Probably one thing spelt twice — a human decides, never the ingest.',
-  },
-  'orphan-endpoint': {
-    title: 'Endpoints nobody serves',
-    why: 'A route somebody calls that nothing in the scanned set exposes.',
-  },
-  'stale-evidence': {
-    title: 'Citations that no longer match',
-    why: 'The line a fact was read from has changed since the scan.',
-  },
-}
+
 
 /**
  * Where a finding's subject lives. A process finding names a process, a
@@ -894,9 +857,24 @@ function ProcessTreeBody({ widget }: { widget: WidgetConfig }) {
   return <ProcessTree processes={data.processes} openToLevel={2} showOwner={false} />
 }
 
+/**
+ * A code the API cannot resolve. Discarding `error` and rendering `null` left
+ * the widget with its header and an empty body forever — indistinguishable from
+ * still loading, with the 404 visible only in the console.
+ */
+function NoSuchProcess({ code, error }: { code: string; error: string }) {
+  return (
+    <Empty title={`No process ${displayCode(code)}`}>
+      <span className="muted" style={{ fontSize: 12 }}>
+        {error}. Open ⚙ to change the code, or pick one from <Link to="/processes">Processes</Link>.
+      </span>
+    </Empty>
+  )
+}
+
 function ProcessChildrenBody({ widget }: { widget: WidgetConfig }) {
   const code = useProcessCode(widget)
-  const { data } = useQuery<ProcessDetail>(code ? '/process' : null, { code })
+  const { data, error } = useQuery<ProcessDetail>(code ? '/process' : null, { code })
 
   if (!code)
     return (
@@ -906,6 +884,7 @@ function ProcessChildrenBody({ widget }: { widget: WidgetConfig }) {
         </span>
       </Empty>
     )
+  if (error) return <NoSuchProcess code={code} error={error} />
   if (!data) return null
   if (!data.children.length)
     return (
@@ -973,7 +952,7 @@ function ProcessChildrenBody({ widget }: { widget: WidgetConfig }) {
 
 function ProcessFlowBody({ widget }: { widget: WidgetConfig }) {
   const code = useProcessCode(widget)
-  const { data } = useQuery<ProcessDetail>(code ? '/process' : null, { code })
+  const { data, error } = useQuery<ProcessDetail>(code ? '/process' : null, { code })
 
   if (!code)
     return (
@@ -983,6 +962,7 @@ function ProcessFlowBody({ widget }: { widget: WidgetConfig }) {
         </span>
       </Empty>
     )
+  if (error) return <NoSuchProcess code={code} error={error} />
   if (!data) return null
   if (!data.children.length)
     return <Empty title="Nothing to draw — this process has no parts beneath it" />

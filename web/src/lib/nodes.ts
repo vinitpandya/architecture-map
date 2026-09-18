@@ -87,7 +87,12 @@ export const nodeHref = (id: string) => `/node?id=${encodeURIComponent(id)}`
 export const processHref = (code: string) => `/process?code=${encodeURIComponent(code)}`
 
 /** People write and say the prefix; only the storage drops it. */
-export const displayCode = (code: string) => `L${code}`
+/**
+ * `2.1.1` → `L2.1.1`. Idempotent, because §1 accepts the prefix on input
+ * everywhere — so a widget code typed as `L2.1` is a supported input, and used
+ * to come back out of here as `LL2.1`.
+ */
+export const displayCode = (code: string) => (/^[Ll]/.test(code) ? `L${code.slice(1)}` : `L${code}`)
 
 /**
  * EDGE_LABEL is written from the service's side — "Consumes", "Reads cache" —
