@@ -61,6 +61,7 @@ export const SKELETONS = [
       {
         code: '1.1.3',
         name: 'Open the wallets',
+        owner: 'wallet',
         node: 'svc:wallet-service',
         interaction: on('svc:wallet-service', 'db.write', 'db:postgres/wallet'),
         touches: ['topic:users.created.v2'],
@@ -68,6 +69,7 @@ export const SKELETONS = [
       {
         code: '1.1.4',
         name: 'Start the session',
+        owner: 'platform',
         node: 'svc:gateway-api',
         interaction: on('svc:gateway-api', 'cache.write', 'cache:redis/session'),
       },
@@ -87,24 +89,28 @@ export const SKELETONS = [
       {
         code: '1.2.3',
         name: 'Enable trading on the wallet',
+        owner: 'wallet',
         node: 'svc:wallet-service',
         interaction: on('svc:wallet-service', 'kafka.consume', 'topic:kyc.approved.v1'),
       },
-      { code: '1.3', name: 'Funding the account' },
+      { code: '1.3', name: 'Funding the account', owner: 'payments' },
       {
         code: '1.3.1',
+        owner: 'payments',
         name: 'Take the card payment',
         node: 'svc:payments-service',
         interaction: on('svc:payments-service', 'http.call', 'ext:stripe'),
       },
       {
         code: '1.3.2',
+        owner: 'payments',
         name: 'Record the payment',
         node: 'svc:payments-service',
         interaction: on('svc:payments-service', 'db.write', 'db:postgres/payments'),
       },
       {
         code: '1.3.3',
+        owner: 'payments',
         name: 'Announce the settled payment',
         node: 'svc:payments-service',
         interaction: on('svc:payments-service', 'kafka.produce', 'topic:payments.settled.v1'),
@@ -112,6 +118,7 @@ export const SKELETONS = [
       {
         code: '1.3.4',
         name: 'Post the deposit to the ledger',
+        owner: 'ledger',
         node: 'svc:ledger-service',
         interaction: on('svc:ledger-service', 'kafka.consume', 'topic:payments.settled.v1'),
         touches: ['db:postgres/ledger'],
@@ -176,6 +183,7 @@ export const SKELETONS = [
       {
         code: '3.2.2',
         name: 'Answer a report request',
+        owner: 'platform',
         node: 'svc:gateway-api',
         interaction: on('svc:gateway-api', 'http.call', 'api:reporting-service/GET /v1/reports/{}'),
       },
@@ -226,7 +234,7 @@ export function buildPacks() {
         code: p.code,
         name: p.name,
         description: prose.description,
-        owner: prose.owner ?? s.owner,
+        owner: prose.owner ?? p.owner ?? s.owner,
         actor: prose.actor,
         trigger: prose.trigger,
         outcome: prose.outcome,
