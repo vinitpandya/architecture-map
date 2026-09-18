@@ -168,13 +168,14 @@ router.get('/node', wrap(async (req, res) => {
     .prepare(`SELECT * FROM evidence WHERE subject_kind = 'node' AND subject_id = ?`)
     .all(id)
 
-  const bindings = db
-    .prepare(
-      row.kind === 'contract'
-        ? 'SELECT * FROM contract_bindings WHERE contract_id = ?'
-        : 'SELECT * FROM contract_bindings WHERE service_id = ?'
-    )
-    .all(id)
+  // Edges that name this node as the payload they carry: for a contract, the
+  // topics that carry it and the calls that pass it.
+  const viaContract = db.prepare('SELECT * FROM edges WHERE contract_id = ?').all(id).map(edgeRow)
+
+  // Which bindings are worth showing depends on what the node is. A topic's
+  // are the bindings of the contracts it carries — that is where a reader
+  // sees the skew, on the screen where it matters.
+  const bindings = bindingsFor(row, viaContract, into)
 
   const neighbourIds = [...new Set([...out.map((e) => e.to), ...into.map((e) => e.from)])]
   const neighbours = neighbourIds.length
@@ -185,16 +186,58 @@ router.get('/node', wrap(async (req, res) => {
         .map((n) => applyNodeOverrides(n, ov))
     : []
 
+  // Every citation behind every edge on this page, keyed by edge, so a row can
+  // show its file:line without a request each.
+  const edgeIds = [...out, ...into].map((e) => e.id)
+  const edgeEvidence = {}
+  if (edgeIds.length) {
+    for (const e of db
+      .prepare(
+        `SELECT * FROM evidence WHERE subject_kind = 'edge' AND subject_id IN (${edgeIds
+          .map(() => '?')
+          .join(',')})`
+      )
+      .all(...edgeIds)) {
+      ;(edgeEvidence[e.subject_id] ??= []).push(e)
+    }
+  }
+
   res.json({
     node,
     out,
     in: into,
     evidence,
+    edgeEvidence,
     bindings,
+    viaContract,
     neighbours,
     drift: db.prepare('SELECT * FROM drift WHERE subject_id = ?').all(id),
   })
 }))
+
+function bindingsFor(row, viaContract, into) {
+  const all = (ids) =>
+    ids.length
+      ? db
+          .prepare(
+            `SELECT * FROM contract_bindings WHERE contract_id IN (${ids.map(() => '?').join(',')})
+             ORDER BY contract_id, service_id`
+          )
+          .all(...ids)
+      : []
+
+  if (row.kind === 'contract') return all([row.id])
+  if (row.kind === 'service') {
+    return db
+      .prepare('SELECT * FROM contract_bindings WHERE service_id = ? ORDER BY contract_id')
+      .all(row.id)
+  }
+  if (row.kind === 'kafka.topic') {
+    const carried = [...new Set(into.map((e) => e.contractId).filter(Boolean))]
+    return all(carried)
+  }
+  return []
+}
 
 router.get('/edges', wrap(async (req, res) => {
   const kinds = list(req.query.kinds)

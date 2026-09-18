@@ -3,6 +3,14 @@
  * value comes from the tokens in theme.css so both themes stay correct.
  */
 
+/* A table wider than the card it sits in scrolls inside that card. The page
+   itself never scrolls sideways — that is the one thing a reader cannot
+   discover by looking. */
+
+.card-body {
+  overflow-x: auto;
+}
+
 /* ------------------------------------------------------------- filter row */
 
 .scope-bar {
@@ -301,4 +309,113 @@
   padding: 4px 8px;
   border-radius: 6px;
   background: var(--selected-wash);
+}
+
+/* ------------------------------------------------------------------ drift
+   The findings page is where the map proves it is still honest, so a finding
+   reads as a sentence with the evidence one click away — not as a row in a
+   table nobody expands. */
+
+.drift-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.drift-group-head h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.drift-why {
+  margin: 2px 0 8px;
+  font-size: 12px;
+  max-width: 68ch;
+}
+
+.drift-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.drift-finding {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.drift-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drift-toggle:hover {
+  background: var(--hover-wash);
+}
+
+.drift-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-warning);
+}
+
+.drift-dot.warn {
+  background: var(--status-critical);
+}
+
+.drift-subject {
+  flex-shrink: 0;
+  font-weight: 600;
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drift-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.drift-caret {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.drift-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 12px 12px 25px;
+  font-size: 12px;
+}
+
+.drift-parties {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
 }

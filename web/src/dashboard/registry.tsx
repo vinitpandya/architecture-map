@@ -1,13 +1,18 @@
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useScope } from '../lib/scope'
 import { DataGrid } from '../components/DataGrid'
+import { EvidenceList } from '../components/EvidenceList'
 import { Empty } from '../components/ui'
+import { api } from '../lib/api'
 import { EDGE_LABEL, KIND_LABEL, KIND_PLURAL, idValue, nodeHref } from '../lib/nodes'
 import { MapCanvas } from '../graph/MapCanvas'
 import { full } from '../lib/format'
 import type {
   ContractVersions,
   DriftFinding,
+  Evidence,
+  NodeDetail,
   GraphEdge,
   GraphNode,
   NodeKind,
@@ -482,28 +487,182 @@ function ContractVersionsBody({ widget }: { widget: WidgetConfig }) {
   )
 }
 
+/**
+ * What each kind of finding means, in the terms someone reading it at 9am
+ * needs. A finding nobody can act on is noise, and noise is how a map stops
+ * being opened.
+ */
+const DRIFT_KINDS: Record<string, { title: string; why: string }> = {
+  'no-producer': {
+    title: 'Topics with no producer',
+    why: 'Something is listening to a topic nothing in the scanned set writes. Either it crosses a team boundary, or the listener is dead.',
+  },
+  'no-consumer': {
+    title: 'Topics with no consumer',
+    why: 'Published, and nothing in the scanned set reads it.',
+  },
+  'version-skew': {
+    title: 'Contracts bound at more than one version',
+    why: 'One payload, several versions in production. The oldest binding is what constrains any change to it.',
+  },
+  'shared-database': {
+    title: 'Databases more than one service writes',
+    why: 'Every change to that schema is now a cross-team change, whether or not anyone has noticed.',
+  },
+  'multiple-owners': {
+    title: 'Contested ownership',
+    why: 'Two repositories claim the same thing. One of them is wrong.',
+  },
+  'near-miss': {
+    title: 'Ids that might be the same thing',
+    why: 'Two ids that normalise identically. Probably one thing spelt twice — a human decides, never the ingest.',
+  },
+  'orphan-endpoint': {
+    title: 'Endpoints nobody serves',
+    why: 'A route somebody calls that nothing in the scanned set exposes.',
+  },
+  'stale-evidence': {
+    title: 'Citations that no longer match',
+    why: 'The line a fact was read from has changed since the scan.',
+  },
+}
+
+/** The nodes named inside a finding's `data`, whatever shape that kind uses. */
+function participants(f: DriftFinding): { id: string | null; label: string; note?: string }[] {
+  const d = f.data as Record<string, unknown> | unknown[] | null
+  if (!d) return []
+  if (Array.isArray(d)) {
+    // version-skew: [{service_id, name, version}]
+    return d.map((b) => {
+      const row = b as { service_id: string; name?: string; version?: string }
+      return { id: row.service_id, label: row.name ?? idValue(row.service_id), note: row.version }
+    })
+  }
+  const list = (key: string, note: (x: never) => string | undefined = () => undefined) =>
+    ((d as Record<string, unknown>)[key] as { serviceId: string; name?: string }[] | undefined)?.map((x) => ({
+      id: x.serviceId,
+      label: x.name ?? idValue(x.serviceId),
+      note: note(x as never),
+    }))
+
+  const services = (d as { services?: { serviceId: string; name?: string; how?: string }[] }).services
+  if (services) return services.map((x) => ({ id: x.serviceId, label: x.name ?? idValue(x.serviceId), note: x.how }))
+
+  const claims = (d as { claims?: { repo: string; kind: string }[] }).claims
+  if (claims) return claims.map((c) => ({ id: null, label: c.repo, note: c.kind }))
+
+  const ids = (d as { ids?: string[] }).ids
+  if (ids) return ids.map((id) => ({ id, label: id }))
+
+  return list('consumers') ?? list('producers') ?? list('callers') ?? []
+}
+
 function DriftBody({ widget }: { widget: WidgetConfig }) {
+  const { status } = useScope()
   const { data } = useQuery<{ findings: DriftFinding[] }>('/drift', {
     severity: widget.options.severity || '',
   })
   if (!data) return null
-  if (!data.findings.length) return <Empty title="No drift detected" />
+  if (!data.findings.length) {
+    const n = status?.repos.length ?? 0
+    return (
+      <Empty title={`No drift detected across ${n} ${n === 1 ? 'repo' : 'repos'}`}>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {n
+            ? 'Every topic has a producer, every contract one version, every database one writer.'
+            : 'Nothing has been ingested yet, so there is nothing to disagree about.'}
+        </span>
+      </Empty>
+    )
+  }
+
+  const byKind = new Map<string, DriftFinding[]>()
+  for (const f of data.findings) {
+    if (!byKind.has(f.kind)) byKind.set(f.kind, [])
+    byKind.get(f.kind)!.push(f)
+  }
 
   return (
-    <DataGrid
-      rows={data.findings}
-      rowKey={(f) => f.id}
-      columns={[
-        { key: 'kind', label: 'Finding', value: (f) => f.kind },
-        {
-          key: 'subject_id',
-          label: 'Subject',
-          value: (f) => (f.subject_id ? idValue(f.subject_id) : ''),
-          render: (f) => (f.subject_id ? <NodeLink id={f.subject_id} /> : '—'),
-        },
-        { key: 'detail', label: 'Detail', wide: true, value: (f) => f.detail },
-      ]}
-    />
+    <div className="stack" style={{ gap: 14 }}>
+      {[...byKind].map(([kind, findings]) => (
+        <section key={kind}>
+          <div className="drift-group-head">
+            <h4>{DRIFT_KINDS[kind]?.title ?? kind}</h4>
+            <span className="pill">{findings.length}</span>
+          </div>
+          {DRIFT_KINDS[kind] && <p className="muted drift-why">{DRIFT_KINDS[kind].why}</p>}
+          <ul className="drift-list">
+            {findings.map((f) => (
+              <Finding key={f.id} finding={f} />
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+function Finding({ finding }: { finding: DriftFinding }) {
+  const [open, setOpen] = useState(false)
+  const [evidence, setEvidence] = useState<Evidence[] | null>(null)
+  const who = participants(finding)
+
+  // The citations are fetched when a finding is opened, not for all of them up
+  // front — most findings are never expanded.
+  useEffect(() => {
+    if (!open || evidence || !finding.subject_id) return
+    let cancelled = false
+    api
+      .get<NodeDetail>('/node', { id: finding.subject_id })
+      .then((d) => !cancelled && setEvidence(d.evidence.slice(0, 3)))
+      .catch(() => !cancelled && setEvidence([]))
+    return () => {
+      cancelled = true
+    }
+  }, [open, evidence, finding.subject_id])
+
+  return (
+    <li className={`drift-finding ${finding.severity}`}>
+      <button type="button" className="drift-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span className={`drift-dot ${finding.severity}`} aria-hidden="true" />
+        <span className="drift-subject">
+          {finding.subject_id ? idValue(finding.subject_id) : 'the estate'}
+        </span>
+        <span className="drift-detail">{finding.detail}</span>
+        <span className="drift-caret" aria-hidden="true">
+          {open ? '−' : '+'}
+        </span>
+      </button>
+
+      {open && (
+        <div className="drift-body">
+          {who.length > 0 && (
+            <ul className="drift-parties">
+              {who.map((p) => (
+                <li key={`${p.id ?? ''}${p.label}`}>
+                  {p.id ? <NodeLink id={p.id} label={p.label} /> : <code>{p.label}</code>}
+                  {p.note && <span className="muted"> · {p.note}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+          {finding.subject_id && (
+            <>
+              {evidence === null ? (
+                <span className="spinner" />
+              ) : evidence.length ? (
+                <EvidenceList evidence={evidence} />
+              ) : (
+                <p className="muted" style={{ fontSize: 12 }}>
+                  No citation on the subject itself — its edges carry the evidence.
+                </p>
+              )}
+              <Link to={nodeHref(finding.subject_id)}>Open details →</Link>
+            </>
+          )}
+        </div>
+      )}
+    </li>
   )
 }
 

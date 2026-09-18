@@ -135,12 +135,20 @@ export type Status = {
   lastIngestAt: string | null
 }
 
+export type ContractBinding = { contract_id: string; service_id: string; version: string | null }
+
 export type NodeDetail = {
   node: GraphNode
   out: GraphEdge[]
   in: GraphEdge[]
   evidence: Evidence[]
-  bindings: { contract_id: string; service_id: string; version: string | null }[]
+  /** Citations behind each edge on this page, keyed by edge id. */
+  edgeEvidence: Record<string, Evidence[]>
+  /** For a contract its own bindings, for a service its own, for a topic the
+   *  bindings of whatever contract it carries — which is where skew shows. */
+  bindings: ContractBinding[]
+  /** Edges that name this node as the payload they carry. */
+  viaContract: GraphEdge[]
   neighbours: GraphNode[]
   drift: DriftFinding[]
 }

@@ -1,12 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, type NodeDetail } from '../lib/api'
+import { api, type Evidence, type GraphEdge, type GraphNode, type NodeDetail } from '../lib/api'
 import { Card, Empty } from '../components/ui'
-import { DataGrid } from '../components/DataGrid'
+import { DataGrid, type GridColumn } from '../components/DataGrid'
 import { EvidenceList } from '../components/EvidenceList'
 import { EDGE_LABEL, KIND_LABEL, idValue, nodeHref } from '../lib/nodes'
 
 /**
+ * What a node is, who touches it, and where in the source that is written
+ * down. The shape of the page follows the kind: the question you have about a
+ * Kafka topic is not the question you have about a database, and a single
+ * in/out table answers neither of them well.
+ *
  * Node ids carry `:`, `/`, spaces and `{}`, so they travel as a query
  * parameter and never as a path segment.
  */
@@ -15,6 +20,7 @@ export function NodePage() {
   const id = params.get('id') ?? ''
   const [data, setData] = useState<NodeDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -28,26 +34,13 @@ export function NodePage() {
     return () => {
       cancelled = true
     }
-  }, [id])
+  }, [id, reload])
 
   if (!id) return <div className="page"><Empty title="No node selected" /></div>
   if (error) return <div className="page"><Empty title={error}><code>{id}</code></Empty></div>
   if (!data) return null
 
   const { node } = data
-  const edgeColumns = (side: 'from' | 'to') => [
-    { key: 'kind', label: 'Relationship', value: (e: NodeDetail['out'][number]) => EDGE_LABEL[e.kind] ?? e.kind },
-    {
-      key: 'other',
-      label: side === 'to' ? 'Target' : 'Source',
-      value: (e: NodeDetail['out'][number]) => idValue(side === 'to' ? e.to : e.from),
-      render: (e: NodeDetail['out'][number]) => (
-        <Link to={nodeHref(side === 'to' ? e.to : e.from)}>{idValue(side === 'to' ? e.to : e.from)}</Link>
-      ),
-    },
-    { key: 'description', label: 'What it does', wide: true, value: (e: NodeDetail['out'][number]) => e.description ?? '' },
-    { key: 'confidence', label: 'Confidence', value: (e: NodeDetail['out'][number]) => e.confidence },
-  ]
 
   return (
     <div className="page">
@@ -58,18 +51,26 @@ export function NodePage() {
             <span className="pill">{KIND_LABEL[node.kind]}</span>{' '}
             {node.ownerRepo ? <>owned by <code>{node.ownerRepo}</code></> : 'no owning repo'}
             {node.team ? <> · {node.team}</> : null}
-            {node.orphan ? <> · referenced but never declared</> : null}
+            {node.language ? <> · {node.language}</> : null}
+            {node.engine ? <> · {node.engine}</> : null}
           </p>
         </div>
       </div>
 
       <code className="muted" style={{ fontSize: 12 }}>{node.id}</code>
 
-      {node.description && <p>{node.description}</p>}
+      {node.orphan && (
+        <p className="muted">
+          Referenced by a scanned repository but never declared by one. Either the other end lives
+          outside the scanned set, or somebody is talking to something that no longer exists.
+        </p>
+      )}
+
+      <Description node={node} onSaved={() => setReload((n) => n + 1)} />
 
       {data.drift.length > 0 && (
-        <Card title="Findings">
-          <ul>
+        <Card title={`Findings (${data.drift.length})`} sub="What the link pass noticed about this node">
+          <ul className="stack" style={{ gap: 6, margin: 0, paddingLeft: 18 }}>
             {data.drift.map((f) => (
               <li key={f.id}>
                 <strong>{f.kind}</strong> — {f.detail}
@@ -79,39 +80,516 @@ export function NodePage() {
         </Card>
       )}
 
-      <Card title={`Outgoing (${data.out.length})`}>
-        {data.out.length ? (
-          <DataGrid rows={data.out} columns={edgeColumns('to')} rowKey={(e) => e.id} />
-        ) : (
-          <Empty title="Nothing outgoing" />
-        )}
-      </Card>
+      <KindBody detail={data} />
 
-      <Card title={`Incoming (${data.in.length})`}>
-        {data.in.length ? (
-          <DataGrid rows={data.in} columns={edgeColumns('from')} rowKey={(e) => e.id} />
-        ) : (
-          <Empty title="Nothing incoming" />
-        )}
-      </Card>
-
-      {data.bindings.length > 0 && (
-        <Card title="Contract versions">
-          <DataGrid
-            rows={data.bindings}
-            rowKey={(b) => `${b.contract_id}|${b.service_id}`}
-            columns={[
-              { key: 'contract', label: 'Contract', value: (b) => idValue(b.contract_id) },
-              { key: 'service', label: 'Service', value: (b) => idValue(b.service_id) },
-              { key: 'version', label: 'Version', value: (b) => b.version ?? '' },
-            ]}
-          />
-        </Card>
-      )}
-
-      <Card title="Evidence" sub="Where this is visible in the source">
+      <Card title="Evidence" sub="Where this node is visible in the source">
         <EvidenceList evidence={data.evidence} />
       </Card>
     </div>
+  )
+}
+
+/* ------------------------------------------------------------ description */
+
+/**
+ * A correction written here becomes an `overrides` row, which ingest never
+ * reads or writes. That separation is the whole reason a re-scan cannot eat
+ * somebody's work.
+ */
+function Description({ node, onSaved }: { node: GraphNode; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(node.description ?? '')
+  const [saving, setSaving] = useState(false)
+
+  const save = async (value: string | null) => {
+    setSaving(true)
+    try {
+      if (value === null) {
+        await api.del(
+          `/override?subjectKind=node&subjectId=${encodeURIComponent(node.id)}&field=description`
+        )
+      } else {
+        await api.put('/override', {
+          subjectKind: 'node',
+          subjectId: node.id,
+          field: 'description',
+          value,
+        })
+      }
+      setEditing(false)
+      onSaved()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <p>
+        {node.description || <span className="muted">No description.</span>}{' '}
+        <button
+          type="button"
+          className="ghost"
+          style={{ padding: '1px 6px', fontSize: 12 }}
+          onClick={() => {
+            setDraft(node.description ?? '')
+            setEditing(true)
+          }}
+        >
+          Edit
+        </button>
+      </p>
+    )
+  }
+
+  return (
+    <form
+      className="stack"
+      style={{ gap: 8, maxWidth: 680 }}
+      onSubmit={(e) => {
+        e.preventDefault()
+        void save(draft.trim())
+      }}
+    >
+      <textarea
+        value={draft}
+        rows={3}
+        autoFocus
+        aria-label="Description"
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <div className="row" style={{ gap: 8 }}>
+        <button type="submit" className="primary" disabled={saving}>
+          Save correction
+        </button>
+        <button type="button" className="ghost" onClick={() => setEditing(false)}>
+          Cancel
+        </button>
+        <button type="button" className="ghost" onClick={() => void save(null)} disabled={saving}>
+          Revert to the scan
+        </button>
+        <span className="muted" style={{ fontSize: 12 }}>
+          Corrections live outside the derived topology, so the next scan cannot undo them.
+        </span>
+      </div>
+    </form>
+  )
+}
+
+/* -------------------------------------------------------------- per kind */
+
+function KindBody({ detail }: { detail: NodeDetail }) {
+  switch (detail.node.kind) {
+    case 'kafka.topic': return <TopicBody detail={detail} />
+    case 'service': return <ServiceBody detail={detail} />
+    case 'contract': return <ContractBody detail={detail} />
+    case 'database':
+    case 'cache': return <StoreBody detail={detail} />
+    case 'endpoint': return <EndpointBody detail={detail} />
+    default: return <ExternalBody detail={detail} />
+  }
+}
+
+/** The screen this whole project was asked for. */
+function TopicBody({ detail }: { detail: NodeDetail }) {
+  const producers = detail.in.filter((e) => e.kind === 'kafka.produce')
+  const consumers = detail.in.filter((e) => e.kind === 'kafka.consume')
+  const contracts = [...new Set(detail.in.map((e) => e.contractId).filter(Boolean))] as string[]
+  const skewed = new Set(
+    contracts.filter(
+      (c) => new Set(detail.bindings.filter((b) => b.contract_id === c).map((b) => b.version)).size > 1
+    )
+  )
+
+  return (
+    <>
+      <div className="row" style={{ gap: 14, alignItems: 'flex-start' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Card
+            title={`Producers (${producers.length})`}
+            sub={producers.length ? undefined : 'Nobody in the scanned set writes to this topic'}
+          >
+            {producers.length ? (
+              <PartyGrid rows={producers} detail={detail} side="from" storageKey="topic-producers" />
+            ) : (
+              <Empty title="No producer">
+                <span className="muted" style={{ fontSize: 12 }}>
+                  Either another team owns it, or every listener below is dead. Both are worth
+                  knowing; neither is smoothed over.
+                </span>
+              </Empty>
+            )}
+          </Card>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Card title={`Consumers (${consumers.length})`}>
+            {consumers.length ? (
+              <PartyGrid rows={consumers} detail={detail} side="from" storageKey="topic-consumers" />
+            ) : (
+              <Empty title="Nothing reads this topic" />
+            )}
+          </Card>
+        </div>
+      </div>
+
+      {contracts.length > 0 && (
+        <Card
+          title="Payload"
+          sub={
+            skewed.size
+              ? 'These services are not all on the same version of what this topic carries'
+              : 'Every service on this topic binds the same version'
+          }
+        >
+          {contracts.map((c) => (
+            <div key={c} style={{ marginBottom: 10 }}>
+              <p style={{ margin: '0 0 6px' }}>
+                <Link to={nodeHref(c)}>{idValue(c)}</Link>{' '}
+                {skewed.has(c) && (
+                  <span className="pill" style={{ color: 'var(--status-critical)' }}>
+                    version skew
+                  </span>
+                )}
+              </p>
+              <BindingGrid
+                bindings={detail.bindings.filter((b) => b.contract_id === c)}
+                storageKey="topic-bindings"
+              />
+            </div>
+          ))}
+        </Card>
+      )}
+    </>
+  )
+}
+
+function ServiceBody({ detail }: { detail: NodeDetail }) {
+  const out = (kinds: string[]) => detail.out.filter((e) => kinds.includes(e.kind))
+  const into = (kinds: string[]) => detail.in.filter((e) => kinds.includes(e.kind))
+
+  return (
+    <>
+      <div className="row" style={{ gap: 14, alignItems: 'flex-start' }}>
+        <Side title="Produces" rows={out(['kafka.produce'])} detail={detail} side="to" storageKey="svc-produces" />
+        <Side title="Consumes" rows={out(['kafka.consume'])} detail={detail} side="to" storageKey="svc-consumes" />
+      </div>
+      <div className="row" style={{ gap: 14, alignItems: 'flex-start' }}>
+        <Side title="Calls" rows={out(['http.call'])} detail={detail} side="to" storageKey="svc-calls" />
+        <Side
+          title="Called by"
+          rows={into(['http.call'])}
+          detail={detail}
+          side="from"
+          storageKey="svc-called-by"
+          empty="Nothing in the scanned set calls this service"
+        />
+      </div>
+
+      <Card title="Stores" sub="Databases and caches this service owns, writes or reads">
+        {out(['db.owns', 'db.write', 'db.read', 'cache.read', 'cache.write']).length ? (
+          <PartyGrid
+            rows={out(['db.owns', 'db.write', 'db.read', 'cache.read', 'cache.write'])}
+            detail={detail}
+            side="to"
+            storageKey="svc-stores"
+          />
+        ) : (
+          <Empty title="No database or cache" />
+        )}
+      </Card>
+
+      <Card title="Exposes">
+        {out(['http.expose']).length ? (
+          <PartyGrid rows={out(['http.expose'])} detail={detail} side="to" storageKey="svc-exposes" />
+        ) : (
+          <Empty title="Serves no HTTP endpoint" />
+        )}
+      </Card>
+
+      {detail.bindings.length > 0 && (
+        <Card title="Contracts" sub="What this service binds, and at which version">
+          <BindingGrid bindings={detail.bindings} storageKey="svc-bindings" by="contract" />
+        </Card>
+      )}
+    </>
+  )
+}
+
+function ContractBody({ detail }: { detail: NodeDetail }) {
+  const versions = new Set(detail.bindings.map((b) => b.version))
+  const topics = detail.viaContract.filter((e) => e.kind === 'topic.schema')
+
+  return (
+    <>
+      <Card
+        title={`Bound by ${detail.bindings.length} service${detail.bindings.length === 1 ? '' : 's'}`}
+        sub={
+          versions.size > 1
+            ? `${versions.size} different versions are in use — the lowest is the one that constrains a change`
+            : 'Every service is on the same version'
+        }
+      >
+        {detail.bindings.length ? (
+          <BindingGrid bindings={detail.bindings} storageKey="contract-bindings" skew={versions.size > 1} />
+        ) : (
+          <Empty title="Nothing binds this contract" />
+        )}
+      </Card>
+
+      <Card title="Carried by" sub="The topics and calls this payload travels on">
+        {topics.length || detail.viaContract.length ? (
+          <DataGrid
+            rows={detail.viaContract}
+            rowKey={(e) => e.id}
+            storageKey="contract-carriers"
+            columns={[
+              { key: 'to', label: 'Carrier', value: (e) => idValue(e.to), render: (e) => <Link to={nodeHref(e.to)}>{idValue(e.to)}</Link> },
+              { key: 'kind', label: 'Via', value: (e) => EDGE_LABEL[e.kind] ?? e.kind },
+              { key: 'from', label: 'Declared by', value: (e) => idValue(e.from), render: (e) => <Link to={nodeHref(e.from)}>{idValue(e.from)}</Link> },
+            ]}
+          />
+        ) : (
+          <Empty title="No topic declares this contract" />
+        )}
+      </Card>
+    </>
+  )
+}
+
+function StoreBody({ detail }: { detail: NodeDetail }) {
+  const group = (kinds: string[]) => detail.in.filter((e) => kinds.includes(e.kind))
+  const owners = group(['db.owns'])
+  const writers = group(['db.write', 'cache.write'])
+  const readers = group(['db.read', 'cache.read'])
+
+  return (
+    <>
+      <Card title={`Owner${owners.length === 1 ? '' : 's'}`} sub="Whoever holds the migrations">
+        {owners.length ? (
+          <PartyGrid rows={owners} detail={detail} side="from" storageKey="store-owners" />
+        ) : (
+          <Empty title="No repository claims this store">
+            <span className="muted" style={{ fontSize: 12 }}>
+              Nothing in the scanned set holds its migrations.
+            </span>
+          </Empty>
+        )}
+      </Card>
+      <div className="row" style={{ gap: 14, alignItems: 'flex-start' }}>
+        <Side
+          title="Writers"
+          rows={writers}
+          detail={detail}
+          side="from"
+          storageKey="store-writers"
+          empty="Nothing writes here"
+        />
+        <Side
+          title="Readers"
+          rows={readers}
+          detail={detail}
+          side="from"
+          storageKey="store-readers"
+          empty="Nothing reads here"
+        />
+      </div>
+    </>
+  )
+}
+
+function EndpointBody({ detail }: { detail: NodeDetail }) {
+  const exposed = detail.in.filter((e) => e.kind === 'http.expose')
+  const callers = detail.in.filter((e) => e.kind === 'http.call')
+
+  return (
+    <>
+      <Card title="Served by">
+        {exposed.length ? (
+          <PartyGrid rows={exposed} detail={detail} side="from" storageKey="endpoint-server" />
+        ) : (
+          <Empty title="No scanned repository serves this route">
+            <span className="muted" style={{ fontSize: 12 }}>
+              Somebody is calling it, so either it lives outside the scanned set or the callers are
+              pointing at nothing.
+            </span>
+          </Empty>
+        )}
+      </Card>
+      <Card title={`Callers (${callers.length})`}>
+        {callers.length ? (
+          <PartyGrid rows={callers} detail={detail} side="from" storageKey="endpoint-callers" />
+        ) : (
+          <Empty title="Nothing in the scanned set calls this endpoint" />
+        )}
+      </Card>
+    </>
+  )
+}
+
+function ExternalBody({ detail }: { detail: NodeDetail }) {
+  return (
+    <Card title={`Callers (${detail.in.length})`} sub="Who in the estate depends on this third party">
+      {detail.in.length ? (
+        <PartyGrid rows={detail.in} detail={detail} side="from" storageKey="external-callers" />
+      ) : (
+        <Empty title="Nothing calls this" />
+      )}
+    </Card>
+  )
+}
+
+/* ---------------------------------------------------------------- pieces */
+
+function Side({
+  title,
+  rows,
+  detail,
+  side,
+  storageKey,
+  empty = 'Nothing here',
+}: {
+  title: string
+  rows: GraphEdge[]
+  detail: NodeDetail
+  side: 'from' | 'to'
+  storageKey: string
+  empty?: string
+}) {
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <Card title={`${title} (${rows.length})`}>
+        {rows.length ? (
+          <PartyGrid rows={rows} detail={detail} side={side} storageKey={storageKey} />
+        ) : (
+          <Empty title={empty} />
+        )}
+      </Card>
+    </div>
+  )
+}
+
+/**
+ * The other end of a set of edges, with what it is for and the citation that
+ * proves it. Every row on every one of these pages is one of these.
+ */
+function PartyGrid({
+  rows,
+  detail,
+  side,
+  storageKey,
+}: {
+  rows: GraphEdge[]
+  detail: NodeDetail
+  side: 'from' | 'to'
+  storageKey: string
+}) {
+  const named = useMemo(
+    () => new Map(detail.neighbours.map((n) => [n.id, n] as const)),
+    [detail.neighbours]
+  )
+  const other = (e: GraphEdge) => (side === 'to' ? e.to : e.from)
+  const label = (e: GraphEdge) => named.get(other(e))?.name ?? idValue(other(e))
+
+  // When every row is the same relationship the card title already said so,
+  // and the column is a stripe of repeated text in a narrow card.
+  const mixed = new Set(rows.map((e) => e.kind)).size > 1
+
+  const columns: GridColumn<GraphEdge>[] = [
+    {
+      key: 'party',
+      label: side === 'to' ? 'Target' : 'Source',
+      value: label,
+      render: (e) => <Link to={nodeHref(other(e))}>{label(e)}</Link>,
+    },
+    ...(mixed
+      ? [{ key: 'kind', label: 'Relationship', value: (e: GraphEdge) => EDGE_LABEL[e.kind] ?? e.kind }]
+      : []),
+    { key: 'description', label: 'What it is for', wide: true, value: (e) => e.description ?? '' },
+    {
+      key: 'evidence',
+      label: 'Evidence',
+      value: (e) => citation(detail.edgeEvidence[e.id])?.file ?? '',
+      render: (e) => <Citation evidence={detail.edgeEvidence[e.id]} />,
+    },
+    { key: 'confidence', label: 'Confidence', value: (e) => e.confidence },
+  ]
+
+  return <DataGrid rows={rows} rowKey={(e) => e.id} columns={columns} storageKey={storageKey} />
+}
+
+const citation = (evidence?: Evidence[]) => evidence?.[0]
+
+/**
+ * Enough of the path to recognise the file, in a column narrow enough to sit
+ * beside three others. The whole citation and the line itself are on the title,
+ * and the node's own evidence list below carries all of them in full.
+ */
+function Citation({ evidence }: { evidence?: Evidence[] }) {
+  const first = citation(evidence)
+  if (!first) return <span className="muted">—</span>
+  const more = (evidence?.length ?? 0) - 1
+  const parts = first.file.split('/')
+  const short = parts.slice(-2).join('/')
+  return (
+    <code
+      className="muted"
+      title={`${first.repo} · ${first.file}:${first.line}\n${first.snippet}`}
+      style={{ fontSize: 11 }}
+    >
+      {parts.length > 2 ? '…/' : ''}
+      {short}:{first.line}
+      {more > 0 ? ` +${more}` : ''}
+    </code>
+  )
+}
+
+function BindingGrid({
+  bindings,
+  storageKey,
+  by = 'service',
+  skew,
+}: {
+  bindings: NodeDetail['bindings']
+  storageKey: string
+  by?: 'service' | 'contract'
+  skew?: boolean
+}) {
+  // Sorted by version so a divergence is one glance, not a hunt down a column.
+  const rows = [...bindings].sort(
+    (a, b) => String(a.version).localeCompare(String(b.version)) || a.service_id.localeCompare(b.service_id)
+  )
+  const lowest = rows[0]?.version
+
+  return (
+    <DataGrid
+      rows={rows}
+      rowKey={(b) => `${b.contract_id}|${b.service_id}`}
+      storageKey={storageKey}
+      columns={[
+        by === 'contract'
+          ? {
+              key: 'contract',
+              label: 'Contract',
+              value: (b) => idValue(b.contract_id),
+              render: (b) => <Link to={nodeHref(b.contract_id)}>{idValue(b.contract_id)}</Link>,
+            }
+          : {
+              key: 'service',
+              label: 'Service',
+              value: (b) => idValue(b.service_id),
+              render: (b) => <Link to={nodeHref(b.service_id)}>{idValue(b.service_id)}</Link>,
+            },
+        {
+          key: 'version',
+          label: 'Version',
+          value: (b) => b.version ?? '',
+          render: (b) => (
+            <span style={skew && b.version === lowest ? { color: 'var(--status-critical)' } : undefined}>
+              {b.version ?? '—'}
+            </span>
+          ),
+        },
+      ]}
+    />
   )
 }
