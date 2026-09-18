@@ -123,8 +123,12 @@ function fromActivePacks() {
     for (const p of parsed.processes ?? []) {
       const code = String(p.code ?? '').trim().replace(/^[Ll]/, '')
       const id = `proc:${code}`
-      if (!owners.has(code)) owners.set(code, new Set())
-      owners.get(code).add(row.pack)
+      // Counted rather than set-collected: a pack that declares one code twice
+      // silently loses a process, and that is the same error as two packs
+      // colliding — the row can only hold the last writer either way.
+      if (!owners.has(code)) owners.set(code, new Map())
+      const claims = owners.get(code)
+      claims.set(row.pack, (claims.get(row.pack) ?? 0) + 1)
       if (!p.touches?.length) continue
       if (!touches.has(id)) touches.set(id, new Set())
       for (const nodeId of p.touches) touches.get(id).add(nodeId)
@@ -489,16 +493,21 @@ function processFindings(write, { nodes, nameOf, label }) {
     }
   }
 
-  /* two packs claiming one number. The processes row can only hold the last
-     writer, so this is read off the packs themselves. */
+  /* one number, two claims. The processes row can only hold the last writer,
+     so this is read off the packs themselves — including a pack that declares
+     the same code twice, which loses a process just as quietly. */
   for (const [code, claimed] of owners) {
-    if (claimed.size < 2) continue
+    const total = [...claimed.values()].reduce((a, b) => a + b, 0)
+    if (total < 2) continue
+    const packs = [...claimed.keys()].sort()
     write(
       'process-duplicate-code',
       `proc:${code}`,
       'warn',
-      `${andList([...claimed].sort())} both declare L${code}. Codes are cited in tickets, so one pack has to renumber — a human decides which.`,
-      { code, packs: [...claimed].sort() }
+      packs.length > 1
+        ? `${andList(packs)} both declare L${code}. Codes are cited in tickets, so one pack has to renumber — a human decides which, and until then only one of the two is in the map.`
+        : `${packs[0]} declares L${code} ${total} times. Only the last one is in the map; the others were quietly overwritten.`,
+      { code, packs, claims: [...claimed].map(([pack, times]) => ({ pack, times })) }
     )
   }
 

@@ -185,15 +185,20 @@ const upsertPack = db.transaction((json, sourceFile, now) => {
     // topology stays unresolved and becomes a finding in the link pass.
   }
 
+  // Counted off the distinct codes, not the array: a pack that declares one
+  // code twice writes one row, and the log should say so rather than repeat
+  // the number the author offered.
+  const codes = new Set((json.processes ?? []).map((p) => normaliseCode(p.code)))
   const levels = {}
-  for (const p of json.processes ?? []) levels[levelOf(p.code)] = (levels[levelOf(p.code)] ?? 0) + 1
+  for (const code of codes) levels[levelOf(code)] = (levels[levelOf(code)] ?? 0) + 1
 
   return {
     ok: true,
     pack,
     packId,
     counts: {
-      processes: json.processes?.length ?? 0,
+      processes: codes.size,
+      declared: json.processes?.length ?? 0,
       level1: levels[1] ?? 0,
       level2: levels[2] ?? 0,
       level3: levels[3] ?? 0,
