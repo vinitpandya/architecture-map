@@ -194,9 +194,13 @@ function rebuildProcessRollup() {
     }
   }
 
-  // 3 · upward, deepest first, so a level 3's components reach the level 1
+  // 3 · upward, deepest first, so a level 3's components reach the level 1.
+  // A parent that does not exist gets nothing: an orphan code (3.4.1 with no
+  // 3.4) is a finding, and rolling into a phantom id would put rows in the
+  // join for a process no page can open.
+  const real = new Set(procs.map((p) => p.id))
   for (const p of [...procs].sort((a, b) => b.level - a.level)) {
-    if (!p.parent_id) continue
+    if (!p.parent_id || !real.has(p.parent_id)) continue
     for (const nodeId of [...bag(comps, p.id).keys()]) addComp(p.parent_id, nodeId, 'rollup')
     for (const edgeId of [...bag(edges, p.id).keys()]) addEdge(p.parent_id, edgeId, 'rollup')
   }
@@ -447,10 +451,11 @@ function processFindings(write, { nodes, nameOf, label }) {
 
     /* the most interesting finding in the tool: both ends are real, and the
        relationship between them is not. The document describes a call the code
-       does not make. Reported only when nothing is missing underneath it — a
-       missing component is the root cause, and root causes do not get reported
-       twice. */
-    if (p.edge_from && !p.edge_id && !missing.length) {
+       does not make. Suppressed only when one of the interaction's OWN ends is
+       missing — there the missing component is the root cause and this would be
+       the same fact twice. A typo in an unrelated `touches` entry is not a root
+       cause for this, and must not hide it. */
+    if (p.edge_from && !p.edge_id && known.has(p.edge_from) && known.has(p.edge_to)) {
       write(
         'process-missing-interaction',
         p.id,

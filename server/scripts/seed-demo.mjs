@@ -4,7 +4,8 @@
  * demo/manifests/, then ingests them through the real ingest path.
  *
  *   npm run seed:demo
- *   npm run seed:demo -- --remove     clear it again
+ *   npm run seed:demo -- --remove     clear it out of the database again
+ *   npm run seed:demo -- --remove --files   …and delete the generated files
  *   npm run seed:demo -- --write-only just rewrite the manifests
  *
  * The real service repositories are not available to this build, so this
@@ -29,7 +30,7 @@ const REPOS = SERVICES.map((s) => s.repo)
 const args = process.argv.slice(2)
 
 if (args.includes('--remove')) {
-  remove()
+  remove({ files: args.includes('--files') })
 } else {
   seed({ writeOnly: args.includes('--write-only') })
 }
@@ -100,7 +101,13 @@ function seed({ writeOnly }) {
   summarise()
 }
 
-function remove() {
+/**
+ * Clears the demo estate out of the database. The generated files under
+ * `demo/` are committed fixtures — `npm run verify` ends with this, and a
+ * verification run that silently deletes thirteen tracked files is a worse
+ * bug than anything it could find. Deleting them is opt-in: `--files`.
+ */
+function remove({ files = false } = {}) {
   const marks = REPOS.map(() => '?').join(',')
   const packMarks = PACK_IDS.map(() => '?').join(',')
   db.transaction(() => {
@@ -119,21 +126,26 @@ function remove() {
   rebuildSearch()
 
   let removed = 0
-  for (const [dir, names] of [
-    [DIR, REPOS],
-    [PACK_DIR, PACK_IDS],
-  ]) {
-    if (!fs.existsSync(dir)) continue
-    for (const name of names) {
-      const file = path.join(dir, `${name}.json`)
-      if (fs.existsSync(file)) {
-        fs.unlinkSync(file)
-        removed++
+  if (files) {
+    for (const [dir, names] of [
+      [DIR, REPOS],
+      [PACK_DIR, PACK_IDS],
+    ]) {
+      if (!fs.existsSync(dir)) continue
+      for (const name of names) {
+        const file = path.join(dir, `${name}.json`)
+        if (fs.existsSync(file)) {
+          fs.unlinkSync(file)
+          removed++
+        }
       }
     }
   }
   console.log(
-    `Removed the demo estate: ${removed} files, ${REPOS.length} repos and ${PACK_IDS.length} process packs cleared from the database.`
+    `Cleared the demo estate from the database: ${REPOS.length} repos and ${PACK_IDS.length} process packs.` +
+      (files
+        ? ` Deleted ${removed} generated file(s) under demo/.`
+        : ' The files under demo/ are left alone — pass --files to delete them too.')
   )
   summarise()
 }

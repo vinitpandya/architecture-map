@@ -248,7 +248,9 @@ export const WIDGETS: WidgetDef[] = [
   },
   {
     type: 'process-children',
-    label: 'Process steps',
+    // Not "steps": the levels are decomposition, and a child says the same
+    // thing as its parent in more detail rather than being a stage of it.
+    label: 'Process parts',
     desc: "One process's parts, in order, with what each one touches",
     w: 7, h: 5, minW: 4, minH: 3,
     fields: [PROCESS_FIELD],
@@ -916,7 +918,10 @@ function ProcessChildrenBody({ widget }: { widget: WidgetConfig }) {
             !p.edge ? (
               <span className="muted">—</span>
             ) : (
-              <span className={p.unresolved.edge ? 'proc-missing' : undefined}>
+              <span
+                className={p.unresolved.edge ? 'proc-missing' : undefined}
+                title={p.unresolved.edge ? 'No scanned repository does this' : undefined}
+              >
                 {EDGE_LABEL[p.edge.kind]} {idValue(p.edge.to)}
               </span>
             ),

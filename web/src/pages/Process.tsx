@@ -317,7 +317,7 @@ function Binding({ process, compact }: { process: Process; compact?: boolean }) 
           )}
         </span>
       )}
-      {process.edge && <Interaction edge={process.edge} unresolved={process.unresolved.edge} />}
+      {process.edge && <Interaction edge={process.edge} unresolved={process.unresolved} />}
     </div>
   )
 }
@@ -332,20 +332,28 @@ function Interaction({
   unresolved,
 }: {
   edge: { from: string; kind: string; to: string }
-  unresolved: boolean
+  unresolved: Process['unresolved']
 }) {
   const { source, target } = flowDirection(edge as Parameters<typeof flowDirection>[0])
   const verb = flowVerb(edge.kind as Parameters<typeof flowVerb>[0])
+  // Each end answers for itself. An interaction can be missing while both its
+  // ends are one click away — that is the finding — so a component is only
+  // struck through when the map genuinely does not have it. flowDirection may
+  // swap the ends, so the flags travel with the ids rather than the words.
+  const absent = (id: string) => (id === edge.from ? unresolved.edgeFrom : unresolved.edgeTo)
+  const end = (id: string) =>
+    absent(id) ? <Unresolved id={id} /> : <Link to={nodeHref(id)}>{idValue(id)}</Link>
+
   return (
     <span className="proc-bind-part">
-      {unresolved ? <Unresolved id={source} /> : <Link to={nodeHref(source)}>{idValue(source)}</Link>}
+      {end(source)}
       <span className="proc-arrow" aria-label={verb}>
         {' '}
         — {verb} →{' '}
       </span>
-      {unresolved ? <Unresolved id={target} /> : <Link to={nodeHref(target)}>{idValue(target)}</Link>}
-      {unresolved && (
-        <span className="proc-missing-note" title="Both ends may exist; this relationship is not in the code">
+      {end(target)}
+      {unresolved.edge && !absent(source) && !absent(target) && (
+        <span className="proc-missing-note" title="Both ends exist; this relationship is not in the code">
           not in the map
         </span>
       )}

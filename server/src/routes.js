@@ -706,9 +706,16 @@ const processRow = (r) => ({
   edge: r.edge_from ? { id: r.edge_id, from: r.edge_from, kind: r.edge_kind, to: r.edge_to } : null,
   childCount: r.child_count ?? 0,
   componentCount: r.component_count ?? 0,
+  // Three separate facts, because they have three separate answers. An
+  // interaction whose ends both exist but whose relationship the code does not
+  // have is the most interesting case in the tool, and reporting it as "these
+  // components do not exist" would be plainly false — both of them are one
+  // click away.
   unresolved: {
     node: !!r.node_id && !r.node_known,
     edge: !!r.edge_from && !r.edge_id,
+    edgeFrom: !!r.edge_from && !r.edge_from_known,
+    edgeTo: !!r.edge_to && !r.edge_to_known,
   },
 })
 
@@ -716,7 +723,9 @@ const PROCESS_SELECT = `
   SELECT p.*,
          (SELECT COUNT(*) FROM processes c WHERE c.parent_id = p.id) AS child_count,
          (SELECT COUNT(*) FROM process_components pc WHERE pc.process_id = p.id) AS component_count,
-         (SELECT COUNT(*) FROM nodes n WHERE n.id = p.node_id) AS node_known
+         (SELECT COUNT(*) FROM nodes n WHERE n.id = p.node_id)   AS node_known,
+         (SELECT COUNT(*) FROM nodes n WHERE n.id = p.edge_from) AS edge_from_known,
+         (SELECT COUNT(*) FROM nodes n WHERE n.id = p.edge_to)   AS edge_to_known
   FROM processes p`
 
 router.get('/processes', wrap(async (req, res) => {

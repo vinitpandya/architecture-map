@@ -294,6 +294,35 @@ for (const [name, url, selector] of [
   await ctx.close()
 }
 
+/* ---- …and an interaction that is missing does not defame its two ends.
+   3.2.3 says reporting calls the wallet balance endpoint. Both components are
+   real and one click away; it is the relationship the code does not have, and
+   striking both of them through would be plainly false. */
+{
+  const { ctx, page } = await open('/process?code=3.2.3')
+  await page.waitForSelector('.proc-binding', { timeout: 15000 })
+  const marked = await page.$$eval('.proc-binding .proc-missing', (els) => els.map((e) => e.textContent))
+  ok(
+    'a missing interaction leaves its two real ends as links',
+    marked.length === 0,
+    `marked as not in the map: ${marked.join(', ')}`
+  )
+  const links = await page.$$eval('.proc-binding a', (els) => els.map((e) => e.textContent ?? ''))
+  ok(
+    '  …both of them, reporting-service and the wallet endpoint',
+    links.some((t) => t.includes('reporting-service')) &&
+      links.some((t) => t.includes('wallet-service')),
+    links.join(', ') || 'no links in the binding'
+  )
+  const note = await page.$$eval('.proc-missing-note', (els) => els.map((e) => e.textContent ?? ''))
+  ok(
+    '  …and says the interaction itself is not in the map',
+    note.some((t) => t.includes('not in the map')),
+    note.join(', ') || 'no note'
+  )
+  await ctx.close()
+}
+
 await browser.close()
 console.log(`\n  ${checks - failures}/${checks} checks passed\n`)
 process.exit(failures ? 1 : 0)

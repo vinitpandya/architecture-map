@@ -120,6 +120,18 @@ const DERIVED_TABLES = ['node_sources', 'edges', 'evidence', 'unresolved', 'cont
 /* ────────────────────────────────────────────────────── ingest */
 
 /**
+ * The name a quarantined document is filed under, taken off a body that has
+ * just failed validation and could hold anything. A number, an object or a
+ * null in `repo` would otherwise reach SQLite as a bind parameter it refuses,
+ * and the throw would take the whole inbox sweep down with it — one malformed
+ * file stopping every good one behind it.
+ */
+export function labelOf(value, fallback) {
+  const s = typeof value === 'string' ? value.trim() : ''
+  return s || fallback || 'unknown'
+}
+
+/**
  * Idempotent per repo: re-ingesting a repo replaces exactly that repo's
  * contribution and touches nothing else. Overrides are a separate table and
  * are never read or written here — that is what makes a human correction
@@ -128,7 +140,7 @@ const DERIVED_TABLES = ['node_sources', 'edges', 'evidence', 'unresolved', 'cont
 export function ingestManifest(json, sourceFile = null) {
   const { ok, errors } = validateManifest(json)
   const now = new Date().toISOString()
-  const repo = json?.repo ?? sourceFile ?? 'unknown'
+  const repo = labelOf(json?.repo, sourceFile)
 
   if (!ok) {
     db.prepare(

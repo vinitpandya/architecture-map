@@ -199,7 +199,7 @@ export type Process = {
   childCount: number
   componentCount: number
   /** What this process names that the map does not have. Shown, never hidden. */
-  unresolved: { node: boolean; edge: boolean }
+  unresolved: { node: boolean; edge: boolean; edgeFrom: boolean; edgeTo: boolean }
 }
 
 export type ProcessTouch = {

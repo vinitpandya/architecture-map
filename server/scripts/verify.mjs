@@ -44,7 +44,7 @@ if (!stage) {
   const tmp = path.join(ROOT, 'data', 'verify')
   fs.rmSync(tmp, { recursive: true, force: true })
   let bad = 0
-  for (const s of ['ingest', 'estate', 'processes']) {
+  for (const s of ['ingest', 'estate', 'processes', 'packs']) {
     const res = spawnSync(process.execPath, [fileURLToPath(import.meta.url), `--stage=${s}`], {
       stdio: 'inherit',
       env: { ...process.env, DATA_DIR: path.join(tmp, s), INBOX_DIR: path.join(tmp, s, 'inbox') },
@@ -485,6 +485,205 @@ if (stage === 'processes') {
   server.close()
   done()
 }
+
+/* ───────────────── stage: packs — the situations the demo estate cannot hold
+
+   Every finding here was a real defect, found by reading the code rather than
+   by running it, because the demo packs are deliberately well-formed and never
+   reach any of these paths. They are asserted so they cannot come back.
+*/
+
+if (stage === 'packs') {
+  console.log('\nPhases 7–8 — the pack situations the demo estate does not contain')
+  const seed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs')], {
+    encoding: 'utf8',
+    env: process.env,
+  })
+  if (seed.status !== 0) {
+    console.log(`  ✗ seed:demo failed\n${seed.stdout}${seed.stderr}`)
+    process.exit(1)
+  }
+
+  const { db } = await import('../src/db.js')
+  const { ingestProcessPack } = await import('../src/processes.js')
+  const { sweepInbox } = await import('../src/ingest.js')
+  const n = (sql, ...a) => db.prepare(sql).get(...a).n
+  const envelope = (pack, processes) => ({
+    schemaVersion: 1,
+    pack,
+    name: pack,
+    authoredAt: '2026-09-18T00:00:00Z',
+    producer: { kind: 'import' },
+    processes,
+  })
+
+  /* ---- a malformed document must not take the sweep down with it.
+     `pack` is read off a body that has just failed validation, so it can hold
+     anything; a bind parameter SQLite refuses would throw out of the ingest
+     and abort every good file queued behind it. */
+  let threw = null
+  try {
+    ingestProcessPack({ ...envelope('x', []), pack: { not: 'a string' } }, 'malformed-pack.json')
+  } catch (err) {
+    threw = err
+  }
+  ok('a pack whose id is not a string quarantines rather than throwing', !threw, String(threw))
+  is(
+    '  …filed under the file it came in as',
+    db.prepare(`SELECT pack FROM process_packs WHERE source_file = 'malformed-pack.json'`).get()?.pack,
+    'malformed-pack.json'
+  )
+
+  const { INBOX_DIR } = await import('../src/config.js')
+  for (const sub of ['', 'quarantine', 'ingested']) {
+    fs.mkdirSync(path.join(INBOX_DIR, sub), { recursive: true })
+  }
+  fs.writeFileSync(
+    path.join(INBOX_DIR, 'a-broken.json'),
+    JSON.stringify({ ...envelope('inbox-broken', []), pack: 42 })
+  )
+  fs.writeFileSync(
+    path.join(INBOX_DIR, 'b-good.json'),
+    JSON.stringify(envelope('inbox-good', [{ code: '6', name: 'Swept in behind a broken file' }]))
+  )
+  let sweepThrew = null
+  let swept = null
+  try {
+    swept = sweepInbox(INBOX_DIR)
+  } catch (err) {
+    sweepThrew = err
+  }
+  ok('one malformed file does not abort the inbox sweep', !sweepThrew, String(sweepThrew))
+  is('  …the sweep reports both files', swept?.length, 2)
+  is('  …one of them quarantined', swept?.filter((r) => !r.ok).length, 1)
+  is('  …and the good pack behind it still landed', n(`SELECT COUNT(*) n FROM processes WHERE code = '6'`), 1)
+
+  /* ---- a typo in `touches` must not hide a missing interaction.
+     §5 suppresses the interaction finding when one of the interaction's OWN
+     ends is missing — there the missing component is the root cause. An
+     unrelated component is not a root cause for it. */
+  ingestProcessPack(
+    envelope('probe-shadow', [
+      { code: '7', name: 'Probe' },
+      {
+        code: '7.1',
+        name: 'Names one thing that is gone and one call nobody makes',
+        node: 'svc:reporting-service',
+        touches: ['topic:no.such.topic.v1'],
+        interaction: {
+          from: 'svc:reporting-service',
+          kind: 'http.call',
+          to: 'api:wallet-service/GET /v1/wallets/{}/balance',
+        },
+      },
+    ]),
+    'probe-shadow.json'
+  )
+  is(
+    'a missing touches entry raises process-missing-component',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-missing-component' AND subject_id = 'proc:7.1'`),
+    1
+  )
+  is(
+    '  …and does NOT hide the missing interaction beside it',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-missing-interaction' AND subject_id = 'proc:7.1'`),
+    1
+  )
+
+  /* ---- two packs claiming one code, then one of them re-ingested.
+     `processes.code` is unique, so the single row can only hold one writer;
+     clearing "this pack's rows" on re-ingest would take away a row the other
+     pack still declares, and nothing would bring it back. */
+  ingestProcessPack(
+    envelope('probe-a', [
+      { code: '8', name: 'Owned by A' },
+      { code: '8.1', name: 'Only A declares this' },
+      { code: '8.2', name: 'A and B both declare this' },
+    ]),
+    'probe-a.json'
+  )
+  ingestProcessPack(
+    envelope('probe-b', [
+      { code: '8.2', name: 'A and B both declare this' },
+      { code: '8.3', name: 'Only B declares this' },
+    ]),
+    'probe-b.json'
+  )
+  is(
+    'two packs declaring one code raise process-duplicate-code',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-duplicate-code' AND subject_id = 'proc:8.2'`),
+    1
+  )
+  ingestProcessPack(envelope('probe-b', [{ code: '8.3', name: 'Only B declares this' }]), 'probe-b.json')
+  is('re-ingesting the second pack keeps its own process', n(`SELECT COUNT(*) n FROM processes WHERE code = '8.3'`), 1)
+  is('  …and does not delete the code it shared', n(`SELECT COUNT(*) n FROM processes WHERE code = '8.2'`), 1)
+  is('  …or anything else the first pack declared', n(`SELECT COUNT(*) n FROM processes WHERE code = '8.1'`), 1)
+  is(
+    '  …and the shared code is owned by the pack that still declares it',
+    db
+      .prepare(
+        `SELECT pk.pack AS pack FROM processes p JOIN process_packs pk ON pk.id = p.pack_id WHERE p.code = '8.2'`
+      )
+      .get()?.pack,
+    'probe-a'
+  )
+  is(
+    '  …with the duplicate finding gone now that only one pack claims it',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-duplicate-code' AND subject_id = 'proc:8.2'`),
+    0
+  )
+
+  /* ---- a code whose parent was never declared. The finding is the point; a
+     phantom parent in the join is not, because no page can open it. */
+  ingestProcessPack(
+    envelope('probe-orphan', [
+      { code: '9', name: 'Declared' },
+      { code: '9.4.1', name: 'Its parent 9.4 was never written', node: 'svc:ledger-service' },
+    ]),
+    'probe-orphan.json'
+  )
+  is(
+    'a code whose parent is missing raises process-orphan-code',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-orphan-code' AND subject_id = 'proc:9.4.1'`),
+    1
+  )
+  is('  …the process itself is still there', n(`SELECT COUNT(*) n FROM processes WHERE code = '9.4.1'`), 1)
+  is('  …the parent it named is not invented', n(`SELECT COUNT(*) n FROM processes WHERE code = '9.4'`), 0)
+  is(
+    '  …and nothing rolls up into it',
+    n(`SELECT COUNT(*) n FROM process_components WHERE process_id = 'proc:9.4'`),
+    0
+  )
+  is(
+    '  …nor into its grandparent, which is real but not its parent',
+    n(`SELECT COUNT(*) n FROM process_components WHERE process_id = 'proc:9' AND node_id = 'svc:ledger-service'`),
+    0
+  )
+  is(
+    'every component row belongs to a process that exists',
+    n(`SELECT COUNT(*) n FROM process_components pc
+       WHERE NOT EXISTS (SELECT 1 FROM processes p WHERE p.id = pc.process_id)`),
+    0
+  )
+
+  /* ---- a leaf with nothing under it and nothing bound to it */
+  ingestProcessPack(
+    envelope('probe-bare', [{ code: '5', name: 'A leaf that names no component at all' }]),
+    'probe-bare.json'
+  )
+  is(
+    'a leaf that binds nothing raises process-no-detail',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-detail' AND subject_id = 'proc:5'`),
+    1
+  )
+
+  /* ---- and the demo estate is untouched by all of it */
+  is('the ten demo services are still there', n(`SELECT COUNT(*) n FROM nodes WHERE kind = 'service'`), 10)
+  is('the demo processes are still there', n(`SELECT COUNT(*) n FROM processes WHERE code = '2' OR code LIKE '2.%'`), 20)
+
+  done()
+}
+
 
 function done() {
   console.log(`\n  ${checks - failures}/${checks} checks passed`)
