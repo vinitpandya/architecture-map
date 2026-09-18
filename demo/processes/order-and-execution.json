@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "promptVersion": "2026-09-18b",
+  "pack": "order-and-execution",
+  "name": "Order and execution",
+  "description": "How a customer gets a price, accepts it, and has the resulting trade settled and told to them. Does not cover onboarding, funding or reporting — those are separate packs.",
+  "authoredAt": "2026-09-18T11:00:00Z",
+  "producer": {
+    "kind": "claude",
+    "model": "claude-opus-5",
+    "author": "vinit"
+  },
+  "source": {
+    "kind": "confluence",
+    "url": "https://meridian.atlassian.net/wiki/spaces/TRADE/pages/118/Order+and+execution",
+    "title": "Order and execution process map",
+    "owner": "trading",
+    "asOf": "2026-09-01"
+  },
+  "processes": [
+    {
+      "code": "2",
+      "name": "Order and execution",
+      "description": "A customer converts one asset into another at a price the platform is willing to honour, and both sides of the exchange are recorded so the books balance.",
+      "owner": "trading",
+      "trigger": "A customer decides to trade.",
+      "outcome": "The trade is settled, the balance has moved, and the customer has been told.",
+      "tags": [
+        "customer-facing",
+        "regulated"
+      ]
+    },
+    {
+      "code": "2.1",
+      "name": "Getting estimate",
+      "description": "Working out what the customer would get, and whether they are allowed to have it, before anything is committed. Nothing here changes state — an abandoned estimate leaves no trace.",
+      "owner": "trading",
+      "trigger": "The customer enters an amount in the app.",
+      "outcome": "A priced, validated estimate the customer can accept, or a refusal with a reason."
+    },
+    {
+      "code": "2.1.1",
+      "name": "Take the quote from the cache",
+      "description": "The local Redis copy answers almost every estimate. It is what keeps pricing fast when the market is moving and every customer is asking at once.",
+      "owner": "trading",
+      "node": "svc:order-service",
+      "interaction": {
+        "from": "svc:order-service",
+        "kind": "cache.read",
+        "to": "cache:redis/pricing-quotes"
+      }
+    },
+    {
+      "code": "2.1.2",
+      "name": "Get prices from the pricing service",
+      "description": "Only on a cache miss or a stale quote. Pricing holds the reference rates and is the authority when the cache cannot answer.",
+      "owner": "trading",
+      "optional": true,
+      "node": "svc:order-service",
+      "interaction": {
+        "from": "svc:order-service",
+        "kind": "http.call",
+        "to": "api:pricing-service/GET /v1/rates/{}"
+      }
+    },
+    {
+      "code": "2.1.3",
+      "name": "Check the customer may trade",
+      "description": "Reads the KYC state. A customer who has not passed verification is refused here rather than after they have accepted, so the refusal is fast and explainable.",
+      "owner": "trading",
+      "node": "svc:order-service",
+      "interaction": {
+        "from": "svc:order-service",
+        "kind": "http.call",
+        "to": "api:identity-service/GET /v1/users/{}"
+      }
+    },
+    {
+      "code": "2.1.4",
+      "name": "Check the balance covers it",
+      "description": "Reads the live wallet balance. This is a check, not a reservation — the funds only move once the order matches, so an estimate can still fail later if the balance moves underneath it.",
+      "owner": "trading",
+      "node": "svc:order-service",
+      "interaction": {
+        "from": "svc:order-service",
+        "kind": "http.call",
+        "to": "api:wallet-service/GET /v1/wallets/{}/balance"
+      }
+    },
+    {
+      "code": "2.2",
+      "name": "Accepting estimate and placing order",
+      "description": "The customer commits. From here the platform owns the outcome, so everything is written down before it is announced.",
+      "owner": "trading",
+      "trigger": "The customer accepts the estimate.",
+      "outcome": "The order is durably recorded and the matching engine has it."
+    },
+    {
+      "code": "2.2.1",
+      "name": "Receive the accepted order",
+      "description": "The gateway terminates the customer session and forwards the order; from here on the customer id is trusted and not re-checked.",
+      "owner": "platform",
+      "actor": "customer",
+      "node": "svc:gateway-api",
+      "interaction": {
+        "from": "svc:gateway-api",
+        "kind": "http.call",
+        "to": "api:order-service/POST /v1/orders"
+      }
+    },
+    {
+      "code": "2.2.2",
+      "name": "Persist the order",
+      "description": "Written as PENDING before anything is published, so a crash between here and the publish leaves a recoverable record rather than a lost order.",
+      "owner": "trading",
+      "node": "svc:order-service",
+      "interaction": {
+        "from": "svc:order-service",
+        "kind": "db.write",
+        "to": "db:postgres/orders"
+      }
+    },
+    {
+      "code": "2.2.3",
+      "name": "Publish the order",
+      "description": "Keyed by instrument so one instrument's orders stay in sequence on a single partition. This publish is the handover: once it succeeds, order-service is no longer responsible for the outcome.",
+      "owner": "trading",
+      "node": "svc:order-service",
+      "interaction": {
+        "from": "svc:order-service",
+        "kind": "kafka.produce",
+        "to": "topic:orders.placed.v1"
+      }
+    },
+    {
+      "code": "2.2.4",
+      "name": "Pick the order up for matching",
+      "description": "The matching engine holds its book in memory; this consume is how an order enters it.",
+      "owner": "trading",
+      "node": "svc:matching-engine",
+      "interaction": {
+        "from": "svc:matching-engine",
+        "kind": "kafka.consume",
+        "to": "topic:orders.placed.v1"
+      }
+    },
+    {
+      "code": "2.3",
+      "name": "Matching and settlement",
+      "description": "Turning a resting order into an executed trade, and moving the money so the books and the customer's balance agree.",
+      "owner": "trading",
+      "trigger": "An order enters the book, or a price tick moves it.",
+      "outcome": "Balanced postings exist and the customer's visible balance reflects the trade."
+    },
+    {
+      "code": "2.3.1",
+      "name": "Keep the book priced",
+      "description": "Market ticks continuously reprice the resting book, so a match can happen with no new order involved at all.",
+      "owner": "trading",
+      "node": "svc:matching-engine",
+      "interaction": {
+        "from": "svc:matching-engine",
+        "kind": "kafka.consume",
+        "to": "topic:prices.ticked.v1"
+      }
+    },
+    {
+      "code": "2.3.2",
+      "name": "Publish the fill",
+      "description": "One event per fill. A large order that fills in parts produces several, all carrying the same order id.",
+      "owner": "trading",
+      "node": "svc:matching-engine",
+      "interaction": {
+        "from": "svc:matching-engine",
+        "kind": "kafka.produce",
+        "to": "topic:orders.matched.v1"
+      }
+    },
+    {
+      "code": "2.3.3",
+      "name": "Post the trade to the ledger",
+      "description": "Both legs written in one transaction, keyed on the fill id, so a redelivered event is a no-op rather than a double posting. This is the point the trade becomes real for accounting.",
+      "owner": "ledger",
+      "node": "svc:ledger-service",
+      "interaction": {
+        "from": "svc:ledger-service",
+        "kind": "db.write",
+        "to": "db:postgres/ledger"
+      },
+      "touches": [
+        "topic:orders.matched.v1"
+      ]
+    },
+    {
+      "code": "2.3.4",
+      "name": "Move the customer balance",
+      "description": "Updates the wallet the customer actually sees. Independent of the ledger posting, so the two can briefly disagree under load.",
+      "owner": "wallet",
+      "node": "svc:wallet-service",
+      "interaction": {
+        "from": "svc:wallet-service",
+        "kind": "db.write",
+        "to": "db:postgres/wallet"
+      },
+      "touches": [
+        "topic:orders.matched.v1"
+      ]
+    },
+    {
+      "code": "2.3.5",
+      "name": "Announce the new balance",
+      "description": "Carries the balance after the change, not the delta, so a consumer that missed an earlier event still ends up correct.",
+      "owner": "wallet",
+      "node": "svc:wallet-service",
+      "interaction": {
+        "from": "svc:wallet-service",
+        "kind": "kafka.produce",
+        "to": "topic:wallet.balance.changed.v1"
+      }
+    },
+    {
+      "code": "2.4",
+      "name": "Telling the customer",
+      "description": "Getting the fill in front of the customer, through whichever channel they have enabled. Best-effort throughout: a failure here never blocks the trade, which has already settled.",
+      "owner": "growth",
+      "trigger": "A balance change is announced.",
+      "outcome": "The customer has been told, or the failure has been logged and dropped."
+    },
+    {
+      "code": "2.4.1",
+      "name": "Pick up the balance change",
+      "owner": "growth",
+      "node": "svc:notification-service",
+      "interaction": {
+        "from": "svc:notification-service",
+        "kind": "kafka.consume",
+        "to": "topic:wallet.balance.changed.v1"
+      }
+    },
+    {
+      "code": "2.4.2",
+      "name": "Send the message",
+      "description": "Channel and locale come from the customer's notification preferences. A hard bounce is logged and not retried.",
+      "owner": "growth",
+      "node": "svc:notification-service",
+      "interaction": {
+        "from": "svc:notification-service",
+        "kind": "http.call",
+        "to": "ext:sendgrid"
+      }
+    }
+  ]
+}

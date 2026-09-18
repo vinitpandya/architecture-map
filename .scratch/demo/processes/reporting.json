@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "promptVersion": "2026-09-18b",
+  "pack": "reporting",
+  "name": "Reporting",
+  "description": "How the data team turns the platform's event stream into the trade and balance warehouse, and how a customer or an operator gets a report or a statement back out of it. It covers the loaders, the reconciliation against the ledger, the report index and the retrieval path that runs through reporting-service. It does not cover report search, which the gateway serves straight off the index without coming through this service; the price tick feed reporting-service also consumes, which values holdings and is the trading team's to document; the ledger itself, which is the book of record; or the regulatory submissions built on top of the warehouse, which are assembled by hand outside anything in this map.",
+  "authoredAt": "2026-09-16T09:45:00Z",
+  "producer": {
+    "kind": "import",
+    "tool": "seed-demo/1"
+  },
+  "source": {
+    "kind": "confluence",
+    "url": "https://meridian.atlassian.net/wiki/spaces/DATA/pages/311/Reporting",
+    "title": "Reporting — how the warehouse is built",
+    "owner": "data",
+    "asOf": "2025-11-03"
+  },
+  "processes": [
+    {
+      "code": "3",
+      "name": "Reporting",
+      "description": "Everything the platform did is put somewhere it can be asked about afterwards: a customer can see what they traded and what they hold, and the business can answer an auditor without going back to the services that did the work. Nothing here is a source of truth. Every figure in the warehouse is a copy of something another team owns, and where a copy and its origin disagree the origin wins.",
+      "owner": "data",
+      "trigger": "Nothing starts it — the loaders run continuously, a few minutes behind the platform, and a report can be asked for at any time.",
+      "outcome": "The warehouse ties to the ledger for the period, and a customer or an operator can retrieve a report that reflects it.",
+      "tags": [
+        "customer-facing",
+        "regulated"
+      ]
+    },
+    {
+      "code": "3.1",
+      "name": "Building the read models",
+      "description": "Turning the event stream into rows that can be queried, and then proving that the rows match the book. The loaders sit deliberately behind the platform rather than beside it — everything is written in batches, so anything that has to be current is asked of the service that owns it instead of read from here.",
+      "owner": "data",
+      "trigger": "A trade or a balance movement is published.",
+      "outcome": "The warehouse holds the period's trades and closing balances, reconciled against the ledger."
+    },
+    {
+      "code": "3.1.1",
+      "name": "Enrich matched trades",
+      "description": "Takes fills from the enrichment stream rather than the raw one, so a trade arrives already carrying the trading pair, the fee and the customer on each side, and the loader never has to join back to the trading databases to make a row readable. trades.enriched.v1 is published by trading's enrichment job, not by anything the data team runs. Both loads land on the same fact_trade row, keyed on the fill id: the raw load writes it and this one fills in the columns that arrive a few seconds later. If the stream goes quiet the warehouse loses those columns, not rows.",
+      "owner": "data",
+      "node": "svc:reporting-service",
+      "interaction": {
+        "from": "svc:reporting-service",
+        "kind": "kafka.consume",
+        "to": "topic:trades.enriched.v1"
+      },
+      "notes": "Raised at a review last year that the matching engine now puts these fields on the fill itself, and that the enrichment stage may no longer be separate. Left as written pending a decision from the trading team, who owned the enrichment job."
+    },
+    {
+      "code": "3.1.2",
+      "name": "Ingest matched trades",
+      "description": "The fill carries price, quantity and both sides, so a trade row is built from the event alone. Keyed on the fill id, so a redelivered event is a no-op rather than a second row — without that key a partition rebalance would double the day's volume and nobody would find out until reconciliation. A large order fills in parts and produces several events under one order id, so counting these events counts fills, not orders.",
+      "owner": "data",
+      "node": "svc:reporting-service",
+      "interaction": {
+        "from": "svc:reporting-service",
+        "kind": "kafka.consume",
+        "to": "topic:orders.matched.v1"
+      }
+    },
+    {
+      "code": "3.1.3",
+      "name": "Ingest balance changes",
+      "description": "The event carries the balance after the movement, not the delta, so the warehouse keeps the last event per wallet, per asset, per day and never sums them; a redelivered one rewrites the same figure rather than double-counting it. A missed event dates a closing figure rather than corrupting it, and the next event puts that wallet right from then on — it never corrects a period already reported, which is what 3.1.5 is for.",
+      "owner": "data",
+      "node": "svc:reporting-service",
+      "interaction": {
+        "from": "svc:reporting-service",
+        "kind": "kafka.consume",
+        "to": "topic:wallet.balance.changed.v1"
+      }
+    },
+    {
+      "code": "3.1.4",
+      "name": "Write the warehouse",
+      "description": "Written in batches every few minutes rather than per event. A row's window comes from the event's own timestamp, not from when the batch ran, so replaying a topic from an earlier offset rebuilds the same windows with the same rows: a bad day is fixed by replaying offsets, not by patching rows.",
+      "owner": "data",
+      "node": "svc:reporting-service",
+      "interaction": {
+        "from": "svc:reporting-service",
+        "kind": "db.write",
+        "to": "db:postgres/reporting"
+      }
+    },
+    {
+      "code": "3.1.5",
+      "name": "Reconcile against the ledger",
+      "description": "A mismatch in the day's totals is a fault in the load, not a correction to the book: the fix is to reload the window rather than adjust the warehouse — unless the ledger is holding the posting against a flagged transaction, which ties when the hold lifts and is not hurried by a reload. Postings come through the ledger's API; the schema is read directly for what will not come that way, and the job keeps its own checkpoint row in there, so a table this team owns sits inside a database the ledger team owns. A schema change there breaks the reconciliation overnight, with no signal to the ledger team that anyone was reading.",
+      "owner": "data",
+      "actor": "scheduled job",
+      "node": "svc:reporting-service",
+      "interaction": {
+        "from": "svc:reporting-service",
+        "kind": "db.read",
+        "to": "db:postgres/ledger"
+      }
+    },
+    {
+      "code": "3.2",
+      "name": "Serving reports",
+      "description": "Getting a built report to whoever asked for it — statements, trade histories and the operator's period reports. They are generated ahead of the request wherever their shape allows it, so this stage is mostly retrieval rather than computation: a request that finds nothing built answers not-ready instead of blocking while it is produced.",
+      "owner": "data",
+      "trigger": "A customer opens a statement, or an operator asks for a report.",
+      "outcome": "The requester has the report, or a clear answer that it is not ready yet."
+    },
+    {
+      "code": "3.2.1",
+      "name": "Index the report",
+      "description": "Gateway-api queries this index directly rather than coming through reporting-service, so the ownership filter on search results is the gateway's to apply and not this service's, and anything written here is reachable by whoever the gateway lets search. The index is derived: a lost one is rebuilt from the warehouse, not restored.",
+      "owner": "data",
+      "node": "svc:reporting-service",
+      "interaction": {
+        "from": "svc:reporting-service",
+        "kind": "db.write",
+        "to": "db:elasticsearch/search"
+      }
+    },
+    {
+      "code": "3.2.2",
+      "name": "Answer a report request",
+      "description": "The gateway holds the customer session and resolves the report id to its owner from the search index before forwarding. Reporting-service trusts the customer id it is handed and does not re-check ownership itself, so this endpoint must never be reachable except through the gateway. A report that has not been built yet answers not-found rather than an empty one, so the app can tell 'not ready' from 'nothing happened in that period'.",
+      "owner": "platform",
+      "actor": "customer",
+      "node": "svc:gateway-api",
+      "interaction": {
+        "from": "svc:gateway-api",
+        "kind": "http.call",
+        "to": "api:reporting-service/GET /v1/reports/{}"
+      }
+    },
+    {
+      "code": "3.2.3",
+      "name": "Look up live balances for the statement",
+      "description": "Statements only. The closing figure in the footer is read from the wallet as the customer opens the statement, not taken from the copy the loader wrote: the one figure on a statement that is not pre-built, so a customer with the statement open and the app open sees the same number in both places. Everything else is as at the end of the period. If the wallet does not answer, the footer falls back to the warehouse figure and the statement still renders. Nobody has re-confirmed this since statement generation moved onto the warehouse loader.",
+      "owner": "data",
+      "node": "svc:reporting-service",
+      "interaction": {
+        "from": "svc:reporting-service",
+        "kind": "http.call",
+        "to": "api:wallet-service/GET /v1/wallets/{}/balance"
+      },
+      "optional": true,
+      "notes": "Argued for when statements were designed: a customer comparing the footer against the app and finding two different numbers raises a ticket every time, and that was judged worse than one extra call per wallet on the render."
+    }
+  ]
+}
