@@ -93,15 +93,45 @@
 }
 
 /* -------------------------------------------------------------- map canvas
-   The React Flow canvas lands in SPEC.md Phase 5; these are the tokens it
-   will draw with, kept here so the theme stays in one place. */
+   Every value comes from theme.css, so both themes stay correct without the
+   canvas knowing which one it is in. */
+
+.map-shell {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  min-height: 0;
+}
 
 .map-canvas {
-  width: 100%;
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
   height: 100%;
   min-height: 320px;
   border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
   background: var(--page);
+}
+
+.map-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Sits over the canvas while elk runs, so the previous layout stays visible
+   instead of the map blanking on every filter change. */
+.map-settling {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--page) 62%, transparent);
+  pointer-events: none;
 }
 
 .map-node {
@@ -113,10 +143,35 @@
   font-size: 12px;
   line-height: 1.3;
   white-space: nowrap;
+  box-sizing: border-box;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+  transition: opacity 120ms ease;
 }
 
 .map-node.topic {
   border-radius: 999px;
+}
+
+.map-node.service {
+  font-weight: 620;
+}
+
+.map-node.endpoint .map-node-label {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+}
+
+/* Neither a contract nor an external is a deployable thing, and the dashed
+   border is the shortest way to say so. */
+.map-node.contract,
+.map-node.external,
+.map-node.cache {
+  border-style: dashed;
 }
 
 .map-node.orphan {
@@ -124,15 +179,120 @@
   opacity: 0.7;
 }
 
+.map-node.faded {
+  opacity: 0.32;
+}
+
 .map-node.focused {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+.map-node.selected {
+  box-shadow: 0 0 0 2px var(--accent), 0 2px 10px rgba(0, 0, 0, 0.14);
+}
+
 .map-node .map-node-kind {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.map-node .map-node-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-node-glyph {
+  flex-shrink: 0;
+  color: var(--node-color, var(--series-1));
+}
+
+/* React Flow draws its own handles; the layout needs them, the reader does not. */
+.map-handle {
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+  min-width: 1px;
+  min-height: 1px;
+  border: 0;
+}
+
+.map-legend {
+  margin: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border: 1px solid var(--border);
+}
+
+.map-legend .legend {
+  margin: 0;
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------- inspector */
+
+.map-inspector {
+  flex: 0 0 320px;
+  width: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-1);
+}
+
+/* 320px is narrow for a file path, so the inspector's citations wrap instead
+   of hiding the end of the line behind a scrollbar. */
+.map-inspector .evidence-snippet code,
+.map-inspector .evidence-where code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.map-inspector button.ghost {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.map-inspector-tab {
+  flex: 0 0 auto;
+  align-self: stretch;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-1);
+}
+
+/* ------------------------------------------------ React Flow, themed */
+
+.react-flow__controls-button {
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  fill: var(--text-secondary);
+}
+
+.react-flow__controls-button:hover {
+  background: var(--hover-wash);
+}
+
+.react-flow__minimap {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.react-flow__attribution {
+  background: transparent;
+  font-size: 9px;
+}
+
+.react-flow__attribution a {
   color: var(--text-muted);
 }
 

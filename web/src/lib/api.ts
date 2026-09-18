@@ -90,6 +90,11 @@ export type GraphEdge = {
   repo: string
 }
 
+export type GraphData = {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+}
+
 export type Evidence = {
   id: number
   subject_kind: string

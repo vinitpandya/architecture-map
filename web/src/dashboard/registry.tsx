@@ -3,6 +3,7 @@ import { useQuery, useScope } from '../lib/scope'
 import { DataGrid } from '../components/DataGrid'
 import { Empty } from '../components/ui'
 import { EDGE_LABEL, KIND_LABEL, KIND_PLURAL, idValue, nodeHref } from '../lib/nodes'
+import { MapCanvas } from '../graph/MapCanvas'
 import { full } from '../lib/format'
 import type {
   ContractVersions,
@@ -115,6 +116,9 @@ export const WIDGETS: WidgetDef[] = [
         label: 'Depth',
         kind: 'select',
         quick: true,
+        // A map with no node of its own follows the filter row, depth
+        // included, so its own depth control would be a lie.
+        showIf: (options) => !!options.nodeId,
         choices: [
           { value: '1', label: '1 hop' },
           { value: '2', label: '2 hops' },
@@ -341,15 +345,18 @@ function StatBody({ widget }: { widget: WidgetConfig }) {
 }
 
 function MapBody({ widget }: { widget: WidgetConfig }) {
-  // The canvas lands in SPEC.md Phase 5. The widget is registered now so
-  // layouts that reference it survive, and so the wiring is already in place.
+  const { scope } = useScope()
+  // A map pinned to a node by its own options answers a fixed question and
+  // carries its own depth. An unpinned one is the page's map and follows the
+  // filter row, which is where §10 puts focus and depth.
+  const pinned = widget.options.nodeId
   return (
-    <Empty title="The map is not built yet">
-      <span className="muted" style={{ fontSize: 12 }}>
-        SPEC.md Phase 5 — React Flow canvas with deterministic elk layout
-        {widget.options.nodeId ? `, focused on ${idValue(widget.options.nodeId)}` : ''}.
-      </span>
-    </Empty>
+    <MapCanvas
+      height={bodyHeight(widget.h)}
+      focus={pinned || scope.focus}
+      depth={pinned ? widget.options.depth || '1' : scope.depth}
+      pinned={!!pinned}
+    />
   )
 }
 
