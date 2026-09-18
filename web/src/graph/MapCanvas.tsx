@@ -121,6 +121,9 @@ export function MapCanvas({
         showLabel,
       } satisfies MapNodeData,
       ...nodeSize(n),
+      // Above the edges. An edge carries an invisible 20px interaction stroke,
+      // and under it a click aimed at a node lands on the edge instead.
+      zIndex: 5,
       draggable: false,
       selectable: true,
       connectable: false,
