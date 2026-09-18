@@ -3,17 +3,27 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api, type SearchHit } from '../lib/api'
 import { useScope } from '../lib/scope'
 import { Card, Empty } from '../components/ui'
-import { KIND_PLURAL, idValue, nodeHref } from '../lib/nodes'
+import { KIND_PLURAL, idValue, nodeHref, processHref } from '../lib/nodes'
 import type { NodeKind } from '../lib/api'
 
-const GROUP_LABEL: Record<string, string> = { edge: 'Relationships', unresolved: 'Unresolved references' }
+const GROUP_LABEL: Record<string, string> = {
+  edge: 'Relationships',
+  unresolved: 'Unresolved references',
+  process: 'Business processes',
+}
 
 const groupLabel = (kind: string) => GROUP_LABEL[kind] ?? KIND_PLURAL[kind as NodeKind] ?? kind
 
 /** Where a hit goes. An edge is a relationship, not a place, so it lands on
  *  the thing it points at; an unresolved reference has nowhere to go at all. */
 const hitHref = (h: SearchHit) =>
-  h.subject_kind === 'node' ? nodeHref(h.subject_id) : h.to ? nodeHref(h.to) : null
+  h.subject_kind === 'node'
+    ? nodeHref(h.subject_id)
+    : h.subject_kind === 'process'
+      ? processHref(h.subject_id.slice(5))
+      : h.to
+        ? nodeHref(h.to)
+        : null
 
 /**
  * Text search over nodes, edges and — importantly — the evidence snippets, so
@@ -149,7 +159,7 @@ function Hit({ hit, active }: { hit: SearchHit; active: boolean }) {
     <li data-active={active} className={active ? 'active' : undefined}>
       {href ? <Link to={href}>{hit.title}</Link> : <span>{hit.title}</span>}
       {hit.subject_kind === 'unresolved' && <span className="pill">could not be resolved</span>}
-      {hit.repo && (
+      {(hit.repo || hit.subject_kind === 'node') && (
         <code className="muted" style={{ fontSize: 11, marginLeft: 6 }}>
           {hit.subject_kind === 'node' ? idValue(hit.subject_id) : hit.repo}
         </code>

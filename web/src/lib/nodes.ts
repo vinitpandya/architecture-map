@@ -82,3 +82,24 @@ export const kindFromId = (id: string): NodeKind => {
 export const idValue = (id: string) => id.slice(id.indexOf(':') + 1)
 
 export const nodeHref = (id: string) => `/node?id=${encodeURIComponent(id)}`
+
+/** A code is `2.1.1` — full of dots, and never a path segment. */
+export const processHref = (code: string) => `/process?code=${encodeURIComponent(code)}`
+
+/** People write and say the prefix; only the storage drops it. */
+export const displayCode = (code: string) => `L${code}`
+
+/** How a process's interaction reads left to right, in the flow direction. */
+export function interactionLabel(edge: { from: string; kind: EdgeKind; to: string }) {
+  const { source, target } = flowDirection(edge)
+  return { source, target, verb: EDGE_LABEL[edge.kind] ?? edge.kind }
+}
+
+/** Provenance of a component on a process, most direct first. */
+export const VIA_LABEL: Record<string, string> = {
+  node: 'happens at',
+  interaction: 'interacts with',
+  touches: 'also uses',
+  exposes: 'serves the endpoint',
+  rollup: 'via a child',
+}

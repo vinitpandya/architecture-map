@@ -5,14 +5,19 @@ import { DataGrid } from '../components/DataGrid'
 import { EvidenceList } from '../components/EvidenceList'
 import { Empty } from '../components/ui'
 import { api } from '../lib/api'
-import { EDGE_LABEL, KIND_LABEL, KIND_PLURAL, idValue, nodeHref } from '../lib/nodes'
+import { EDGE_LABEL, KIND_LABEL, KIND_PLURAL, VIA_LABEL, displayCode, idValue, nodeHref, processHref } from '../lib/nodes'
 import { MapCanvas } from '../graph/MapCanvas'
+import { ProcessFlow } from '../graph/ProcessFlow'
+import { ProcessTree } from '../components/ProcessTree'
 import { full } from '../lib/format'
 import type {
   ContractVersions,
+  CoverageRow,
   DriftFinding,
   Evidence,
   NodeDetail,
+  Process,
+  ProcessDetail,
   GraphEdge,
   GraphNode,
   NodeKind,
@@ -64,6 +69,13 @@ const NODE_FIELD: FieldDef = {
   placeholder: 'e.g. topic:users.created.v2 — empty follows the filter row focus',
 }
 
+const PROCESS_FIELD: FieldDef = {
+  key: 'code',
+  label: 'Process code',
+  kind: 'text',
+  placeholder: 'e.g. 2.1 — empty follows the filter row',
+}
+
 const SCOPE_FIELDS: FieldDef[] = [
   { key: 'repos', label: 'Limit to repos (comma-separated)', kind: 'text', placeholder: 'e.g. payments-service' },
   { key: 'limit', label: 'Row limit', kind: 'text', placeholder: '50' },
@@ -105,6 +117,10 @@ export const WIDGETS: WidgetDef[] = [
           { value: 'unresolved', label: 'Unresolved references' },
           { value: 'orphans', label: 'Orphan nodes' },
           { value: 'quarantined', label: 'Quarantined manifests' },
+          { value: 'processes', label: 'Processes' },
+          { value: 'processLeaves', label: 'Atomic actions' },
+          { value: 'processPacks', label: 'Process packs' },
+          { value: 'coverage', label: 'Components covered' },
         ],
       },
     ],
@@ -210,6 +226,57 @@ export const WIDGETS: WidgetDef[] = [
     w: 12, h: 4, minW: 4, minH: 3,
     fields: [],
   },
+  {
+    type: 'process-tree',
+    label: 'Process tree',
+    desc: 'The L1/L2/L3 hierarchy, collapsible',
+    w: 6, h: 6, minW: 3, minH: 3,
+    fields: [
+      { key: 'rootCode', label: 'Start at', kind: 'text', placeholder: 'e.g. 2.1 — empty shows everything' },
+      {
+        key: 'maxLevel',
+        label: 'Down to',
+        kind: 'select',
+        quick: true,
+        choices: [
+          { value: '', label: 'All' },
+          { value: '2', label: 'L2' },
+          { value: '1', label: 'L1' },
+        ],
+      },
+    ],
+  },
+  {
+    type: 'process-children',
+    label: 'Process steps',
+    desc: "One process's parts, in order, with what each one touches",
+    w: 7, h: 5, minW: 4, minH: 3,
+    fields: [PROCESS_FIELD],
+  },
+  {
+    type: 'process-flow',
+    label: 'Process diagram',
+    desc: "A process's parts as a sequence diagram",
+    w: 7, h: 6, minW: 4, minH: 4,
+    fields: [PROCESS_FIELD],
+  },
+  {
+    type: 'process-coverage',
+    label: 'Process coverage',
+    desc: 'What the documented processes account for, and what they do not',
+    w: 5, h: 5, minW: 3, minH: 3,
+    fields: [{ key: 'nodeKind', label: 'Kind', kind: 'select', quick: true, dynamic: 'nodeKinds' }],
+  },
+  {
+    type: 'process-list',
+    label: 'Process actions',
+    desc: 'Every leaf, with the component it happens at',
+    w: 7, h: 5, minW: 4, minH: 3,
+    fields: [
+      { key: 'owner', label: 'Owner', kind: 'text', placeholder: 'e.g. trading' },
+      { key: 'limit', label: 'Row limit', kind: 'text', placeholder: '100' },
+    ],
+  },
 ]
 
 export const widgetDef = (type: string) => WIDGETS.find((w) => w.type === type)
@@ -228,6 +295,12 @@ export function defaultTitle(widget: WidgetConfig): string {
   }
   if (widget.type === 'topic-flow' && widget.options.nodeId) {
     return idValue(widget.options.nodeId)
+  }
+  if (widget.type.startsWith('process-') && widget.options.code) {
+    return `${def?.label ?? widget.type} · ${displayCode(widget.options.code)}`
+  }
+  if (widget.type === 'process-coverage' && widget.options.nodeKind) {
+    return `${KIND_PLURAL[widget.options.nodeKind as NodeKind] ?? 'Components'} covered`
   }
   return def?.label ?? widget.type
 }
@@ -324,6 +397,11 @@ export function WidgetBody({ widget }: { widget: WidgetConfig }) {
     case 'drift': return <DriftBody widget={widget} />
     case 'unresolved': return <UnresolvedBody widget={widget} />
     case 'repos': return <ReposBody />
+    case 'process-tree': return <ProcessTreeBody widget={widget} />
+    case 'process-children': return <ProcessChildrenBody widget={widget} />
+    case 'process-flow': return <ProcessFlowBody widget={widget} />
+    case 'process-coverage': return <ProcessCoverageBody widget={widget} />
+    case 'process-list': return <ProcessListBody widget={widget} />
     default: return <Empty title={`Unknown widget "${widget.type}"`} />
   }
 }
@@ -335,15 +413,37 @@ function NodeLink({ id, label }: { id: string; label?: string }) {
 function StatBody({ widget }: { widget: WidgetConfig }) {
   const { status } = useScope()
   if (!status) return null
-  const kind = (widget.options.kind || 'services') as keyof typeof status.counts
-  const value = status.counts[kind] ?? 0
+  const kind = widget.options.kind || 'services'
+
+  // Coverage is a ratio rather than a count, and reads as one.
+  if (kind === 'coverage') {
+    const { covered, total } = status.coverage ?? { covered: 0, total: 0 }
+    return (
+      <div>
+        <div className="value" style={{ fontSize: 30, fontWeight: 650, letterSpacing: '-0.02em' }}>
+          {full(covered ?? 0)}
+          <span className="muted" style={{ fontSize: 18, fontWeight: 500 }}>
+            {' '}/ {full(total ?? 0)}
+          </span>
+        </div>
+        <div className="muted" style={{ fontSize: 12 }}>
+          services and topics a documented process accounts for
+        </div>
+      </div>
+    )
+  }
+
+  const value = status.counts[kind as keyof typeof status.counts] ?? 0
+  const layerB = kind.startsWith('process')
   return (
     <div>
       <div className="value" style={{ fontSize: 30, fontWeight: 650, letterSpacing: '-0.02em' }}>
         {full(value)}
       </div>
       <div className="muted" style={{ fontSize: 12 }}>
-        across {status.repos.length} scanned {status.repos.length === 1 ? 'repo' : 'repos'}
+        {layerB
+          ? `across ${status.counts.processPacks} authored ${status.counts.processPacks === 1 ? 'pack' : 'packs'}`
+          : `across ${status.repos.length} scanned ${status.repos.length === 1 ? 'repo' : 'repos'}`}
       </div>
     </div>
   )
@@ -679,6 +779,239 @@ function UnresolvedBody({ widget }: { widget: WidgetConfig }) {
         { key: 'repo', label: 'Repo', value: (u) => u.repo },
         { key: 'expected', label: 'Expected', value: (u) => u.expected },
         { key: 'raw', label: 'Saw', wide: true, value: (u) => u.raw, render: (u) => <code>{u.raw}</code> },
+      ]}
+    />
+  )
+}
+
+/* --------------------------------------------------------------- layer B */
+
+/**
+ * A process code from the widget, or the one in the filter row. Same rule as
+ * every other widget: its own option wins when set.
+ */
+function useProcessCode(widget: WidgetConfig) {
+  const { scope } = useScope()
+  return (widget.options.code || scope.process || '').trim().replace(/^[Ll]/, '')
+}
+
+const NO_PACKS = (
+  <Empty title="No process packs loaded">
+    <span className="muted" style={{ fontSize: 12 }}>
+      Processes are written by people, not scanned. Run <code>npm run seed:demo</code>, or take the
+      authoring prompt from the Scan page.
+    </span>
+  </Empty>
+)
+
+function ProcessTreeBody({ widget }: { widget: WidgetConfig }) {
+  const { data } = useQuery<{ processes: Process[] }>('/processes', {
+    root: widget.options.rootCode || '',
+    maxLevel: widget.options.maxLevel || '',
+  })
+  if (!data) return null
+  if (!data.processes.length) return NO_PACKS
+  return <ProcessTree processes={data.processes} openToLevel={2} showOwner={false} />
+}
+
+function ProcessChildrenBody({ widget }: { widget: WidgetConfig }) {
+  const code = useProcessCode(widget)
+  const { data } = useQuery<ProcessDetail>(code ? '/process' : null, { code })
+
+  if (!code)
+    return (
+      <Empty title="Pick a process">
+        <span className="muted" style={{ fontSize: 12 }}>
+          Set a code on this widget, or choose one in the filter row.
+        </span>
+      </Empty>
+    )
+  if (!data) return null
+  if (!data.children.length)
+    return (
+      <Empty title={`${displayCode(data.process.code)} is an atomic action`}>
+        <span className="muted" style={{ fontSize: 12 }}>
+          A level 3 decomposes into nothing — it is the work itself.
+        </span>
+      </Empty>
+    )
+
+  return (
+    <DataGrid
+      rows={data.children}
+      rowKey={(p) => p.id}
+      defaultSort={null}
+      columns={[
+        {
+          key: 'code',
+          label: 'Code',
+          value: (p) => p.code,
+          render: (p) => <Link to={processHref(p.code)}>{displayCode(p.code)}</Link>,
+        },
+        {
+          key: 'name',
+          label: 'What happens',
+          wide: true,
+          value: (p) => p.name,
+          render: (p) => <Link to={processHref(p.code)}>{p.name}</Link>,
+        },
+        {
+          key: 'node',
+          label: 'At',
+          value: (p) => (p.node ? idValue(p.node) : ''),
+          render: (p) =>
+            !p.node ? (
+              <span className="muted">—</span>
+            ) : p.unresolved.node ? (
+              <span className="proc-missing" title="No such component in the map">
+                {idValue(p.node)}
+              </span>
+            ) : (
+              <NodeLink id={p.node} />
+            ),
+        },
+        {
+          key: 'edge',
+          label: 'Over',
+          value: (p) => (p.edge ? `${EDGE_LABEL[p.edge.kind]} ${idValue(p.edge.to)}` : ''),
+          render: (p) =>
+            !p.edge ? (
+              <span className="muted">—</span>
+            ) : (
+              <span className={p.unresolved.edge ? 'proc-missing' : undefined}>
+                {EDGE_LABEL[p.edge.kind]} {idValue(p.edge.to)}
+              </span>
+            ),
+        },
+      ]}
+    />
+  )
+}
+
+function ProcessFlowBody({ widget }: { widget: WidgetConfig }) {
+  const code = useProcessCode(widget)
+  const { data } = useQuery<ProcessDetail>(code ? '/process' : null, { code })
+
+  if (!code)
+    return (
+      <Empty title="Pick a process">
+        <span className="muted" style={{ fontSize: 12 }}>
+          Set a code on this widget, or choose one in the filter row.
+        </span>
+      </Empty>
+    )
+  if (!data) return null
+  if (!data.children.some((c) => c.edge))
+    return <Empty title="Nothing to draw — no part of this names an interaction" />
+
+  return (
+    <ProcessFlow
+      children={data.children}
+      nameOf={(id) => data.components.find((c) => c.id === id)?.name ?? idValue(id)}
+      title={`${displayCode(data.process.code)} ${data.process.name}`}
+    />
+  )
+}
+
+function ProcessCoverageBody({ widget }: { widget: WidgetConfig }) {
+  const kind = (widget.options.nodeKind || 'service') as NodeKind
+  const { data } = useQuery<{ components: CoverageRow[] }>('/coverage', { kinds: kind })
+  const { status } = useScope()
+  if (!data) return null
+  if (!data.components.length) return <Empty title={`No ${KIND_PLURAL[kind].toLowerCase()} in the map`} />
+  if (!status?.counts.processPacks) return NO_PACKS
+
+  const covered = data.components.filter((c) => c.covered).length
+
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+        {covered} of {data.components.length} accounted for by a documented process.
+      </p>
+      <DataGrid
+        rows={data.components}
+        rowKey={(c) => c.node.id}
+        columns={[
+          {
+            key: 'name',
+            label: KIND_LABEL[kind],
+            value: (c) => c.node.name,
+            render: (c) => <NodeLink id={c.node.id} label={c.node.name} />,
+          },
+          {
+            key: 'processes',
+            label: 'Processes',
+            wide: true,
+            value: (c) => c.processes.length,
+            render: (c) =>
+              c.processes.length ? (
+                <span className="proc-chiplist">
+                  {c.processes
+                    .filter((p) => p.level === 3)
+                    .slice(0, 4)
+                    .map((p) => (
+                      <Link key={p.code} to={processHref(p.code)} title={p.name}>
+                        {displayCode(p.code)}
+                      </Link>
+                    ))}
+                  {c.processes.filter((p) => p.level === 3).length > 4 && (
+                    <span className="muted">
+                      +{c.processes.filter((p) => p.level === 3).length - 4}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <span className="muted">nothing documented</span>
+              ),
+          },
+        ]}
+      />
+    </div>
+  )
+}
+
+function ProcessListBody({ widget }: { widget: WidgetConfig }) {
+  const { data } = useQuery<{ processes: Process[] }>('/processes', {
+    owner: widget.options.owner || '',
+    limit: widget.options.limit || '',
+  })
+  if (!data) return null
+  const leaves = data.processes.filter((p) => p.childCount === 0)
+  if (!leaves.length) return NO_PACKS
+
+  return (
+    <DataGrid
+      rows={leaves}
+      rowKey={(p) => p.id}
+      defaultSort={null}
+      columns={[
+        {
+          key: 'code',
+          label: 'Code',
+          value: (p) => p.code,
+          render: (p) => <Link to={processHref(p.code)}>{displayCode(p.code)}</Link>,
+        },
+        {
+          key: 'name',
+          label: 'Action',
+          wide: true,
+          value: (p) => p.name,
+          render: (p) => <Link to={processHref(p.code)}>{p.name}</Link>,
+        },
+        {
+          key: 'node',
+          label: 'At',
+          value: (p) => (p.node ? idValue(p.node) : ''),
+          render: (p) =>
+            !p.node ? (
+              <span className="muted">—</span>
+            ) : p.unresolved.node ? (
+              <span className="proc-missing">{idValue(p.node)}</span>
+            ) : (
+              <NodeLink id={p.node} />
+            ),
+        },
+        { key: 'owner', label: 'Owner', value: (p) => p.owner ?? '' },
       ]}
     />
   )

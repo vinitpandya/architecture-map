@@ -9,6 +9,8 @@ import { NodePage } from './pages/Node'
 import { SearchPage } from './pages/Search'
 import { ScanPage } from './pages/Scan'
 import { ManifestsPage } from './pages/Manifests'
+import { ProcessesPage } from './pages/Processes'
+import { ProcessPage } from './pages/Process'
 
 /** Fixed order and icons for the seeded built-in pages. */
 const SYSTEM_NAV: { slug: string; icon: () => JSX.Element }[] = [
@@ -16,6 +18,7 @@ const SYSTEM_NAV: { slug: string; icon: () => JSX.Element }[] = [
   { slug: 'estate', icon: IconGrid },
   { slug: 'messaging', icon: IconFlow },
   { slug: 'contracts', icon: IconContract },
+  { slug: 'processes', icon: IconSteps },
   { slug: 'health', icon: IconReport },
 ]
 
@@ -35,6 +38,10 @@ function Shell() {
           <div className="nav-group-label" style={{ paddingTop: 14 }}>
             Find
           </div>
+          <NavLink to="/processes" className={({ isActive }) => (isActive ? 'active' : '')}>
+            <IconTree />
+            Processes
+          </NavLink>
           <NavLink to="/search" className={({ isActive }) => (isActive ? 'active' : '')}>
             <IconList />
             Search
@@ -65,6 +72,8 @@ function Shell() {
           <Route path="/pages" element={<PagesIndex />} />
           <Route path="/d/:id" element={<PageView />} />
           <Route path="/node" element={<NodePage />} />
+          <Route path="/processes" element={<ProcessesPage />} />
+          <Route path="/process" element={<ProcessPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/scan" element={<ScanPage />} />
           <Route path="/manifests" element={<ManifestsPage />} />
@@ -404,6 +413,25 @@ function IconDiagram() {
       <rect x="9.2" y="6.2" width="5" height="3.6" rx="1" stroke="currentColor" strokeWidth="1.4" />
       <rect x="1.8" y="10.4" width="5" height="3.6" rx="1" stroke="currentColor" strokeWidth="1.4" />
       <path d="M6.8 3.8h1.6v4.2h.8M6.8 12.2h1.6V8h.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  )
+}
+/** The process tree: a hierarchy you can walk into. */
+function IconTree() {
+  return (
+    <svg {...S}>
+      <path d="M2.4 3h2.8M2.4 8h2.8M2.4 13h2.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M7.6 3h6M7.6 8h6M7.6 13h6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" opacity="0.55" />
+    </svg>
+  )
+}
+/** The seeded Process map page: stages of a thing, in order. */
+function IconSteps() {
+  return (
+    <svg {...S}>
+      <rect x="1.6" y="2" width="4.4" height="3.4" rx="1" stroke="currentColor" strokeWidth="1.4" />
+      <rect x="6" y="6.3" width="4.4" height="3.4" rx="1" stroke="currentColor" strokeWidth="1.4" />
+      <rect x="10.4" y="10.6" width="4" height="3.4" rx="1" stroke="currentColor" strokeWidth="1.4" />
     </svg>
   )
 }

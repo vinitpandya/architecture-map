@@ -69,6 +69,20 @@ export const SYSTEM_PAGES = [
     ],
   },
   {
+    slug: 'processes',
+    name: 'Process map',
+    layout: [
+      { i: 'pr-1', type: 'stat', title: '', x: 0, y: 0, w: 3, h: 2, options: { kind: 'processes' } },
+      { i: 'pr-2', type: 'stat', title: '', x: 3, y: 0, w: 3, h: 2, options: { kind: 'processLeaves' } },
+      { i: 'pr-3', type: 'stat', title: '', x: 6, y: 0, w: 3, h: 2, options: { kind: 'processPacks' } },
+      { i: 'pr-4', type: 'stat', title: '', x: 9, y: 0, w: 3, h: 2, options: { kind: 'coverage' } },
+      { i: 'pr-5', type: 'process-tree', title: '', x: 0, y: 2, w: 5, h: 8, options: { maxLevel: '' } },
+      { i: 'pr-6', type: 'map', title: '', x: 5, y: 2, w: 7, h: 8, options: { depth: '1' } },
+      { i: 'pr-7', type: 'process-children', title: '', x: 0, y: 10, w: 7, h: 5, options: {} },
+      { i: 'pr-8', type: 'process-coverage', title: '', x: 7, y: 10, w: 5, h: 5, options: { nodeKind: 'kafka.topic' } },
+    ],
+  },
+  {
     slug: 'health',
     name: 'Health',
     layout: [
@@ -78,6 +92,8 @@ export const SYSTEM_PAGES = [
       { i: 'hl-4', type: 'stat', title: '', x: 9, y: 0, w: 3, h: 2, options: { kind: 'quarantined' } },
       { i: 'hl-5', type: 'drift', title: '', x: 0, y: 2, w: 7, h: 6, options: { severity: 'warn' } },
       { i: 'hl-6', type: 'unresolved', title: '', x: 7, y: 2, w: 5, h: 6, options: {} },
+      { i: 'hl-7', type: 'process-coverage', title: '', x: 0, y: 8, w: 6, h: 5, options: { nodeKind: 'service' } },
+      { i: 'hl-8', type: 'process-coverage', title: '', x: 6, y: 8, w: 6, h: 5, options: { nodeKind: 'kafka.topic' } },
     ],
   },
 ]

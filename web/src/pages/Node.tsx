@@ -4,7 +4,7 @@ import { api, type Evidence, type GraphEdge, type GraphNode, type NodeDetail } f
 import { Card, Empty } from '../components/ui'
 import { DataGrid, type GridColumn } from '../components/DataGrid'
 import { EvidenceList } from '../components/EvidenceList'
-import { EDGE_LABEL, KIND_LABEL, idValue, nodeHref } from '../lib/nodes'
+import { EDGE_LABEL, KIND_LABEL, VIA_LABEL, displayCode, idValue, nodeHref, processHref } from '../lib/nodes'
 
 /**
  * What a node is, who touches it, and where in the source that is written
@@ -81,6 +81,8 @@ export function NodePage() {
       )}
 
       <KindBody detail={data} />
+
+      <Processes detail={data} />
 
       <Card title="Evidence" sub="Where this node is visible in the source">
         <EvidenceList evidence={data.evidence} />
@@ -173,6 +175,64 @@ function Description({ node, onSaved }: { node: GraphNode; onSaved: () => void }
         </span>
       </div>
     </form>
+  )
+}
+
+/* ------------------------------------------------------------- processes */
+
+/**
+ * What the business does here. On a topic this is the payoff — four business
+ * processes flow through it, and that is not derivable from the code at all.
+ * Deepest first: a level 3 says what actually happens, a level 1 says which
+ * part of the business it belongs to.
+ */
+function Processes({ detail }: { detail: NodeDetail }) {
+  const rows = detail.processes ?? []
+  const leaves = rows.filter((p) => p.level === 3)
+
+  return (
+    <Card
+      title={`Business processes (${rows.length})`}
+      sub={
+        rows.length
+          ? `${leaves.length} of them name this component directly`
+          : 'Nothing documented depends on this component'
+      }
+    >
+      {rows.length ? (
+        <DataGrid
+          rows={rows}
+          rowKey={(p) => p.id}
+          storageKey="node-processes"
+          defaultSort={null}
+          columns={[
+            {
+              key: 'code',
+              label: 'Code',
+              value: (p) => p.code,
+              render: (p) => <Link to={processHref(p.code)}>{displayCode(p.code)}</Link>,
+            },
+            {
+              key: 'name',
+              label: 'Process',
+              wide: true,
+              value: (p) => p.name,
+              render: (p) => <Link to={processHref(p.code)}>{p.name}</Link>,
+            },
+            { key: 'level', label: 'Level', align: 'right' as const, value: (p) => p.level },
+            { key: 'via', label: 'How it uses this', value: (p) => VIA_LABEL[p.via] ?? p.via },
+            { key: 'owner', label: 'Owner', value: (p) => p.owner ?? '' },
+          ]}
+        />
+      ) : (
+        <Empty title="No documented process touches this">
+          <span className="muted" style={{ fontSize: 12 }}>
+            Either a process pack is incomplete, or nothing in the business depends on it. Both are
+            worth knowing; neither is invented away.
+          </span>
+        </Empty>
+      )}
+    </Card>
   )
 }
 

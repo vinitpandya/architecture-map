@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { api, type GraphNode } from '../lib/api'
+import { api, type GraphNode, type Process } from '../lib/api'
 import { ALL_NODE_KINDS, useScope } from '../lib/scope'
-import { KIND_PLURAL, idValue } from '../lib/nodes'
+import { KIND_PLURAL, displayCode, idValue } from '../lib/nodes'
 import { Picker, type Option } from './Picker'
 
 /**
@@ -11,6 +11,7 @@ import { Picker, type Option } from './Picker'
 export function ScopeBar() {
   const { scope, setScope, resetScope, status } = useScope()
   const [nodes, setNodes] = useState<GraphNode[]>([])
+  const [processes, setProcesses] = useState<Process[]>([])
   const [loading, setLoading] = useState(false)
 
   // The focus picker searches the whole estate, not just what is on screen.
@@ -22,6 +23,19 @@ export function ScopeBar() {
       .then((d) => !cancelled && setNodes(d.nodes))
       .catch(() => !cancelled && setNodes([]))
       .finally(() => !cancelled && setLoading(false))
+    return () => {
+      cancelled = true
+    }
+  }, [status?.lastIngestAt])
+
+  // The process list is small enough to fetch whole, and it only moves when
+  // a pack is ingested.
+  useEffect(() => {
+    let cancelled = false
+    api
+      .get<{ processes: Process[] }>('/processes')
+      .then((d) => !cancelled && setProcesses(d.processes))
+      .catch(() => !cancelled && setProcesses([]))
     return () => {
       cancelled = true
     }
@@ -51,6 +65,15 @@ export function ScopeBar() {
   }))
 
   const repoOptions: Option[] = (status?.repos ?? []).map((r) => ({ value: r.repo, label: r.repo }))
+
+  // Indented by level, because the tree is the point: picking a level 1 gives
+  // the whole of it, picking a level 2 narrows to that stage.
+  const processOptions: Option[] = processes.map((p) => ({
+    value: p.code,
+    label: `${'\u2003'.repeat(p.level - 1)}${displayCode(p.code)} ${p.name}`,
+    sub: p.owner ?? undefined,
+    count: p.componentCount,
+  }))
 
   return (
     <div className="scope-bar">
@@ -98,6 +121,19 @@ export function ScopeBar() {
           onChange={(repos) => setScope({ repos })}
           placeholder="All repos"
           width={200}
+        />
+      )}
+
+      {processOptions.length > 0 && (
+        <Picker
+          label="Process"
+          options={processOptions}
+          selected={scope.process ? [scope.process] : []}
+          onChange={(next) => setScope({ process: next[0] ?? '' })}
+          multiple={false}
+          placeholder="Any process"
+          emptyText="No process packs loaded"
+          width={300}
         />
       )}
 

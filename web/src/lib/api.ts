@@ -93,6 +93,8 @@ export type GraphEdge = {
 export type GraphData = {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  /** The process the graph was restricted to, when one was asked for. */
+  process?: string | null
 }
 
 export type Evidence = {
@@ -122,7 +124,12 @@ export type Status = {
     drift: number
     driftWarn: number
     quarantined: number
+    processes: number
+    processLeaves: number
+    processPacks: number
+    quarantinedPacks: number
   }
+  coverage: { covered: number; total: number }
   driftByKind: Record<string, number>
   repos: {
     repo: string
@@ -142,6 +149,8 @@ export type NodeDetail = {
   out: GraphEdge[]
   in: GraphEdge[]
   evidence: Evidence[]
+  /** The business processes that run through this component, deepest first. */
+  processes: ProcessTouch[]
   /** Citations behind each edge on this page, keyed by edge id. */
   edgeEvidence: Record<string, Evidence[]>
   /** For a contract its own bindings, for a service its own, for a topic the
@@ -151,6 +160,92 @@ export type NodeDetail = {
   viaContract: GraphEdge[]
   neighbours: GraphNode[]
   drift: DriftFinding[]
+}
+
+/* ----------------------------------------------------------- layer B */
+
+export type ProcessSource = {
+  kind?: string
+  url?: string
+  title?: string
+  owner?: string
+  asOf?: string
+}
+
+/**
+ * One process at any level. A level 1 and a level 3 are the same shape — they
+ * differ only in how much they decompose and whether they name a component.
+ */
+export type Process = {
+  id: string
+  /** `2.1.1`, without its `L`. The hierarchy and the order both live here. */
+  code: string
+  level: number
+  parentId: string | null
+  name: string
+  description: string | null
+  owner: string | null
+  actor: string | null
+  trigger: string | null
+  outcome: string | null
+  optional: boolean
+  notes: string | null
+  tags: string[]
+  source: ProcessSource | null
+  packId: number
+  node: string | null
+  /** Kept verbatim whether or not it resolved; `id` is null when it did not. */
+  edge: { id: string | null; from: string; kind: EdgeKind; to: string } | null
+  childCount: number
+  componentCount: number
+  /** What this process names that the map does not have. Shown, never hidden. */
+  unresolved: { node: boolean; edge: boolean }
+}
+
+export type ProcessTouch = {
+  id: string
+  code: string
+  name: string
+  level: number
+  owner: string | null
+  via: 'node' | 'interaction' | 'touches' | 'exposes' | 'rollup'
+}
+
+export type ProcessComponent = GraphNode & { via: ProcessTouch['via'] }
+
+export type ProcessDetail = {
+  process: Process
+  ancestors: Process[]
+  children: Process[]
+  descendants: Process[]
+  components: ProcessComponent[]
+  edges: (GraphEdge & { via: 'interaction' | 'rollup' })[]
+  services: ProcessComponent[]
+  drift: DriftFinding[]
+  pack: ProcessPack | null
+}
+
+export type ProcessPack = {
+  id: number
+  pack: string
+  name: string | null
+  description: string | null
+  authored_at: string | null
+  ingested_at?: string
+  prompt_version?: string | null
+  producer_kind?: string | null
+  producer_detail?: string | null
+  source: ProcessSource | null
+  source_file?: string | null
+  status?: 'active' | 'superseded' | 'quarantined'
+  errors?: { path: string; message: string }[] | null
+  processes?: number
+}
+
+export type CoverageRow = {
+  node: GraphNode
+  processes: { code: string; name: string; level: number; via: ProcessTouch['via'] }[]
+  covered: boolean
 }
 
 export type DriftFinding = {
@@ -180,14 +275,14 @@ export type ContractVersions = {
 }
 
 export type SearchHit = {
-  subject_kind: 'node' | 'edge' | 'unresolved'
+  subject_kind: 'node' | 'edge' | 'unresolved' | 'process'
   subject_id: string
   title: string
   repo: string
   /** The FTS5 highlight of the matching text, with <mark> already in it. */
   snippet: string
   /** Node kind for a node hit, otherwise the subject kind. */
-  kind: NodeKind | 'edge' | 'unresolved'
+  kind: NodeKind | 'edge' | 'unresolved' | 'process'
   /** Both ends of an edge hit; null on anything else. */
   from: string | null
   to: string | null
@@ -242,6 +337,8 @@ export type ScopeData = {
   kinds: string[]
   repos: string[]
   includeExternal: boolean
+  /** A process code. Restricts the map to that process's components. */
+  process: string
 }
 
 export type Dashboard = {

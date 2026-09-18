@@ -28,6 +28,7 @@ export const DEFAULT_SCOPE: Scope = {
   kinds: ['service', 'kafka.topic', 'database', 'cache', 'endpoint'],
   repos: [],
   includeExternal: true,
+  process: '',
 }
 
 const STORAGE_KEY = 'architecture-map.scope'
@@ -117,6 +118,7 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
       kinds: scope.kinds.join(','),
       repos: scope.repos.join(','),
       includeExternal: String(scope.includeExternal),
+      process: scope.process,
     }),
     [scope]
   )
