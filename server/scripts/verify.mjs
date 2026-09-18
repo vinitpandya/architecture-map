@@ -467,6 +467,34 @@ if (stage === 'processes') {
     topicSearch.hits.map((h) => h.subject_id).slice(0, 6).join(', ')
   )
 
+  /* ---- the authoring prompt (§8): it is the whole of how a pack gets written,
+     and it is rendered rather than served flat. */
+  const { body: prompt } = await get('/prompt?name=author-processes&pack=onboarding')
+  const comment = prompt.text.slice(0, prompt.text.indexOf('-->') + 3)
+  const body = prompt.text.slice(prompt.text.indexOf('-->') + 3)
+  ok(
+    'the authoring prompt keeps its placeholder legend',
+    comment.includes('{{COMPONENTS}} → every component'),
+    comment.slice(0, 400)
+  )
+  ok('  …and does not paste the schema into the comment', !comment.includes('"$id"'), `${comment.length} chars`)
+  is(
+    '  …so the schema appears once, in the body',
+    prompt.text.split('"$id"').length - 1,
+    1
+  )
+  ok(
+    '  …every placeholder in the body is filled',
+    !/\{\{[A-Z_]+\}\}/.test(body),
+    (body.match(/\{\{[A-Z_]+\}\}/g) ?? []).join(', ')
+  )
+  ok('  …with the pack that was asked for', body.includes('authoring the pack `onboarding`'), 'pack not filled in')
+  ok(
+    '  …and the components and codes the author must not collide with',
+    body.includes('`svc:order-service`') && body.includes('`L2.1.1`'),
+    'components or codes missing'
+  )
+
   /* ---- removal */
   const removed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs'), '--remove'], {
     encoding: 'utf8',

@@ -637,13 +637,24 @@ router.get('/prompt', wrap(async (req, res) => {
     ? taken.map((p) => `- \`L${p.code}\` · ${p.name}`).join('\n')
     : '_No process codes are in use yet._'
 
+  const fill = (part) =>
+    part
+      .replace(/\{\{SCHEMA\}\}/g, schema)
+      .replace(/\{\{REPO\}\}/g, String(req.query.repo || '<repo>'))
+      .replace(/\{\{PACK\}\}/g, String(req.query.pack || '<pack>'))
+      .replace(/\{\{COMPONENTS\}\}/g, components)
+      .replace(/\{\{PROCESSES\}\}/g, processes)
+
+  // Every prompt opens with an HTML comment that documents its placeholders by
+  // name. Filling those in destroys the legend and pastes a second copy of the
+  // schema into the prompt — and an injected value containing `-->` would close
+  // the comment early and spill the rest into the text. A capturing split puts
+  // the comments at the odd indices, and they are passed through untouched.
   const text = fs
     .readFileSync(file, 'utf8')
-    .replace(/\{\{SCHEMA\}\}/g, schema)
-    .replace(/\{\{REPO\}\}/g, String(req.query.repo || '<repo>'))
-    .replace(/\{\{PACK\}\}/g, String(req.query.pack || '<pack>'))
-    .replace(/\{\{COMPONENTS\}\}/g, components)
-    .replace(/\{\{PROCESSES\}\}/g, processes)
+    .split(/(<!--[\s\S]*?-->)/)
+    .map((part, i) => (i % 2 ? part : fill(part)))
+    .join('')
   res.json({ name, text })
 }))
 

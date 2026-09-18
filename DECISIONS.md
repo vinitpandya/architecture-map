@@ -244,6 +244,13 @@ that does reach every one of them.
   one behind it.
 - **The `process-children` widget is "Process parts", not "Process steps".**
   §12.3 is explicit that there are none.
+- **`/api/prompt` fills placeholders everywhere except inside HTML comments.**
+  Every prompt opens with a comment documenting its placeholders by name, and
+  the renderer was filling those in — so the legend was destroyed and a second
+  copy of the schema (14KB for the manifest, more for the pack) was pasted into
+  the comment of every prompt the Scan page hands out. Worse in principle than
+  in practice: a scanned component's description containing `-->` would close
+  the comment early and spill the rest into the prompt body.
 
 ## Working
 
