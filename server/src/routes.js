@@ -510,7 +510,10 @@ router.get('/graph', wrap(async (req, res) => {
   let withinProcess = null
   if (processCode) {
     const proc = db.prepare('SELECT id FROM processes WHERE code = ?').get(processCode)
-    if (!proc) return res.json({ nodes: [], edges: [], process: null })
+    // An unknown process is an empty graph, not the whole estate — but the
+    // response still says which one was asked for, so the caller can tell the
+    // difference between "nothing matched" and "no filter".
+    if (!proc) return res.json({ nodes: [], edges: [], process: processCode, unknownProcess: true })
     withinProcess = new Set(
       db.prepare('SELECT node_id FROM process_components WHERE process_id = ?').all(proc.id).map((r) => r.node_id)
     )

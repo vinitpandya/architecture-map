@@ -186,7 +186,8 @@ function rebuildProcessRollup() {
   // It stops here on purpose: a process on a topic does NOT thereby touch
   // everything else on that topic, or every process would touch everything.
   for (const p of procs) {
-    for (const [nodeId] of bag(comps, p.id)) {
+    // Snapshotted, because addComp writes into the map being read.
+    for (const nodeId of [...bag(comps, p.id).keys()]) {
       if (kindOf.get(nodeId) !== 'endpoint') continue
       const service = exposedBy.get(nodeId)
       if (service) addComp(p.id, service, 'exposes')
@@ -196,8 +197,8 @@ function rebuildProcessRollup() {
   // 3 · upward, deepest first, so a level 3's components reach the level 1
   for (const p of [...procs].sort((a, b) => b.level - a.level)) {
     if (!p.parent_id) continue
-    for (const [nodeId] of bag(comps, p.id)) addComp(p.parent_id, nodeId, 'rollup')
-    for (const [edgeId] of bag(edges, p.id)) addEdge(p.parent_id, edgeId, 'rollup')
+    for (const nodeId of [...bag(comps, p.id).keys()]) addComp(p.parent_id, nodeId, 'rollup')
+    for (const edgeId of [...bag(edges, p.id).keys()]) addEdge(p.parent_id, edgeId, 'rollup')
   }
 
   const insComp = db.prepare('INSERT INTO process_components (process_id, node_id, via) VALUES (?, ?, ?)')
