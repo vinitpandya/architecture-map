@@ -200,6 +200,12 @@ version:
   findings above are the remaining ones, and they are where to look next.
 - **`stale-evidence` is not produced**, per SPEC §6 — it is reserved, and nothing
   re-reads the cited lines.
+- **`prompts/scan-pass2-link.md` renders with `{{MANIFESTS}}` still in it.**
+  `/api/prompt` substitutes `{{SCHEMA}}`, `{{REPO}}`, `{{PACK}}`, `{{COMPONENTS}}`
+  and `{{PROCESSES}}`, and nothing fills `{{MANIFESTS}}`. Nothing reaches it —
+  the Scan page offers only `scan-pass1` and `author-processes`, and pass 2 is
+  the next thing on the list below — but if you wire pass 2 up, that placeholder
+  is the first thing to fill in.
 - **A pack ingested before any manifest resolves nothing**, and that is correct:
   the link pass re-resolves after every ingest of either kind, so the manifest
   landing later fixes it. The seeder loads manifests first as a courtesy, not a
