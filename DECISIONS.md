@@ -216,7 +216,7 @@ that does reach every one of them.
   component", a typo in an unrelated `touches` entry silently hid the more
   interesting finding. It is now suppressed only when one of the interaction's
   own two ends is the thing that is missing.
-- **Every process is rebuilt from every active pack on ingest.** `processes.code`
+- **`processes` is a function of the active packs, rebuilt whole.** `processes.code`
   is unique, so when two packs declare one code the single row can only hold one
   writer — and the upsert transferred the row's `pack_id` to the newer pack.
   Re-ingesting that pack then deleted "its" rows, taking away a process the
@@ -224,7 +224,11 @@ that does reach every one of them.
   happened to be re-ingested. Replaying every active pack oldest-first is cheap
   at estate scale and cannot drift. `first_seen` is snapshotted across all
   processes rather than one pack's, and `last_seen` comes from each pack's own
-  `ingested_at`, so replaying a pack nobody touched does not move it.
+  `ingested_at`, so replaying a pack nobody touched does not move it. Oldest
+  first is well defined because `process_packs.id` is AUTOINCREMENT: the pack
+  just ingested always has the largest id and is always the last writer.
+  Deleting a pack has the identical hole — the cascade takes the row with it —
+  so `rebuildProcesses()` is exported and `seed:demo --remove` calls it too.
 - **An unresolved interaction no longer defames its two ends.** The process page
   took one boolean and struck through both components. On 3.2.3 both ends are
   real and one click away — the *relationship* is what the code does not have,

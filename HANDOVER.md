@@ -19,7 +19,7 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 126 assertions
+npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 129 assertions
 npm run build && npm run verify:ui   # the checks that need a browser — 48 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
@@ -55,7 +55,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 126 assertions across four stages, all passing.**
+**`npm run verify` — 129 assertions across four stages, all passing.**
 
 *Ingest (17, in-process against a fresh database).* `validate.mjs` exits 0 on the
 example and 1 on a `kind` typo naming `/edges/0/kind`. A quarantined manifest
@@ -91,7 +91,7 @@ without a process. `code=L2` reads the same process as `code=2`. Searching
 `2.3.3`, `L2.3.3` and `orders.matched.v1` all work. `--remove` clears packs,
 processes, the join tables and every process finding.
 
-*Packs (23, in-process).* The situations the demo estate cannot contain, because
+*Packs (26, in-process).* The situations the demo estate cannot contain, because
 its packs are well-formed on purpose. A pack whose `pack` field is not a string
 quarantines instead of throwing, and a malformed file in the inbox does not stop
 the good file behind it from landing. A typo in `touches` raises
@@ -101,7 +101,9 @@ re-ingesting the second one keeps the first one's processes — the bug this sta
 exists for. An orphan code raises its finding, keeps its own process, invents no
 parent and rolls into nothing; no row in `process_components` belongs to a
 process that does not exist. A leaf binding nothing raises `process-no-detail`.
-The demo estate is unharmed by all of it.
+Deleting a pack outright has the same hole as re-ingesting one, and does not
+take away a code another pack still declares either. The demo estate is
+unharmed by all of it.
 
 **`npm run verify:ui` — 48 checks in Chromium at 1280×900, all passing.**
 
@@ -119,6 +121,14 @@ working links, saying only that the relationship is not in the map.
 **By hand.** The inbox round trip: a manifest, a pack and a broken pack swept
 together, each routed by shape, the broken one quarantined with its ajv path and
 importing nothing. Every new screen looked at in both themes.
+
+**From a clean clone.** `git clone`, `npm install`, `npm run seed:demo`,
+`npm run build`, `npm run verify`, `npm start` — on a machine with none of this
+repository's `node_modules`, `data/` or `web/dist`. Every §14 number came out
+right first time, `npm start` served the built UI and the API on one port, and
+`git status` was **clean after the seeder ran**, which is the check that the
+generators are deterministic and what is committed under `demo/` is exactly what
+they produce.
 
 ## Nothing is failing
 

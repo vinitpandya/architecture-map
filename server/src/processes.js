@@ -161,20 +161,55 @@ function writeProcesses(json, packId, stamp, wasSeen) {
   return codes
 }
 
+/**
+ * `processes` is a pure function of the active packs, so it is rebuilt whole
+ * rather than patched — which is the only way the join can be right when two
+ * packs declare one code.
+ *
+ * `processes.code` is unique, so a single row can hold only one of them, and
+ * the upsert hands it to whichever pack wrote last. Clearing "this pack's rows"
+ * on the next re-ingest would then take away a row the other pack still
+ * declares, with nothing to bring it back until that pack happened to be
+ * re-ingested. Replaying them all is a few hundred rows at estate scale and
+ * cannot drift.
+ *
+ * Oldest pack first: `process_packs.id` is AUTOINCREMENT, so the pack just
+ * ingested always has the largest id and is always the last writer.
+ *
+ * Returns the codes each pack actually wrote, keyed by pack id.
+ */
+export const rebuildProcesses = db.transaction(() => {
+  // A process keeps its first_seen across the rebuild even though the row is
+  // deleted, so "since when has this been documented" stays true.
+  const wasSeen = new Map(
+    db.prepare('SELECT id, first_seen FROM processes').all().map((r) => [r.id, r.first_seen])
+  )
+
+  db.prepare('DELETE FROM processes').run()
+
+  const written = new Map()
+  for (const row of db
+    .prepare(`SELECT id, raw, ingested_at FROM process_packs WHERE status = 'active' ORDER BY id`)
+    .all()) {
+    let parsed = null
+    try {
+      parsed = JSON.parse(row.raw)
+    } catch {
+      // Stored by an earlier version of this code and no longer readable. It
+      // contributes nothing rather than stopping every pack behind it.
+      continue
+    }
+    written.set(row.id, writeProcesses(parsed, row.id, row.ingested_at, wasSeen))
+  }
+  return written
+})
+
 const upsertPack = db.transaction((json, sourceFile, now) => {
   const pack = json.pack
   const prior = db
     .prepare(`SELECT id FROM process_packs WHERE pack = ? AND status = 'active'`)
     .all(pack)
     .map((r) => r.id)
-
-  // A process keeps its first_seen across re-ingests even though the row is
-  // deleted and rebuilt, so "since when has this been documented" stays true.
-  // Taken for every process, not just this pack's, because the rebuild below
-  // replaces all of them.
-  const wasSeen = new Map(
-    db.prepare('SELECT id, first_seen FROM processes').all().map((r) => [r.id, r.first_seen])
-  )
 
   if (prior.length) {
     const marks = prior.map(() => '?').join(',')
@@ -205,27 +240,7 @@ const upsertPack = db.transaction((json, sourceFile, now) => {
       JSON.stringify(json)
     ).lastInsertRowid
 
-  // Every process is rebuilt from every active pack, not just this one.
-  // `processes.code` is unique, so when two packs declare one code the single
-  // row can only hold one of them — and deleting "this pack's rows" would then
-  // take away a row the other pack still declares, with nothing to bring it
-  // back until that pack happened to be re-ingested. Replaying them all is
-  // cheap at estate scale and cannot drift. Oldest pack first, so the pack
-  // just ingested is the last writer and wins a collision.
-  db.prepare('DELETE FROM processes').run()
-  let codes = new Set()
-  for (const row of db
-    .prepare(`SELECT id, raw, ingested_at FROM process_packs WHERE status = 'active' ORDER BY id`)
-    .all()) {
-    let parsed = null
-    try {
-      parsed = JSON.parse(row.raw)
-    } catch {
-      continue
-    }
-    const written = writeProcesses(parsed, row.id, row.ingested_at ?? now, wasSeen)
-    if (row.id === packId) codes = written
-  }
+  const codes = rebuildProcesses().get(packId) ?? new Set()
 
   // Counted off the distinct codes, not the array: a pack that declares one
   // code twice writes one row, and the log should say so rather than repeat

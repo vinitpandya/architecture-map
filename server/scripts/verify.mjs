@@ -677,6 +677,41 @@ if (stage === 'packs') {
     1
   )
 
+  /* ---- and removing a pack has the same hole as re-ingesting one: the row
+     it was holding may be a code somebody else still declares. */
+  ingestProcessPack(
+    envelope('probe-keeper', [{ code: '4', name: 'Shared with a pack about to go' }]),
+    'probe-keeper.json'
+  )
+  ingestProcessPack(
+    envelope('probe-leaver', [{ code: '4', name: 'Shared with a pack about to go' }]),
+    'probe-leaver.json'
+  )
+  is(
+    'the later pack holds the shared row',
+    db
+      .prepare(
+        `SELECT pk.pack AS pack FROM processes p JOIN process_packs pk ON pk.id = p.pack_id WHERE p.code = '4'`
+      )
+      .get()?.pack,
+    'probe-leaver'
+  )
+  const { rebuildProcesses } = await import('../src/processes.js')
+  const { linkPass } = await import('../src/link.js')
+  db.prepare(`DELETE FROM process_packs WHERE pack = 'probe-leaver'`).run()
+  rebuildProcesses()
+  linkPass()
+  is('deleting it does not take the code the other pack declares', n(`SELECT COUNT(*) n FROM processes WHERE code = '4'`), 1)
+  is(
+    '  …the pack that still declares it now holds it',
+    db
+      .prepare(
+        `SELECT pk.pack AS pack FROM processes p JOIN process_packs pk ON pk.id = p.pack_id WHERE p.code = '4'`
+      )
+      .get()?.pack,
+    'probe-keeper'
+  )
+
   /* ---- and the demo estate is untouched by all of it */
   is('the ten demo services are still there', n(`SELECT COUNT(*) n FROM nodes WHERE kind = 'service'`), 10)
   is('the demo processes are still there', n(`SELECT COUNT(*) n FROM processes WHERE code = '2' OR code LIKE '2.%'`), 20)

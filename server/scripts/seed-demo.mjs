@@ -18,7 +18,7 @@ import path from 'node:path'
 import { ROOT } from '../src/config.js'
 import { db } from '../src/db.js'
 import { ingestManifest, rebuildSearch, validateManifest } from '../src/ingest.js'
-import { ingestProcessPack, validateProcessPack } from '../src/processes.js'
+import { ingestProcessPack, rebuildProcesses, validateProcessPack } from '../src/processes.js'
 import { linkPass } from '../src/link.js'
 import { buildManifests } from './demo/manifests.mjs'
 import { SERVICES } from './demo/estate.mjs'
@@ -115,6 +115,10 @@ function remove({ files = false } = {}) {
     // reference-counted, and the join tables are rebuilt by the link pass.
     db.prepare(`DELETE FROM manifests WHERE repo IN (${marks})`).run(...REPOS)
     db.prepare(`DELETE FROM process_packs WHERE pack IN (${packMarks})`).run(...PACK_IDS)
+    // The demo pack's row may have been holding a code somebody else's pack
+    // also declares — the cascade would take that away and nothing would bring
+    // it back. `processes` is a function of the active packs, so rebuild it.
+    rebuildProcesses()
     db.prepare(
       `DELETE FROM nodes
        WHERE id NOT IN (SELECT node_id FROM node_sources)
