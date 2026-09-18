@@ -25,7 +25,7 @@ type Prefs = { sort: Sort; group: string | null }
 function loadPrefs(storageKey?: string): Prefs | null {
   if (!storageKey) return null
   try {
-    const raw = localStorage.getItem(`jira-reports.grid.${storageKey}`)
+    const raw = localStorage.getItem(`architecture-map.grid.${storageKey}`)
     return raw ? (JSON.parse(raw) as Prefs) : null
   } catch {
     return null
@@ -35,7 +35,7 @@ function loadPrefs(storageKey?: string): Prefs | null {
 function savePrefs(storageKey: string | undefined, prefs: Prefs) {
   if (!storageKey) return
   try {
-    localStorage.setItem(`jira-reports.grid.${storageKey}`, JSON.stringify(prefs))
+    localStorage.setItem(`architecture-map.grid.${storageKey}`, JSON.stringify(prefs))
   } catch {
     /* ignore */
   }

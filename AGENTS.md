@@ -49,19 +49,33 @@ verified without them. Do not attempt to clone anything, do not stub the
 scanner against imaginary real repos, and do not weaken a test because real data
 is unavailable.
 
+## The shell is already built
+
+Do not rebuild it. `npm install && npm run dev` gives you a running app: the
+sidebar, five seeded pages, addable and draggable custom pages, the widget grid
+with add/configure/resize/full-screen, the filter row, search, node detail, the
+scan page and the ingest log. The widget registry has nine types wired up.
+
+What is missing is the business logic those screens read from. Every screen is
+already pointed at a real endpoint running a real query — they render empty
+states because nothing has been ingested yet. Finish Phase 1 and most of the
+app lights up at once.
+
+So: **add a widget by adding a `WidgetDef` and a `WidgetBody` case**, not by
+inventing a new rendering path. Add an endpoint beside the existing ones in
+`routes.js`. If you find yourself writing a second Modal, a second table or a
+second fetch hook, stop and go find the one that already exists.
+
 ## If you run short of time
 
-The build order is deliberately arranged so that stopping early still leaves
-something useful:
+The build order is arranged so stopping early still leaves something useful:
 
-- Stopping after **Phase 2** leaves a working, verifiable back end.
-- Stopping after **Phase 4** leaves a genuinely usable app — search, detail
-  pages, drift and the operator page all work; only the visual map is missing.
-- **Phase 5** is the graph, which is the headline feature but also the one with
-  the most unknowns.
+- After **Phase 3** the app is fully demonstrable on the demo estate — every
+  page populated, only search results and the map still missing.
+- **Phase 5** (the map) is the headline feature and also the one with the most
+  unknowns. Do not start it on a broken Phase 3.
 
-Do not start Phase 5 with a broken Phase 4. A missing map is a known gap; a
-half-working everything is not.
+A missing map is a known gap. A half-working everything is not.
 
 ## Handover
 

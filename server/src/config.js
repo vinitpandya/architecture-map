@@ -6,22 +6,17 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 export const ROOT = path.resolve(here, '..', '..')
 
 export const PORT = Number(process.env.PORT || 8787)
+
 export const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(ROOT, process.env.DATA_DIR)
   : path.join(ROOT, 'data')
 
-export const REDIRECT_URI =
-  process.env.OAUTH_REDIRECT_URI || `http://localhost:${PORT}/api/auth/callback`
+/** Where scan manifests are dropped for ingest. */
+export const INBOX_DIR = process.env.INBOX_DIR
+  ? path.resolve(ROOT, process.env.INBOX_DIR)
+  : path.join(ROOT, 'inbox')
 
-export const SCOPES =
-  process.env.JIRA_SCOPES || 'read:jira-work read:jira-user offline_access'
+export const SCHEMA_FILE = path.join(ROOT, 'schema', 'manifest.schema.json')
 
-// Credentials may come from .env or from the Settings page (stored in app_config).
-export const ENV_CLIENT_ID = process.env.JIRA_CLIENT_ID || ''
-export const ENV_CLIENT_SECRET = process.env.JIRA_CLIENT_SECRET || ''
-
-export const AUTH_BASE = 'https://auth.atlassian.com'
-export const API_BASE = 'https://api.atlassian.com'
-
-// The web dev server; used to bounce the browser back after the OAuth callback.
+/** The web dev server, for CORS-free local development. */
 export const WEB_ORIGIN = process.env.WEB_ORIGIN || 'http://localhost:5173'

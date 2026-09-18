@@ -278,7 +278,7 @@ export function ResizableBody({
   max?: number
   children: (height: number) => ReactNode
 }) {
-  const key = `jira-reports.size.${storageKey}`
+  const key = `architecture-map.size.${storageKey}`
   const [height, setHeight] = useState<number>(() => {
     const stored = Number(localStorage.getItem(key))
     return Number.isFinite(stored) && stored >= min && stored <= max ? stored : defaultHeight

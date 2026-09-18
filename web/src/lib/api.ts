@@ -1,0 +1,244 @@
+export class ApiError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`/api${path}`, {
+    ...init,
+    headers: {
+      Accept: 'application/json',
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...init?.headers,
+    },
+  })
+  const text = await res.text()
+  const data = text ? JSON.parse(text) : null
+  if (!res.ok) throw new ApiError(res.status, data?.error || res.statusText)
+  return data as T
+}
+
+export const api = {
+  get: <T,>(path: string, params?: Record<string, unknown>) => {
+    const qs = new URLSearchParams()
+    for (const [k, v] of Object.entries(params ?? {})) {
+      if (v !== undefined && v !== null && v !== '') qs.set(k, String(v))
+    }
+    const q = qs.toString()
+    return request<T>(`${path}${q ? `?${q}` : ''}`)
+  },
+  post: <T,>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
+  put: <T,>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined }),
+  del: <T,>(path: string) => request<T>(path, { method: 'DELETE' }),
+}
+
+/* ------------------------------------------------------------------ types */
+
+export type NodeKind =
+  | 'service'
+  | 'kafka.topic'
+  | 'database'
+  | 'cache'
+  | 'endpoint'
+  | 'contract'
+  | 'external'
+
+export type EdgeKind =
+  | 'kafka.produce'
+  | 'kafka.consume'
+  | 'db.read'
+  | 'db.write'
+  | 'db.owns'
+  | 'cache.read'
+  | 'cache.write'
+  | 'http.call'
+  | 'http.expose'
+  | 'depends.on'
+  | 'topic.schema'
+
+export type GraphNode = {
+  id: string
+  kind: NodeKind
+  name: string
+  description: string | null
+  engine: string | null
+  method: string | null
+  path: string | null
+  contractType: string | null
+  language: string | null
+  team: string | null
+  ownerRepo: string | null
+  orphan: boolean
+  degree?: number
+  hidden?: boolean
+  confirmed?: boolean
+}
+
+export type GraphEdge = {
+  id: string
+  from: string
+  to: string
+  kind: EdgeKind
+  contractId: string | null
+  description: string | null
+  confidence: 'high' | 'medium' | 'low'
+  repo: string
+}
+
+export type Evidence = {
+  id: number
+  subject_kind: string
+  subject_id: string
+  repo: string
+  file: string
+  line: number
+  end_line: number | null
+  snippet: string
+}
+
+export type Status = {
+  ready: boolean
+  counts: {
+    services: number
+    topics: number
+    databases: number
+    caches: number
+    contracts: number
+    endpoints: number
+    externals: number
+    orphans: number
+    edges: number
+    unresolved: number
+    drift: number
+    driftWarn: number
+    quarantined: number
+  }
+  driftByKind: Record<string, number>
+  repos: {
+    repo: string
+    commit: string | null
+    branch: string | null
+    scannedAt: string | null
+    ingestedAt: string | null
+    producer: string | null
+  }[]
+  lastIngestAt: string | null
+}
+
+export type NodeDetail = {
+  node: GraphNode
+  out: GraphEdge[]
+  in: GraphEdge[]
+  evidence: Evidence[]
+  bindings: { contract_id: string; service_id: string; version: string | null }[]
+  neighbours: GraphNode[]
+  drift: DriftFinding[]
+}
+
+export type DriftFinding = {
+  id: number
+  kind: string
+  subject_id: string | null
+  severity: 'info' | 'warn'
+  detail: string
+  data: unknown
+  detected_at: string
+}
+
+export type TopicFlow = {
+  topic: { id: string; name: string } | null
+  producers: (GraphEdge & { serviceName: string | null; team: string | null })[]
+  consumers: (GraphEdge & { serviceName: string | null; team: string | null })[]
+}
+
+export type ContractVersions = {
+  contracts: {
+    contractId: string
+    name: string | null
+    bindings: { serviceId: string; version: string | null }[]
+    versions: (string | null)[]
+    skew: boolean
+  }[]
+}
+
+export type SearchHit = {
+  subject_kind: string
+  subject_id: string
+  title: string
+  repo: string
+  excerpt: string
+}
+
+export type UnresolvedRow = {
+  id: number
+  repo: string
+  expected: string
+  raw: string
+  reason: string | null
+}
+
+export type RepoRow = {
+  repo: string
+  url?: string
+  commit: string | null
+  scannedAt: string | null
+  ingestedAt: string | null
+}
+
+export type ManifestRow = {
+  id: number
+  repo: string
+  commit_sha: string | null
+  scanned_at: string | null
+  ingested_at: string
+  prompt_version: string | null
+  producer_kind: string | null
+  service_id: string | null
+  source_file: string | null
+  status: 'active' | 'superseded' | 'quarantined'
+  errors: { path: string; message: string }[] | null
+}
+
+/* ------------------------------------------------------------ pages */
+
+export type WidgetConfig = {
+  i: string
+  type: string
+  title: string
+  x: number
+  y: number
+  w: number
+  h: number
+  options: Record<string, string>
+}
+
+export type ScopeData = {
+  focus: string
+  depth: string
+  kinds: string[]
+  repos: string[]
+  includeExternal: boolean
+}
+
+export type Dashboard = {
+  id: number
+  name: string
+  slug: string | null
+  layout: WidgetConfig[]
+  scope: ScopeData | null
+  sortOrder: number
+  updatedAt: number
+}
+
+export type DashboardMeta = {
+  id: number
+  name: string
+  slug: string | null
+  sortOrder: number
+  updatedAt: number
+}
