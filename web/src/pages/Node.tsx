@@ -188,15 +188,24 @@ function Description({ node, onSaved }: { node: GraphNode; onSaved: () => void }
  */
 function Processes({ detail }: { detail: NodeDetail }) {
   const rows = detail.processes ?? []
-  const leaves = rows.filter((p) => p.level === 3)
+  // Provenance is `via`, not level. A level 3 can reach a service through the
+  // endpoint it calls without naming it, and a level 1 or 2 is allowed to name
+  // a component directly — so counting level 3s answered a different question
+  // than the sentence asked, and contradicted the "How it uses this" column
+  // one line below.
+  const named = rows.filter((p) => p.via === 'node' || p.via === 'touches' || p.via === 'interaction')
 
   return (
     <Card
       title={`Business processes (${rows.length})`}
       sub={
-        rows.length
-          ? `${leaves.length} of them name this component directly`
-          : 'Nothing documented depends on this component'
+        !rows.length
+          ? 'Nothing documented depends on this component'
+          : named.length === rows.length
+            ? 'Each of them names this component directly'
+            : named.length
+              ? `${named.length} of them name this component directly; the rest reach it through something else`
+              : 'All of them reach it through something else — an endpoint it serves, or a part further down'
       }
     >
       {rows.length ? (
@@ -615,8 +624,15 @@ function BindingGrid({
   skew?: boolean
 }) {
   // Sorted by version so a divergence is one glance, not a hunt down a column.
+  // `numeric` because a plain lexical compare puts 3.10.0 below 3.9.0, and the
+  // first row is painted as the version that constrains a change — getting it
+  // backwards points the reader at the wrong service. This is the same
+  // ordering trap SPEC-PROCESSES §3 spells out for process codes, and it is
+  // what DataGrid's own comparator already does when you click the header.
   const rows = [...bindings].sort(
-    (a, b) => String(a.version).localeCompare(String(b.version)) || a.service_id.localeCompare(b.service_id)
+    (a, b) =>
+      String(a.version).localeCompare(String(b.version), undefined, { numeric: true }) ||
+      a.service_id.localeCompare(b.service_id)
   )
   const lowest = rows[0]?.version
 

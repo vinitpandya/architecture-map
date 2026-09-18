@@ -677,8 +677,23 @@ function participants(f: DriftFinding): { id: string | null; label: string; note
   const services = (d as { services?: { serviceId: string; name?: string; how?: string }[] }).services
   if (services) return services.map((x) => ({ id: x.serviceId, label: x.name ?? idValue(x.serviceId), note: x.how }))
 
-  const claims = (d as { claims?: { repo: string; kind: string }[] }).claims
-  if (claims) return claims.map((c) => ({ id: null, label: c.repo, note: c.kind }))
+  // Two findings key on `claims` with different shapes: Layer A's
+  // `multiple-owners` claims a node by repo and edge kind, Layer B's
+  // `process-duplicate-code` claims a code by pack and how many times. Read
+  // by the wrong names, every claimant rendered as an empty bullet — on the
+  // one finding whose entire point is naming who collided.
+  const claims = (d as { claims?: { repo?: string; kind?: string; pack?: string; times?: number }[] }).claims
+  if (claims) {
+    return claims.map((c) =>
+      c.pack !== undefined
+        ? {
+            id: null,
+            label: c.pack,
+            note: (c.times ?? 1) > 1 ? `declares it ${c.times} times` : 'declares it',
+          }
+        : { id: null, label: c.repo ?? '', note: c.kind }
+    )
+  }
 
   const ids = (d as { ids?: string[] }).ids
   if (ids) return ids.map((id) => ({ id, label: id }))
@@ -768,8 +783,10 @@ function Finding({ finding }: { finding: DriftFinding }) {
         <div className="drift-body">
           {who.length > 0 && (
             <ul className="drift-parties">
-              {who.map((p) => (
-                <li key={`${p.id ?? ''}${p.label}`}>
+              {who.map((p, i) => (
+                // Indexed, because two parties can legitimately carry the same
+                // label — the same pack claiming one code twice, for instance.
+                <li key={`${i}:${p.id ?? ''}${p.label}`}>
                   {p.id ? (
                     <NodeLink id={p.id} label={p.label} />
                   ) : (
@@ -844,13 +861,36 @@ const NO_PACKS = (
   </Empty>
 )
 
+/**
+ * Nothing came back — but "no packs are loaded" and "this widget's own filter
+ * matched nothing" are different facts, and only the first is a reason to go
+ * and run the seeder. `packs` is the count off `/api/status`, which knows.
+ */
+const nothingHere = (packs: number | undefined, filtered: boolean, what: string) => {
+  if (!packs) return NO_PACKS
+  return (
+    <Empty title={filtered ? `No ${what} match this widget's filter` : `No ${what} to show`}>
+      <span className="muted" style={{ fontSize: 12 }}>
+        {packs} pack{packs === 1 ? ' is' : 's are'} loaded. Open ⚙ to widen or clear the filter.
+      </span>
+    </Empty>
+  )
+}
+
 function ProcessTreeBody({ widget }: { widget: WidgetConfig }) {
+  const { status } = useScope()
   const { data } = useQuery<{ processes: Process[] }>('/processes', {
     root: widget.options.rootCode || '',
     maxLevel: widget.options.maxLevel || '',
   })
   if (!data) return null
-  if (!data.processes.length) return NO_PACKS
+  if (!data.processes.length) {
+    return nothingHere(
+      status?.counts.processPacks,
+      !!(widget.options.rootCode || widget.options.maxLevel),
+      'processes'
+    )
+  }
   return <ProcessTree processes={data.processes} openToLevel={2} showOwner={false} />
 }
 
@@ -944,8 +984,8 @@ function ProcessFlowBody({ widget }: { widget: WidgetConfig }) {
       </Empty>
     )
   if (!data) return null
-  if (!data.children.some((c) => c.edge))
-    return <Empty title="Nothing to draw — no part of this names an interaction" />
+  if (!data.children.length)
+    return <Empty title="Nothing to draw — this process has no parts beneath it" />
 
   return (
     <ProcessFlow
@@ -986,26 +1026,29 @@ function ProcessCoverageBody({ widget }: { widget: WidgetConfig }) {
             label: 'Processes',
             wide: true,
             value: (c) => c.processes.length,
-            render: (c) =>
-              c.processes.length ? (
+            render: (c) => {
+              // The rollup means a component reached by a level 3 is also
+              // listed under its level 2 and level 1, so only the most
+              // specific level is worth a chip. Filtering to level 3 outright
+              // was the same idea, but it rendered a blank cell for a
+              // component accounted for solely by a parent that names it —
+              // which §5 explicitly allows — while the summary line above
+              // counted it as covered.
+              const deepest = c.processes.reduce((d, p) => Math.max(d, p.level), 0)
+              const shown = c.processes.filter((p) => p.level === deepest)
+              return shown.length ? (
                 <span className="proc-chiplist">
-                  {c.processes
-                    .filter((p) => p.level === 3)
-                    .slice(0, 4)
-                    .map((p) => (
-                      <Link key={p.code} to={processHref(p.code)} title={p.name}>
-                        {displayCode(p.code)}
-                      </Link>
-                    ))}
-                  {c.processes.filter((p) => p.level === 3).length > 4 && (
-                    <span className="muted">
-                      +{c.processes.filter((p) => p.level === 3).length - 4}
-                    </span>
-                  )}
+                  {shown.slice(0, 4).map((p) => (
+                    <Link key={p.code} to={processHref(p.code)} title={p.name}>
+                      {displayCode(p.code)}
+                    </Link>
+                  ))}
+                  {shown.length > 4 && <span className="muted">+{shown.length - 4}</span>}
                 </span>
               ) : (
                 <span className="muted">nothing documented</span>
-              ),
+              )
+            },
           },
         ]}
       />
@@ -1014,13 +1057,16 @@ function ProcessCoverageBody({ widget }: { widget: WidgetConfig }) {
 }
 
 function ProcessListBody({ widget }: { widget: WidgetConfig }) {
+  const { status } = useScope()
   const { data } = useQuery<{ processes: Process[] }>('/processes', {
     owner: widget.options.owner || '',
     limit: widget.options.limit || '',
   })
   if (!data) return null
   const leaves = data.processes.filter((p) => p.childCount === 0)
-  if (!leaves.length) return NO_PACKS
+  if (!leaves.length) {
+    return nothingHere(status?.counts.processPacks, !!(widget.options.owner || widget.options.limit), 'actions')
+  }
 
   return (
     <DataGrid

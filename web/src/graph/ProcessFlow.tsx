@@ -31,32 +31,47 @@ const participantFor = (id: string) =>
  */
 const clean = (s: string) => s.replace(/["'`;:#<>\n]/g, ' ').replace(/\s+/g, ' ').trim()
 
-export function processDiagram(children: Process[], nameOf: (id: string) => string): string {
+export function processDiagram(
+  children: Process[],
+  nameOf: (id: string) => string,
+  title = 'This process'
+): string {
   const lines = ['sequenceDiagram', '  autonumber']
   const alias = new Map<string, string>()
-  const declare = (id: string) => {
+  const declare = (id: string, label?: string) => {
     if (alias.has(id)) return alias.get(id)!
     const key = `P${alias.size}`
     alias.set(id, key)
-    lines.push(`  participant ${key} as ${clean(nameOf(id)) || key}`)
+    lines.push(`  participant ${key} as ${clean(label ?? nameOf(id)) || key}`)
     return key
   }
 
   // Participants are declared in order of first appearance, which is the order
-  // the reader meets them.
+  // the reader meets them: an interaction's two ends, or — for a step with no
+  // interaction of its own — the component it happens at.
   for (const child of children) {
-    if (!child.edge) continue
-    const { source, target } = flowDirection(child.edge)
-    declare(participantFor(source))
-    declare(participantFor(target))
+    if (child.edge) {
+      const { source, target } = flowDirection(child.edge)
+      declare(participantFor(source))
+      declare(participantFor(target))
+    } else if (child.node) {
+      declare(participantFor(child.node))
+    }
   }
+
+  // A level 1's stages usually name nothing at all — decomposition is the
+  // point, and the detail lives a level down. The process itself is then the
+  // only participant there is, and each stage is a note against it. Without
+  // this the diagram referred to a `P0` it never declared.
+  const fallback = alias.size ? null : declare('__process__', title)
 
   for (const child of children) {
     const label = clean(`${child.code} ${child.name}`)
     if (!child.edge) {
-      // Nothing to draw an arrow between, but the step still happened.
-      const anchor = [...alias.values()][0]
-      lines.push(anchor ? `  Note over ${anchor}: ${label}` : `  Note over P0: ${label}`)
+      // Nothing to draw an arrow between, but the step still happened — and it
+      // is drawn against the thing it happens at when it names one.
+      const at = child.node ? alias.get(participantFor(child.node)) : undefined
+      lines.push(`  Note over ${at ?? fallback ?? [...alias.values()][0]}: ${label}`)
       continue
     }
     const { source, target } = flowDirection(child.edge)
@@ -70,7 +85,7 @@ export function processDiagram(children: Process[], nameOf: (id: string) => stri
     if (!child.edge.id) lines.push(`  Note right of ${to}: ${clean(verb)} — not in the map`)
   }
 
-  if (!children.length) lines.push('  Note over P0: nothing to draw')
+  if (!children.length) lines.push(`  Note over ${declare('__process__', title)}: nothing to draw`)
   return lines.join('\n')
 }
 
@@ -87,7 +102,7 @@ export function ProcessFlow({
   const host = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [svg, setSvg] = useState<string | null>(null)
-  const source = useMemo(() => processDiagram(children, nameOf), [children, nameOf])
+  const source = useMemo(() => processDiagram(children, nameOf, title), [children, nameOf, title])
 
   useEffect(() => {
     let cancelled = false

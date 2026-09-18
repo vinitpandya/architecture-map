@@ -37,7 +37,7 @@ export function MapCanvas({
   pinned?: boolean
 }) {
   const { data, loading } = useQuery<GraphData>('/graph', { focus, depth })
-  const { setScope } = useScope()
+  const { setScope, status } = useScope()
   const [params, setParams] = useSearchParams()
   const theme = useThemeVersion()
 
@@ -52,6 +52,14 @@ export function MapCanvas({
   const nodes = data?.nodes ?? []
   const edges = data?.edges ?? []
   const key = useMemo(() => layoutKey(nodes, edges), [nodes, edges])
+
+  // A selection the graph no longer contains has no neighbours, so every node
+  // on the map counts as un-adjacent and the whole canvas dims with nothing
+  // showing a selection ring to explain it — while the inspector goes on
+  // describing a node that is not there.
+  useEffect(() => {
+    if (selected && data && !data.nodes.some((n) => n.id === selected)) setSelected(null)
+  }, [data, selected])
 
   /* ------------------------------------------------------------- layout */
 
@@ -155,11 +163,19 @@ export function MapCanvas({
 
   if (!data && !positions) return <div className="map-loading" style={{ height }}><span className="spinner" /></div>
   if (data && !nodes.length) {
+    // An empty graph has three quite different causes and they need three
+    // different sentences. Telling somebody with ten ingested manifests to run
+    // the seeder, because their filter row matched nothing, is the worst of the
+    // three — it points at the database when the answer is on screen.
+    const ingested = (status?.repos.length ?? 0) > 0
+    const [title, hint] = !ingested
+      ? ['Nothing ingested yet', 'Run a scan, or npm run seed:demo for the sample estate.']
+      : focus
+        ? ['Nothing connected to that node', 'Widen the depth or clear the focus.']
+        : ['Nothing matches these filters', 'Widen Show, Repos or Process in the row above.']
     return (
-      <Empty title={focus ? 'Nothing connected to that node' : 'Nothing ingested yet'}>
-        <span className="muted" style={{ fontSize: 12 }}>
-          {focus ? 'Widen the depth or clear the focus.' : 'Run a scan, or npm run seed:demo for the sample estate.'}
-        </span>
+      <Empty title={title}>
+        <span className="muted" style={{ fontSize: 12 }}>{hint}</span>
       </Empty>
     )
   }

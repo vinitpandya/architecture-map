@@ -242,6 +242,20 @@ export type ProcessPack = {
   processes?: number
 }
 
+/**
+ * What one document did on its way in, whether it arrived through the inbox or
+ * was dropped on the Scan page. `errors` is ajv's, already explained.
+ */
+export type IngestResult = {
+  file: string
+  kind: 'manifest' | 'process-pack' | null
+  ok: boolean
+  errors?: { path: string; message: string }[] | null
+  repo?: string
+  pack?: string
+  counts?: Record<string, number>
+}
+
 export type CoverageRow = {
   node: GraphNode
   processes: { code: string; name: string; level: number; via: ProcessTouch['via'] }[]

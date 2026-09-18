@@ -231,7 +231,11 @@ function Flow({
 }) {
   const [view, setView] = useState<'list' | 'diagram'>('list')
   const nameOf = (id: string) => components.find((c) => c.id === id)?.name ?? idValue(id)
-  const drawable = children.some((c) => c.edge)
+  // Every process with children has a diagram, per §8: "because the children
+  // are the flow, this works at every level — L2 draws four boxes, L2.1 draws
+  // its four actions". A level 1's stages carry no interaction of their own,
+  // which is the `Note over` case, not a reason to withhold the view.
+  const drawable = children.length > 0
 
   return (
     <Card

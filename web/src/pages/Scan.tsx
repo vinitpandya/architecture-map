@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
-import { api, type ProcessPack, type RepoRow } from '../lib/api'
+import { useEffect, useRef, useState } from 'react'
+import { api, type IngestResult, type ProcessPack, type RepoRow } from '../lib/api'
 import { useScope } from '../lib/scope'
 import { Banner, Card, Empty } from '../components/ui'
+import { relative } from '../lib/format'
 import { DataGrid } from '../components/DataGrid'
 
 /**
@@ -10,7 +11,7 @@ import { DataGrid } from '../components/DataGrid'
  * network — deliberately, so how the JSON is produced stays interchangeable.
  */
 export function ScanPage() {
-  const { sweepInbox, ingesting, ingestError, status } = useScope()
+  const { sweepInbox, ingesting, ingestError, ingestResults, ingestFiles, status } = useScope()
   const [repos, setRepos] = useState<RepoRow[]>([])
   const [configured, setConfigured] = useState(true)
   const [repo, setRepo] = useState('')
@@ -66,11 +67,6 @@ export function ScanPage() {
           <h1>Scan</h1>
           <p>Copy the prompt, run it inside the repository, drop the JSON in the inbox.</p>
         </div>
-        <div className="row">
-          <button type="button" className="primary" disabled={ingesting} onClick={() => void sweepInbox()}>
-            {ingesting ? 'Sweeping…' : 'Sweep inbox'}
-          </button>
-        </div>
       </div>
 
       {ingestError && <Banner kind="error" title="Ingest failed">{ingestError}</Banner>}
@@ -87,7 +83,20 @@ export function ScanPage() {
                 value: (r) => r.commit ?? '',
                 render: (r) => (r.commit ? <code>{r.commit}</code> : <span className="muted">never scanned</span>),
               },
-              { key: 'scannedAt', label: 'Scanned', value: (r) => r.scannedAt ?? '' },
+              {
+                key: 'scannedAt',
+                label: 'Scanned',
+                // §10 asks for relative time. The ISO string is still the sort
+                // value and the tooltip, because "7 days ago" is the answer to
+                // "is this stale" and the timestamp is the answer to "when".
+                value: (r) => r.scannedAt ?? '',
+                render: (r) =>
+                  r.scannedAt ? (
+                    <span title={r.scannedAt}>{relative(Date.parse(r.scannedAt))}</span>
+                  ) : (
+                    <span className="muted">never</span>
+                  ),
+              },
             ]}
             rowKey={(r) => r.repo}
           />
@@ -99,6 +108,13 @@ export function ScanPage() {
           </Empty>
         )}
       </Card>
+
+      <Inbox
+        onFiles={ingestFiles}
+        onSweep={sweepInbox}
+        busy={ingesting}
+        results={ingestResults}
+      />
 
       <Card
         title={tab === 'processes' ? 'Process authoring prompt' : 'Pass 1 prompt'}
@@ -163,5 +179,108 @@ export function ScanPage() {
         )}
       </Card>
     </div>
+  )
+}
+
+/**
+ * §10's third section. Two ways in and one account of what happened: drop the
+ * documents here, or put them in `inbox/` and sweep. Either way the per-file
+ * result is shown — a quarantined file's ajv path is the only thing that tells
+ * an operator what to fix, and it used to exist nowhere but the database.
+ */
+function Inbox({
+  onFiles,
+  onSweep,
+  busy,
+  results,
+}: {
+  onFiles: (files: File[]) => Promise<void>
+  onSweep: () => Promise<void>
+  busy: boolean
+  results: IngestResult[] | null
+}) {
+  const [over, setOver] = useState(false)
+  const input = useRef<HTMLInputElement>(null)
+  const take = (list: FileList | null) => {
+    const files = [...(list ?? [])].filter((f) => f.name.endsWith('.json'))
+    if (files.length) void onFiles(files)
+  }
+
+  return (
+    <Card
+      title="Inbox"
+      sub="A manifest or a process pack — the shape decides which, exactly as the sweep does"
+      actions={
+        <button type="button" className="ghost" disabled={busy} onClick={() => void onSweep()}>
+          {busy ? 'Sweeping…' : 'Sweep inbox'}
+        </button>
+      }
+    >
+      <div
+        className={`drop-zone${over ? ' over' : ''}`}
+        onDragOver={(e) => {
+          e.preventDefault()
+          setOver(true)
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setOver(false)
+          take(e.dataTransfer?.files ?? null)
+        }}
+        onClick={() => input.current?.click()}
+        onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && input.current?.click()}
+        role="button"
+        tabIndex={0}
+        aria-label="Drop JSON documents here, or choose files"
+      >
+        <input
+          ref={input}
+          type="file"
+          accept="application/json,.json"
+          multiple
+          hidden
+          onChange={(e) => {
+            take(e.target.files)
+            e.target.value = ''
+          }}
+        />
+        <span>
+          Drop <code>.json</code> here, or click to choose. Nothing leaves this machine — the document
+          goes straight to the endpoint that validates it.
+        </span>
+      </div>
+
+      {results && (
+        <ul className="ingest-results">
+          {results.length === 0 && (
+            <li className="muted">The inbox was empty — nothing to sweep.</li>
+          )}
+          {results.map((r, i) => (
+            <li key={`${i}:${r.file}`} className={r.ok ? 'ok' : 'bad'}>
+              <div className="row" style={{ gap: 8, alignItems: 'baseline' }}>
+                <code>{r.file}</code>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  {r.kind === 'process-pack' ? 'process pack' : r.kind === 'manifest' ? 'manifest' : 'not ingestable'}
+                </span>
+                <span className={`pill ${r.ok ? 'good' : 'bad'}`}>{r.ok ? 'ingested' : 'quarantined'}</span>
+              </div>
+              {r.errors?.length ? (
+                <ul className="ingest-errors">
+                  {r.errors.slice(0, 8).map((e, j) => (
+                    <li key={`${j}:${e.path}`}>
+                      <code>{e.path || '/'}</code> {e.message}
+                    </li>
+                  ))}
+                  {r.errors.length > 8 && (
+                    <li className="muted">…and {r.errors.length - 8} more</li>
+                  )}
+                </ul>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   )
 }

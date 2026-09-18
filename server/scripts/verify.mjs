@@ -547,6 +547,33 @@ if (stage === 'processes') {
     topicSearch.hits.map((h) => h.subject_id).slice(0, 6).join(', ')
   )
 
+  /* ---- four screens key their refresh on lastIngestAt, and a pack that
+     landed without a manifest beside it left every one of them stale. */
+  const stampBefore = (await get('/status')).body.lastIngestAt
+  ingestProcessPack(
+    {
+      schemaVersion: 1,
+      pack: 'freshness-probe',
+      name: 'Freshness probe',
+      authoredAt: '2026-09-18T00:00:00Z',
+      producer: { kind: 'import' },
+      processes: [{ code: '7', name: 'Ingested without a manifest beside it' }],
+    },
+    'freshness-probe.json'
+  )
+  const afterPack = (await get('/status')).body.lastIngestAt
+  ok(
+    'a pack-only ingest moves lastIngestAt',
+    afterPack && afterPack !== stampBefore,
+    `${stampBefore} → ${afterPack}`
+  )
+  is('  …and the pack is in the log', n(`SELECT COUNT(*) n FROM process_packs WHERE pack = 'freshness-probe'`), 1)
+  db.prepare(`DELETE FROM process_packs WHERE pack = 'freshness-probe'`).run()
+  const { rebuildProcesses } = await import('../src/processes.js')
+  const { linkPass: relink } = await import('../src/link.js')
+  rebuildProcesses()
+  relink()
+
   /* ---- kind: narrows to a heading the search page actually shows */
   const { body: anyOrder } = await get('/search?q=order')
   ok(

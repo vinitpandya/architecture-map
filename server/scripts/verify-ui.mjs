@@ -323,6 +323,92 @@ for (const [name, url, selector] of [
   await ctx.close()
 }
 
+/* ---- §8: "because the children are the flow, this works at every level —
+   L2 draws four boxes". A level 1's stages carry no interaction of their own,
+   and the diagram used to be withheld for exactly the case the spec names. */
+for (const [code, expected] of [['2', 4], ['2.1', 4]]) {
+  const { ctx, page, problems } = await open(`/process?code=${code}`)
+  await page.waitForSelector('.proc-flow', { timeout: 15000 })
+  const toggle = await page.$$(`button:has-text("Diagram")`)
+  ok(`process ${code} offers the diagram`, toggle.length === 1, `${toggle.length} toggles`)
+  if (toggle.length) {
+    await toggle[0].click()
+    await page.waitForSelector('.proc-diagram svg', { timeout: 20000 })
+    const actors = await page.$$eval('.proc-diagram text.actor', (els) => els.length)
+    const notes = await page.$$eval('.proc-diagram .note, .proc-diagram .noteText', (els) => els.length)
+    ok(
+      `  …and draws ${expected} steps for it`,
+      (await page.$$eval('.proc-diagram .messageText, .proc-diagram .noteText', (els) => els.length)) >= expected,
+      `actors ${actors}, notes ${notes}`
+    )
+    ok(`  …with no console error`, problems.length === 0, problems.join(' | '))
+  }
+  await ctx.close()
+}
+
+/* ---- §10's third Scan section: a drop zone, and the last sweep's result per
+   file. The button existed; everything it produced was discarded. */
+{
+  const { ctx, page, problems } = await open('/scan')
+  await page.waitForSelector('.prompt-box', { timeout: 20000 })
+  is('scan has a file drop zone', await page.$$eval('.drop-zone', (els) => els.length), 1)
+  is('  …with a file input behind it', await page.$$eval('.drop-zone input[type=file]', (els) => els.length), 1)
+  const sweep = await page.$('button:has-text("Sweep inbox")')
+  ok('  …and a sweep button beside it', !!sweep)
+  await sweep.click()
+  await page.waitForSelector('.ingest-results', { timeout: 20000 })
+  is(
+    '  …that reports what the sweep did rather than discarding it',
+    (await page.$$eval('.ingest-results > li', (els) => els.length)) >= 1,
+    true
+  )
+  /* §10 asks for relative time in the Repositories table, not an ISO string. */
+  const scanned = await page.$$eval('[data-grid-id] td', (els) => els.map((e) => e.textContent ?? ''))
+  is(
+    '  …and the Scanned column is relative, not ISO',
+    scanned.filter((t) => /^\d{4}-\d{2}-\d{2}T/.test(t.trim())).join(', '),
+    ''
+  )
+  ok('  …with no console error', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+/* ---- a service with no citation of its own is a gap in the schema, recorded
+   in DECISIONS.md — not a bug to accuse the tool of on the node's own page. */
+{
+  const { ctx, page } = await open(`/node?id=${encodeURIComponent('svc:gateway-api')}`)
+  await page.waitForSelector('.card', { timeout: 15000 })
+  const text = await page.evaluate(() => document.body.innerText)
+  is(
+    'a node with no citation of its own does not claim the tool is broken',
+    text.includes('Nothing should reach this state'),
+    false
+  )
+  is('  …and says what is actually true instead', text.includes('its edges carry the evidence'), true)
+  await ctx.close()
+}
+
+/* ---- an empty map under a filter is not an empty database */
+{
+  // A process and a kind that cannot both be true: 1.1.4 runs through a
+  // service and a cache, so asking for topics inside it matches nothing.
+  await setScope('map', {
+    focus: '',
+    depth: '1',
+    kinds: ['kafka.topic'],
+    repos: [],
+    includeExternal: true,
+    process: '1.1.4',
+  })
+  const { ctx, page } = await open('/')
+  await page.waitForSelector('.empty', { timeout: 20000 })
+  const text = await page.evaluate(() => document.body.innerText)
+  is('an empty filtered map does not tell you to run the seeder', text.includes('seed:demo'), false)
+  is('  …it points at the filter row', text.includes('Nothing matches these filters'), true)
+  await ctx.close()
+  await setScope('map', null)
+}
+
 await browser.close()
 console.log(`\n  ${checks - failures}/${checks} checks passed\n`)
 process.exit(failures ? 1 : 0)

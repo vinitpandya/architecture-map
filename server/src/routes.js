@@ -149,8 +149,19 @@ router.get('/status', wrap(async (req, res) => {
         ingestedAt: r.ingested_at,
         producer: r.producer_kind,
       })),
+    // Across both kinds of arrival. Four screens key their refresh on this,
+    // and a pack that landed without a manifest beside it left every one of
+    // them showing the estate as it was before the sweep.
     lastIngestAt:
-      db.prepare('SELECT MAX(ingested_at) AS t FROM manifests').get().t ?? null,
+      db
+        .prepare(
+          `SELECT MAX(t) AS t FROM (
+             SELECT MAX(ingested_at) AS t FROM manifests
+             UNION ALL
+             SELECT MAX(ingested_at) AS t FROM process_packs
+           )`
+        )
+        .get().t ?? null,
   })
 }))
 
