@@ -67,6 +67,23 @@ if (stage === 'ingest') {
   const { ingestManifest, validateManifest } = await import('../src/ingest.js')
   const { db } = await import('../src/db.js')
 
+  /* ---- what a fresh install answers, before anything has been ingested.
+     SUM over zero rows is NULL in SQLite, and `covered` is declared a number. */
+  {
+    const express = (await import('express')).default
+    const { router } = await import('../src/routes.js')
+    const app = express()
+    app.use('/api', router)
+    const server = app.listen(0)
+    await new Promise((r) => server.once('listening', r))
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/api/status`)
+    const body = await res.json()
+    is('an empty estate reports coverage.total as a number', typeof body.coverage.total, 'number')
+    is('  …and coverage.covered as one too, not null', typeof body.coverage.covered, 'number')
+    is('  …both zero', `${body.coverage.total}/${body.coverage.covered}`, '0/0')
+    server.close()
+  }
+
   const example = path.join(ROOT, 'schema', 'example.payments-service.json')
   const good = JSON.parse(fs.readFileSync(example, 'utf8'))
   const broken = structuredClone(good)
@@ -158,6 +175,8 @@ if (stage === 'estate') {
   }
 
   /* ---- §14 Phase 2: the counts */
+  const n = (sql) => db.prepare(sql).get().n
+
   const { body: status } = await get('/status')
   is('services', status.counts.services, 10)
   is('kafka topics', status.counts.topics, 9)
@@ -196,10 +215,36 @@ if (stage === 'estate') {
   is('users.created.v2 producers', topic.in.filter((e) => e.kind === 'kafka.produce').length, 1)
   is('users.created.v2 consumers', topic.in.filter((e) => e.kind === 'kafka.consume').length, 3)
 
-  const { body: graph } = await get(`/graph?focus=${encodeURIComponent('svc:order-service')}&depth=1`)
+  // §8 says the default excludes contracts and §14's by-hand count includes
+  // one, so both are asserted: the adjacency §14 is really about, with every
+  // kind asked for, and the §8 default beside it.
+  const ALL_KINDS = 'service,kafka.topic,database,cache,endpoint,contract,external'
+  const { body: graph } = await get(
+    `/graph?focus=${encodeURIComponent('svc:order-service')}&depth=1&kinds=${ALL_KINDS}`
+  )
   // Counted by hand off SPEC.md §12: three topics, one database, one cache,
   // four endpoints (three called, one exposed) and one contract, plus itself.
   is('graph around order-service at depth 1', graph.nodes.length, 11)
+  const { body: dflt } = await get(`/graph?focus=${encodeURIComponent('svc:order-service')}&depth=1`)
+  is('  …and the default leaves the contract out, per §8', dflt.nodes.length, 10)
+  is('  …', dflt.nodes.filter((n) => n.kind === 'contract').length, 0)
+  ok('  …but still carries a degree on every node, per §8', dflt.nodes.every((n) => typeof n.degree === 'number'), 'a node came back without a degree')
+
+  /* ---- the repos filter §8 documents and §10 puts in the filter row */
+  const { body: byRepo } = await get('/graph?repos=payments-service')
+  ok(
+    'graph?repos= narrows to that repo',
+    byRepo.nodes.length > 0 && byRepo.nodes.every((n) => n.ownerRepo === 'payments-service'),
+    `${byRepo.nodes.length} nodes, repos ${[...new Set(byRepo.nodes.map((n) => n.ownerRepo))].join(', ')}`
+  )
+  const { body: noRepo } = await get('/graph?repos=does-not-exist')
+  is('  …and an unknown repo is empty, not everything', noRepo.nodes.length, 0)
+
+  /* ---- a repeated query parameter is ordinary HTTP, not a 500 */
+  const twoKinds = await get('/drift?kind=no-producer&kind=version-skew')
+  is('drift with a repeated kind returns 200', twoKinds.status, 200)
+  is('  …and means both of them', twoKinds.body.findings.length, 4)
+  is('  …as does the comma form', (await get('/drift?kind=no-producer,version-skew')).body.findings.length, 4)
   const adjacent = new Set(
     db
       .prepare(`SELECT from_id, to_id FROM edges WHERE from_id = ? OR to_id = ?`)
@@ -246,6 +291,41 @@ if (stage === 'estate') {
   })
   const after = await get(`/node?id=${encodeURIComponent(subjectId)}`)
   ok('an override changes /api/node', after.body.node.description.startsWith('Corrected by hand'), after.body.node.description)
+
+  /* ---- overrides are the one table §15.4 says must survive a re-ingest, so a
+     malformed write is refused rather than reinterpreted. better-sqlite3 reads
+     an object as a named-parameter bag and spreads an array into the positional
+     list, which wrote a row nobody asked for and answered 200. */
+  const putOverride = (body) =>
+    fetch(`${base}/override`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  const overrideCount = () => n('SELECT COUNT(*) n FROM overrides')
+  const beforeBad = overrideCount()
+  is(
+    'an override with an object subjectId is refused',
+    (await putOverride({ subjectKind: 'node', subjectId: ['svc:gateway-api'], field: 'x', value: 'y' })).status,
+    400
+  )
+  is(
+    '  …and so is an object value',
+    (await putOverride({ subjectKind: 'node', subjectId, field: 'description', value: { a: 1 } })).status,
+    400
+  )
+  is('  …neither of which wrote anything', overrideCount(), beforeBad)
+  is(
+    '  …while a number is stored as the number, not SQLite\'s "42.0"',
+    (await putOverride({ subjectKind: 'node', subjectId: 'svc:gateway-api', field: 'team', value: 42 })).status,
+    200
+  )
+  is(
+    '  …',
+    db.prepare(`SELECT value FROM overrides WHERE subject_id = 'svc:gateway-api' AND field = 'team'`).get()?.value,
+    '42'
+  )
+  await fetch(`${base}/override?subjectKind=node&subjectId=svc:gateway-api&field=team`, { method: 'DELETE' })
 
   const { ingestManifest } = await import('../src/ingest.js')
   const again = JSON.parse(fs.readFileSync(path.join(ROOT, 'demo', 'manifests', 'ledger-service.json'), 'utf8'))
@@ -465,6 +545,25 @@ if (stage === 'processes') {
     topicSearch.hits.some((h) => h.subject_id === 'topic:orders.matched.v1') &&
       topicSearch.hits.some((h) => h.subject_kind === 'process'),
     topicSearch.hits.map((h) => h.subject_id).slice(0, 6).join(', ')
+  )
+
+  /* ---- kind: narrows to a heading the search page actually shows */
+  const { body: anyOrder } = await get('/search?q=order')
+  ok(
+    'searching finds processes as well as nodes and edges',
+    anyOrder.hits.some((h) => h.subject_kind === 'process'),
+    [...new Set(anyOrder.hits.map((h) => h.subject_kind))].join(', ')
+  )
+  const { body: procOnly } = await get(`/search?q=${encodeURIComponent('kind:process order')}`)
+  ok(
+    'kind:process narrows to them rather than returning nothing',
+    procOnly.hits.length > 0 && procOnly.hits.every((h) => h.subject_kind === 'process'),
+    `${procOnly.hits.length} hits: ${[...new Set(procOnly.hits.map((h) => h.subject_kind))].join(', ')}`
+  )
+  is(
+    '  …and an unrecognised kind still matches nothing',
+    (await get(`/search?q=${encodeURIComponent('kind:nonsense order')}`)).body.hits.length,
+    0
   )
 
   /* ---- the authoring prompt (§8): it is the whole of how a pack gets written,

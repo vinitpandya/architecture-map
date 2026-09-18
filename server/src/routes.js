@@ -17,11 +17,20 @@ const parse = (s, fallback) => {
   }
 }
 
+/**
+ * A filter value that may arrive once, comma-separated, or repeated —
+ * `?kinds=a&kinds=b`, which Express hands over as an array. Always a flat list
+ * of strings, because an array reaching better-sqlite3 as a bind parameter is
+ * spread into the placeholder list and throws, taking the request down with it.
+ */
 const list = (v) =>
-  String(v ?? '')
-    .split(',')
+  (Array.isArray(v) ? v : [v])
+    .flatMap((x) => String(x ?? '').split(','))
     .map((s) => s.trim())
     .filter(Boolean)
+
+/** The same hazard where one value is wanted: the last one repeated wins. */
+const one = (v) => (Array.isArray(v) ? v[v.length - 1] : v)
 
 /* ───────────────────────────────────────────────────────── overrides */
 
@@ -117,8 +126,11 @@ router.get('/status', wrap(async (req, res) => {
     // kinds worth asking about. Zero of zero when nothing is loaded.
     coverage: db
       .prepare(
+        // COALESCE because SUM over zero rows is NULL, and a fresh install
+        // would otherwise answer {total: 0, covered: null} against a contract
+        // that says both are numbers.
         `SELECT COUNT(*) AS total,
-                SUM(CASE WHEN id IN (SELECT node_id FROM process_components) THEN 1 ELSE 0 END) AS covered
+                COALESCE(SUM(CASE WHEN id IN (SELECT node_id FROM process_components) THEN 1 ELSE 0 END), 0) AS covered
          FROM nodes WHERE kind IN ('service', 'kafka.topic')`
       )
       .get(),
@@ -346,13 +358,16 @@ router.get('/contract-versions', wrap(async (req, res) => {
 router.get('/drift', wrap(async (req, res) => {
   const where = []
   const args = []
-  if (req.query.kind) {
-    where.push('kind = ?')
-    args.push(req.query.kind)
+  // Through list(), so asking for two kinds is an IN rather than a bind error.
+  const kinds = list(req.query.kind)
+  const severities = list(req.query.severity)
+  if (kinds.length) {
+    where.push(`kind IN (${kinds.map(() => '?').join(',')})`)
+    args.push(...kinds)
   }
-  if (req.query.severity) {
-    where.push('severity = ?')
-    args.push(req.query.severity)
+  if (severities.length) {
+    where.push(`severity IN (${severities.map(() => '?').join(',')})`)
+    args.push(...severities)
   }
   const rows = db
     .prepare(
@@ -397,6 +412,15 @@ const KIND_PREFIX = {
   external: 'ext', ext: 'ext',
 }
 
+/** The subject kinds `search_index` stores, and what a person types for each. */
+const SUBJECT_KIND = {
+  edge: 'edge',
+  unresolved: 'unresolved',
+  node: 'node',
+  process: 'process',
+  proc: 'process',
+}
+
 /** `kind:topic settled` — the filter comes off the front, the rest is the query. */
 function parseQuery(raw, explicit) {
   let text = String(raw ?? '').trim()
@@ -415,9 +439,13 @@ router.get('/search', wrap(async (req, res) => {
   const args = []
 
   for (const k of kinds) {
-    if (k === 'edge' || k === 'unresolved' || k === 'node') {
+    // `process` is a subject kind of the index in its own right, and the
+    // search page groups its hits under a heading of their own — narrowing to
+    // that heading has to be able to find them.
+    const subject = SUBJECT_KIND[k]
+    if (subject) {
       where.push('subject_kind = ?')
-      args.push(k)
+      args.push(subject)
     } else if (KIND_PREFIX[k]) {
       where.push(`subject_kind = 'node' AND subject_id LIKE ?`)
       args.push(`${KIND_PREFIX[k]}:%`)
@@ -498,7 +526,12 @@ router.get('/graph', wrap(async (req, res) => {
   const depth =
     req.query.depth === 'all' || asked === 0 ? Infinity : Number.isFinite(asked) && asked > 0 ? asked : 1
   const kinds = list(req.query.kinds)
+  const repos = list(req.query.repos)
   const includeExternal = req.query.includeExternal !== 'false'
+  // §8: "Default: all but `contract`" — contracts clutter the default view and
+  // are opt-in. An explicit `kinds` says exactly what it wants; an absent one
+  // means everything a person would expect to see on a map.
+  const hideContracts = !kinds.length
 
   const allEdges = db.prepare('SELECT * FROM edges').all()
   let keep = null
@@ -535,15 +568,27 @@ router.get('/graph', wrap(async (req, res) => {
     }
   }
 
-  const nodeRows = db.prepare('SELECT * FROM nodes').all().filter((n) => {
-    // The process filter is absolute — everything outside it is dropped, not
-    // dimmed, and not exempted by being the focus.
-    if (withinProcess && !withinProcess.has(n.id)) return false
-    if (keep && !keep.has(n.id)) return false
-    if (kinds.length && !kinds.includes(n.kind) && n.id !== focus) return false
-    if (!includeExternal && (n.orphan || n.kind === 'external') && n.id !== focus) return false
-    return true
-  })
+  const nodeRows = db
+    .prepare(
+      // `degree` per §8's node shape. It is the count over the whole estate,
+      // not within the returned subgraph: it answers "how connected is this
+      // thing", which does not change with what you are currently looking at.
+      `SELECT n.*,
+              (SELECT COUNT(*) FROM edges e WHERE e.from_id = n.id OR e.to_id = n.id) AS degree
+       FROM nodes n`
+    )
+    .all()
+    .filter((n) => {
+      // The process filter is absolute — everything outside it is dropped, not
+      // dimmed, and not exempted by being the focus.
+      if (withinProcess && !withinProcess.has(n.id)) return false
+      if (keep && !keep.has(n.id)) return false
+      if (kinds.length && !kinds.includes(n.kind) && n.id !== focus) return false
+      if (hideContracts && n.kind === 'contract' && n.id !== focus) return false
+      if (repos.length && !repos.includes(n.owner_repo) && n.id !== focus) return false
+      if (!includeExternal && (n.orphan || n.kind === 'external') && n.id !== focus) return false
+      return true
+    })
 
   const ov = overrideMap('node')
   const nodes = nodeRows.map(nodeRow).map((n) => applyNodeOverrides(n, ov)).filter((n) => !n.hidden || n.id === focus)
@@ -560,22 +605,37 @@ router.get('/graph', wrap(async (req, res) => {
 
 router.put('/override', wrap(async (req, res) => {
   const { subjectKind, subjectId, field, value, author } = req.body ?? {}
-  if (!subjectKind || !subjectId || !field) {
-    return res.status(400).json({ error: 'subjectKind, subjectId and field are required' })
+  // The three keys are TEXT columns and go straight into a bind list, so a
+  // non-string is rejected rather than reinterpreted: better-sqlite3 reads an
+  // object as a named-parameter bag and spreads an array into the positional
+  // list, which would write a row nobody asked for and answer 200.
+  const str = (v) => typeof v === 'string' && v.trim().length > 0
+  if (!str(subjectKind) || !str(subjectId) || !str(field)) {
+    return res.status(400).json({ error: 'subjectKind, subjectId and field must be non-empty strings' })
   }
+  // `value` is the correction itself and the column is TEXT. A number is
+  // stored as text either way; doing it here means "42" rather than SQLite
+  // affinity's "42.0", and a null still clears the field.
+  if (value !== undefined && value !== null && typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+    return res.status(400).json({ error: 'value must be a string, a number, a boolean or null' })
+  }
+  if (author !== undefined && author !== null && typeof author !== 'string') {
+    return res.status(400).json({ error: 'author must be a string or null' })
+  }
+  const text = value === undefined || value === null ? null : String(value)
   db.prepare(
     `INSERT INTO overrides (subject_kind, subject_id, field, value, author, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(subject_kind, subject_id, field)
      DO UPDATE SET value = excluded.value, author = excluded.author, updated_at = excluded.updated_at`
-  ).run(subjectKind, subjectId, field, value ?? null, author ?? null, new Date().toISOString())
+  ).run(subjectKind, subjectId, field, text, author ?? null, new Date().toISOString())
   res.json({ ok: true })
 }))
 
 router.delete('/override', wrap(async (req, res) => {
   db.prepare(
     'DELETE FROM overrides WHERE subject_kind = ? AND subject_id = ? AND field = ?'
-  ).run(req.query.subjectKind, req.query.subjectId, req.query.field)
+  ).run(String(one(req.query.subjectKind) ?? ''), String(one(req.query.subjectId) ?? ''), String(one(req.query.field) ?? ''))
   res.json({ ok: true })
 }))
 
@@ -743,7 +803,7 @@ router.get('/processes', wrap(async (req, res) => {
   const where = []
   const args = []
   if (req.query.root) {
-    const root = normaliseCode(req.query.root)
+    const root = normaliseCode(one(req.query.root))
     where.push('(p.code = ? OR p.code LIKE ?)')
     args.push(root, `${root}.%`)
   }
@@ -751,9 +811,10 @@ router.get('/processes', wrap(async (req, res) => {
     where.push('p.level <= ?')
     args.push(Number(req.query.maxLevel))
   }
-  if (req.query.owner) {
-    where.push('p.owner = ?')
-    args.push(req.query.owner)
+  const owners = list(req.query.owner)
+  if (owners.length) {
+    where.push(`p.owner IN (${owners.map(() => '?').join(',')})`)
+    args.push(...owners)
   }
   res.json({
     processes: db
@@ -769,7 +830,7 @@ router.get('/processes', wrap(async (req, res) => {
 const normaliseCode = (code) => String(code ?? '').trim().replace(/^[Ll]/, '')
 
 router.get('/process', wrap(async (req, res) => {
-  const code = normaliseCode(req.query.code)
+  const code = normaliseCode(one(req.query.code))
   const row = db.prepare(`${PROCESS_SELECT} WHERE p.code = ?`).get(code)
   if (!row) return res.status(404).json({ error: 'No such process' })
   const process = processRow(row)

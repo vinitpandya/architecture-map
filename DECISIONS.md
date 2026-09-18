@@ -29,6 +29,18 @@ finding, so `kafka.produce` still decides a topic's `owner_repo` (first claim by
 `first_seen`, repo breaking the tie) without raising a finding when several
 services produce.
 
+**`/api/graph`'s default excludes contracts, and §14's count asks for them.**
+§8 says "`kinds` — comma-separated node kinds to include. Default: all but
+`contract`", with the reason: contracts clutter the default view and are opt-in.
+§14 then asserts that `GET /api/graph?focus=svc:order-service&depth=1` returns
+11 nodes, "verify the count by hand against §12" — and the by-hand count
+includes `contract:com.meridian.events.OrderMatched`, which the default would
+drop. The two clauses are about different things: §14's is an adjacency check,
+§8's is a default. Both are implemented and both are asserted — the adjacency
+with every kind asked for, the §8 default beside it. The filter row's Show
+picker, whose empty state now means what the API means, reads "All but
+contracts" rather than "Everything".
+
 ## Ingest
 
 - **A node's descriptive fields follow its owning repo.** A repo that merely

@@ -109,7 +109,9 @@ export function ScopeBar() {
         options={kindOptions}
         selected={scope.kinds}
         onChange={(kinds) => setScope({ kinds })}
-        placeholder="Everything"
+        // Not "Everything": an empty selection means the API's own default,
+        // and §8 makes contracts opt-in there. Tick Contracts to see them.
+        placeholder="All but contracts"
         width={230}
       />
 
