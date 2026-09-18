@@ -36,7 +36,7 @@ that already exists.
 | [`SPEC-PROCESSES.md`](SPEC-PROCESSES.md) | **The current work — phases 7–11.** Business processes: the L1/L2/L3 hierarchy and the components each one uses. This is your task list. |
 | [`SPEC.md`](SPEC.md) | Layer A, phases 1–6. Complete and verified. Read it as background: §3–§8 is the data model and API you are extending, §15 the invariants that still hold. |
 | [`schema/process-pack.schema.json`](schema/process-pack.schema.json) | The Layer B contract. Written and validated. Its `description` fields are instructions to whoever authors a pack, not documentation. |
-| [`schema/example.trading-processes.json`](schema/example.trading-processes.json) | A valid pack against the demo estate. Your Phase 7 fixture. |
+| [`schema/example.order-and-execution.json`](schema/example.order-and-execution.json) | A valid pack against the demo estate: 20 processes, 15 leaves. Your Phase 7 fixture. |
 | [`schema/manifest.schema.json`](schema/manifest.schema.json) | The Layer A contract. Background — you are not changing it. |
 | [`HANDOVER.md`](HANDOVER.md), [`DECISIONS.md`](DECISIONS.md) | What the last session built, verified and decided. Read before re-deciding anything. |
 
@@ -118,7 +118,7 @@ later:
 
 - `edges.id` is `sha1(from|kind|to)` — it must not change when the same
   manifest is re-ingested with evidence in a different order, because overrides
-  and process steps point at it.
+  and processes point at it.
 - A contract's `version` goes in `contract_bindings`, keyed by service. Putting
   it on the `nodes` row destroys version-skew detection, which is one of the
   most valuable things this tool does.

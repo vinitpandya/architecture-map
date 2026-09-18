@@ -24,24 +24,62 @@ scanned out of a codebase because the knowledge is not in the codebase.
 Joined, they answer the questions neither can answer alone:
 
 - Which processes break if this topic stops flowing?
-- Which services does "Place an order" actually touch, across every repo?
+- Which services does "Getting estimate" actually touch, across every repo?
 - This service has no callers — is it dead, or does a documented process use it?
 - Which parts of our estate does no documented process account for?
 - This process document says it calls pricing — does the code still do that?
 
 That last one is the one to build for. **The two layers cross-check each
-other.** A process step pointing at a component the topology does not have
-means either the scan missed it or the document has gone stale, and both are
-findings worth surfacing. Nothing else in the tool can catch that.
+other.** A process pointing at a component the topology does not have means
+either the scan missed it or the document has gone stale, and both are findings
+worth surfacing. Nothing else in the estate can catch that.
 
-### The hierarchy
+### The levels are decomposition, not sequence
 
-Three levels, each a many-to-one relationship upward. A process is identified by
-its **code** — `2`, `2.6`, `2.6.13` — exactly the number people say out loud.
-The code carries the whole hierarchy: the number of segments is the level, and
-the parent is the code with its last segment removed. One authored field, no
-separate parent pointer to fall out of sync, and "does this code's parent exist"
-becomes a checkable invariant.
+This is the thing to get right, and it is easy to get wrong.
+
+Each level says **the same thing in more detail**. It is not a call stack and it
+is not a list of hops.
+
+```
+L2      Order and execution                      what the business does
+L2.1      Getting estimate                       a stage of it
+L2.1.1      Take the quote from the cache        the atomic action
+L2.1.2      Get prices from the pricing service
+L2.1.3      Check the customer may trade
+L2.2      Accepting estimate and placing order
+L2.2.1      Receive the accepted order
+L2.2.2      Persist the order
+```
+
+So **a level 3 is already the atomic unit of work.** There is no step list
+underneath it. "Get prices from the pricing service" *is* the leaf — it is not
+a container of smaller things. If something needs breaking down further, it
+becomes siblings at the same level, not a nested list inside one.
+
+Two consequences that shape the whole design:
+
+**Order comes from the numbering.** `2.1` happens before `2.2`; `2.1.1` before
+`2.1.2`. There is no separate sequence field anywhere, because the code already
+carries it. A flow diagram at any level is simply that level's children in
+order.
+
+**A component binds to a process, not to a step.** A level 3 normally names one
+`node` — the component the work happens at — and one `interaction` — the
+relationship it travels over. Higher levels name nothing of their own; their
+component list is derived by rolling their children up.
+
+### The code
+
+A process is identified by its **code**: `2`, `2.1`, `2.1.1`, written `L2`,
+`L2.1`, `L2.1.1` when the level prefix helps. The code carries the whole
+hierarchy — the number of segments is the level, the parent is the code minus
+its last segment — so there is no separate parent pointer to fall out of sync,
+and "does this code's parent exist" becomes a checkable invariant.
+
+An optional leading `L` is accepted on input and stripped: `L2.1.1` and `2.1.1`
+are the same process. Store the code numerically; display it with the prefix,
+since that is how people write it.
 
 Codes are stable identifiers. People cite them in tickets and documents, so
 renumbering has a real cost — treat a code as permanent once published.
@@ -55,16 +93,17 @@ validated, and the thing everything here hangs off. Read it before anything
 else; as with the manifest schema, its `description` fields are written as
 instructions to whoever authors a pack, not as documentation.
 
-[`schema/example.trading-processes.json`](schema/example.trading-processes.json)
-is a valid pack against the Meridian estate: 10 processes, 6 leaves, 16 steps.
-It is your Phase 7 fixture.
+[`schema/example.order-and-execution.json`](schema/example.order-and-execution.json)
+is a valid pack against the Meridian estate: 20 processes — 1 at level 1, 4 at
+level 2, 15 at level 3 — every leaf carrying exactly one interaction. It is your
+Phase 7 fixture, and it is the shape every pack should look like.
 
 ### The five things that matter in it
 
 **A pack is the unit of ingest.** Processes span repositories, so unlike a scan
 manifest there is nothing per-repo about them. A pack is a domain's worth of
-process — `trading`, `onboarding` — and re-ingesting it replaces exactly what it
-previously contributed.
+process — `order-and-execution`, `onboarding` — and re-ingesting it replaces
+exactly what it previously contributed.
 
 **A pack never creates a component.** It only references components a scan
 already established. This is not a convenience, it is the guarantee: if a pack
@@ -73,32 +112,34 @@ has ever seen in code, and the evidence promise that makes Layer A trustworthy
 would quietly stop meaning anything. A reference that does not resolve becomes a
 finding; it never becomes a node.
 
-**Steps belong to leaves.** A process with children must not have steps — the
-children *are* its detail. A parent's component usage is derived by rolling up
-its descendants, never hand-authored, because hand-authored rollups drift from
-the thing they summarise within a month.
+**Every level is the same shape.** There is no separate step object and no
+special leaf type. A level 1 and a level 3 are both `process` records; they
+differ only in how much they decompose and whether they name a component. Do not
+introduce a second shape for leaves.
 
 **Interactions are written the way a person can write them.** An edge id is
-`sha1(from|kind|to)` and nobody types that. A step names `{from, kind, to}` and
-ingest resolves it with the *same* `edgeId()` helper `server/src/ingest.js`
+`sha1(from|kind|to)` and nobody types that. A process names `{from, kind, to}`
+and ingest resolves it with the *same* `edgeId()` helper `server/src/ingest.js`
 already exports. Import it; do not reimplement the hashing.
 
 **Processes carry a source, not evidence.** Layer A facts cite a file and a
 line because they are derived from code. Layer B facts are asserted by people,
 so they carry attribution — a Confluence page, a diagram, the person who
 confirmed it, and when. Do not bolt an `evidence` array onto processes, and
-never fabricate a code citation for a process step.
+never fabricate a code citation for a process.
 
 ---
 
 ## 3 · Database schema
 
 The `processes` and `process_steps` tables currently in `server/src/db.js` are
-the unused placeholders from the original spec. **Replace them** — nothing reads
-or writes them, so there is no data to migrate. Drop them explicitly at the top
-of the schema block (`DROP TABLE IF EXISTS process_steps; DROP TABLE IF EXISTS
+unused placeholders from the original spec. **Replace them.** Nothing reads or
+writes them, so there is nothing to migrate: drop them explicitly at the top of
+the schema block (`DROP TABLE IF EXISTS process_steps; DROP TABLE IF EXISTS
 processes;`) before the new `CREATE TABLE`s, so an existing database picks up
-the new shape; note the drop in `DECISIONS.md`.
+the new shape. Note the drop in `DECISIONS.md`.
+
+There is no `process_steps` table in the new design — a step *is* a process.
 
 ```sql
 -- ─────────────────────────────────────────────────── pack ingest log
@@ -122,19 +163,28 @@ CREATE TABLE IF NOT EXISTS process_packs (
 );
 CREATE INDEX IF NOT EXISTS process_packs_pack ON process_packs (pack, status);
 
--- ─────────────────────────────────────────────────── the hierarchy
+-- ────────────────────────────────── the hierarchy: one row per process,
+--                                    at every level
 
 CREATE TABLE IF NOT EXISTS processes (
-  id          TEXT PRIMARY KEY,          -- 'proc:2.6.13'
-  code        TEXT NOT NULL UNIQUE,      -- '2.6.13'
+  id          TEXT PRIMARY KEY,          -- 'proc:2.1.1'
+  code        TEXT NOT NULL UNIQUE,      -- '2.1.1', the L stripped
   level       INTEGER NOT NULL,          -- derived: segment count, 1-3
-  parent_id   TEXT,                      -- derived: 'proc:2.6'; NULL at level 1
+  parent_id   TEXT,                      -- derived: 'proc:2.1'; NULL at level 1
   sort_key    TEXT NOT NULL,             -- see below — NOT the code
   name        TEXT NOT NULL,
   description TEXT,
   owner       TEXT,
+  actor       TEXT,
   trigger     TEXT,
   outcome     TEXT,
+  node_id     TEXT,                      -- may not exist in nodes; that is a finding
+  edge_id     TEXT,                      -- resolved via edgeId(); NULL when unresolved
+  edge_from   TEXT,                      -- the interaction kept verbatim, so an
+  edge_kind   TEXT,                      -- unresolved one is still displayable and
+  edge_to     TEXT,                      -- still explains what the author meant
+  optional    INTEGER NOT NULL DEFAULT 0,
+  notes       TEXT,
   tags        TEXT,                      -- JSON array
   source      TEXT,                      -- JSON; the pack's when the process has none
   pack_id     INTEGER NOT NULL REFERENCES process_packs(id) ON DELETE CASCADE,
@@ -143,32 +193,14 @@ CREATE TABLE IF NOT EXISTS processes (
 );
 CREATE INDEX IF NOT EXISTS processes_parent ON processes (parent_id);
 CREATE INDEX IF NOT EXISTS processes_sort   ON processes (sort_key);
-
-CREATE TABLE IF NOT EXISTS process_steps (
-  id          TEXT PRIMARY KEY,          -- 'proc:2.1.1#3'  (code + seq)
-  process_id  TEXT NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
-  seq         INTEGER NOT NULL,
-  name        TEXT NOT NULL,
-  description TEXT,
-  actor       TEXT,
-  node_id     TEXT,                      -- may not exist in nodes; that is a finding
-  edge_id     TEXT,                      -- resolved via edgeId(); NULL when unresolved
-  edge_from   TEXT,                      -- the interaction kept verbatim, so an
-  edge_kind   TEXT,                      -- unresolved one is still displayable and
-  edge_to     TEXT,                      -- still explains what the author meant
-  optional    INTEGER NOT NULL DEFAULT 0,
-  notes       TEXT,
-  pack_id     INTEGER NOT NULL REFERENCES process_packs(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS process_steps_process ON process_steps (process_id, seq);
-CREATE INDEX IF NOT EXISTS process_steps_node    ON process_steps (node_id);
+CREATE INDEX IF NOT EXISTS processes_node   ON processes (node_id);
 
 -- ─────────────────────────────── the join, rebuilt by the link pass
 
 CREATE TABLE IF NOT EXISTS process_components (
   process_id TEXT NOT NULL,
   node_id    TEXT NOT NULL,
-  via        TEXT NOT NULL,   -- step | touches | rollup  (the most direct wins)
+  via        TEXT NOT NULL,   -- node | interaction | touches | exposes | rollup
   PRIMARY KEY (process_id, node_id)
 );
 CREATE INDEX IF NOT EXISTS process_components_node ON process_components (node_id);
@@ -176,7 +208,7 @@ CREATE INDEX IF NOT EXISTS process_components_node ON process_components (node_i
 CREATE TABLE IF NOT EXISTS process_edges (
   process_id TEXT NOT NULL,
   edge_id    TEXT NOT NULL,
-  via        TEXT NOT NULL,   -- step | rollup
+  via        TEXT NOT NULL,   -- interaction | rollup
   PRIMARY KEY (process_id, edge_id)
 );
 CREATE INDEX IF NOT EXISTS process_edges_edge ON process_edges (edge_id);
@@ -186,11 +218,12 @@ CREATE INDEX IF NOT EXISTS process_edges_edge ON process_edges (edge_id);
 
 Never order by `code`. Lexically, `2.10` sorts before `2.9` and `10` before `2`,
 so a tree ordered by code is wrong the moment any level reaches ten children —
-which is exactly the case the user named when they said "2.6.13".
+and with processes this granular, ten children is the common case, not the edge
+case.
 
 `sort_key` is the code with every segment zero-padded to four digits, joined by
-dots: `2.6.13` → `0002.0006.0013`, `10` → `0010`. Lexical order over that is
-numeric order. Compute it on insert; order by it everywhere.
+dots: `2.1.1` → `0002.0001.0001`, `2.10` → `0002.0010`. Lexical order over that
+is numeric order. Compute it on insert; order by it everywhere.
 
 ---
 
@@ -208,12 +241,13 @@ first and follow its shape.
 3. **On success**, in one transaction:
    - Supersede every `active` pack with this `pack` id; its rows cascade away.
    - Insert the new `process_packs` row as `active`.
-   - For each process: derive `level` from the segment count, `parent_id` from
-     the code minus its last segment, `sort_key` per §3, and `id` as
-     `proc:<code>`. Fall back to the pack's `source` when the process has none.
-   - For each step: `id` is `proc:<code>#<seq>`; resolve `interaction` to
-     `edge_id` with `edgeId(from, kind, to)` imported from `ingest.js`, and keep
-     `from`/`kind`/`to` in their own columns either way.
+   - For each process: strip any leading `L` from the code, derive `level` from
+     the segment count, `parent_id` from the code minus its last segment,
+     `sort_key` per §3, and `id` as `proc:<code>`. Fall back to the pack's
+     `source` when the process has none.
+   - Resolve `interaction` to `edge_id` with `edgeId(from, kind, to)` imported
+     from `ingest.js`, and keep `from`/`kind`/`to` in their own columns either
+     way, so an unresolved interaction is still displayable.
    - **Do not touch the `nodes` or `edges` tables.** Not to create, not to
      update, not to mark. A pack is a reader of topology.
 4. **Preserve `first_seen`** across re-ingests, as Layer A does; set `last_seen`.
@@ -240,19 +274,28 @@ right schema. Say which one it picked in the success line.
 
 Extend `server/src/link.js`. Everything here is global and deterministic, and
 runs after every ingest of either kind — a new scan manifest can resolve a
-process step that did not resolve yesterday, and must.
+process that did not resolve yesterday, and must.
 
 ### Rollup
 
 Rebuild `process_components` and `process_edges` from scratch each time:
 
-1. **Direct.** For every process: its steps' `node_id`s and its `touches` become
-   `process_components` rows with `via='step'` or `via='touches'`; its steps'
-   resolved `edge_id`s become `process_edges` with `via='step'`.
-2. **Upward.** Walk levels 3 → 2 → 1. Every component and edge of a process is
+1. **Direct.** For each process: its `node_id` (`via='node'`), the two ends of
+   its resolved interaction (`via='interaction'`), and its `touches` entries
+   (`via='touches'`). Its resolved `edge_id` becomes a `process_edges` row with
+   `via='interaction'`.
+2. **Exposing service.** When a process touches an `endpoint`, it also touches
+   the service that exposes it, found through the `http.expose` edge, with
+   `via='exposes'`. Without this rule a process that calls
+   `api:pricing-service/GET /v1/rates/{}` would never register as using
+   pricing-service, and "which processes use this service" — the main question
+   the page has to answer — would be wrong. Do not generalise the rule any
+   further: a process that touches a topic does **not** thereby touch everything
+   else on that topic, or every process would touch everything.
+3. **Upward.** Walk levels 3 → 2 → 1. Every component and edge of a process is
    also a component and edge of its parent, with `via='rollup'`.
-3. On conflict keep the most direct provenance: `step` beats `touches` beats
-   `rollup`.
+4. On conflict keep the most direct provenance, in this order:
+   `node` › `interaction` › `touches` › `exposes` › `rollup`.
 
 Rollup is global, not per-pack, because a parent can legitimately live in a
 different pack from its children. Do it here, never inside the pack insert.
@@ -265,67 +308,80 @@ the parties, with the data the UI needs attached.
 
 | `kind` | Condition | Severity |
 |---|---|---|
-| `process-missing-component` | a step's `node_id` or a `touches` entry is not in `nodes` | warn |
-| `process-missing-interaction` | a step's interaction does not resolve to an edge | warn |
+| `process-missing-component` | a `node_id`, an interaction end, or a `touches` entry is not in `nodes` | warn |
+| `process-missing-interaction` | an interaction whose **two ends both exist** but which is not an edge in the topology | warn |
 | `process-orphan-code` | a code whose parent code is absent from the estate | warn |
 | `process-duplicate-code` | two active packs declare the same code | warn |
-| `process-steps-on-parent` | a process with children also carries steps | warn |
-| `process-no-detail` | a leaf with neither steps nor `touches` — a title and nothing else | info |
+| `process-no-detail` | a leaf with no `node`, no `interaction` and no `touches` — a title and nothing else | info |
 | `uncovered-component` | a `service` or `kafka.topic` no process touches | info |
 
-Two judgement calls baked into that table:
+Four judgement calls baked into that table:
 
-**`process-missing-component` and `process-missing-interaction` are separate
-findings** because the fix differs. The first means a component is missing or
-misnamed; the second means the components both exist but the relationship
-between them is not in the code — often the most interesting finding in the
-tool, because it is either a scan gap or a process that no longer works the way
-the document claims.
+**The two "missing" findings never double-report.** If an interaction fails to
+resolve because one of its ends is not in `nodes`, that is
+`process-missing-component` only — the root cause. `process-missing-interaction`
+fires only when both ends are real and the relationship between them is not.
+That second one is the most interesting finding in the tool: it means the
+document describes a call the code does not make, so either the scan missed it
+or the process has quietly changed.
+
+**There is no `process-steps-on-parent` finding**, because there are no steps. A
+parent that names a `node` is not an error either — it is unusual, and the
+rollup simply includes it. Do not invent a finding for it.
 
 **`uncovered-component` fires only when at least one pack is loaded**, and only
 for services and topics. Fired against an empty Layer B it would report the
 whole estate and train people to ignore it.
 
-**A pack never modifies a node.** Re-state that to yourself before writing
-`rebuildDrift()`: a missing component is *reported*, never created. Contrast
-with Layer A's `createOrphans()`, which does create nodes — that is correct
-there, because an edge in a scan is evidence that the other end exists. A
-sentence in a document is not.
+**A pack never modifies a node.** Re-state that to yourself before writing this:
+a missing component is *reported*, never created. Contrast with Layer A's
+`createOrphans()`, which does create nodes — correct there, because an edge in a
+scan is evidence that the other end exists. A sentence in a document is not.
 
 ---
 
 ## 6 · Search
 
 Extend `rebuildSearch()` in `ingest.js` (or move it somewhere shared — your
-call, record it). Two new subject kinds:
+call, record it). One new subject kind:
 
-- `process` — `title` is `<code> · <name>`; `body` carries the code, name,
-  description, trigger, outcome, owner, tags and every component id it touches.
-  Searching a service id must find the processes that use it.
-- `process-step` — `title` is the step name; `body` carries its description,
-  actor, node id and interaction. `subject_id` is the step id, and a hit routes
-  to its process.
+- `process` — `title` is `L<code> · <name>`; `body` carries the code with and
+  without its prefix, the name, description, trigger, outcome, owner, actor,
+  tags and every component id it touches.
 
-Searching `2.6` must find process `2.6`. Searching a topic name must find both
-the topic and the processes that flow through it.
+Searching `2.1.1` or `L2.1.1` must find that process. Searching a service id
+must find the processes that use it. Searching a topic name must find both the
+topic and the processes that flow through it.
 
 ---
 
 ## 7 · HTTP API
 
 Ids and codes are query parameters, never path segments — same rule as Layer A,
-and a code like `2.6.13` in a path is a trap waiting for a route matcher.
+and a code like `2.1.1` in a path is a trap waiting for a route matcher.
 
 | Method | Path | Returns |
 |---|---|---|
-| GET | `/api/processes` | `{processes:[{id,code,level,parentId,name,description,owner,childCount,stepCount,componentCount,packId,coverage}]}`, ordered by `sort_key`. The whole tree in one call — it is small. |
-| GET | `/api/process?code=` | `{process, ancestors:[…], children:[…], steps:[…], components:[…], edges:[…], drift:[…], pack}`. Steps come back with their node and edge *resolved* where possible, and flagged `unresolved:true` where not. |
+| GET | `/api/processes` | `{processes:[{id,code,level,parentId,name,description,owner,childCount,componentCount,node,edge,packId}]}`, ordered by `sort_key`. The whole tree in one call — it is small. |
+| GET | `/api/process?code=` | `{process, ancestors:[…], children:[…], descendants:[…], components:[…], edges:[…], services:[…], drift:[…], pack}`. `children` are ordered and come back with their node and edge *resolved* where possible and flagged `unresolved:true` where not. |
 | GET | `/api/process-packs` | the pack ingest log, newest first, quarantined rows carrying their errors |
 | GET | `/api/coverage` | `{components:[{node, processes:[{code,name}], covered:bool}]}` — the join from the component side |
 | POST | `/api/ingest/process-pack` | body = a pack → `{ok, pack, counts}` or `{ok:false, errors}` |
 
+A code arrives with or without its `L`; normalise before looking it up.
+
 Extend four existing endpoints:
 
+- **`GET /api/node?id=`** gains `processes: [{code, name, level, via}]` — every
+  process that touches this component, most direct first. This is what puts
+  "which business processes use this service" on the node page.
+- **`GET /api/graph`** gains `process=<code>`: restrict to that process's
+  components and edges, rolled up, so asking for `2` gives the whole of order
+  and execution and `2.1` gives just the estimate. Combined with `focus`, the
+  process wins as the filter and `focus` only selects.
+- **`GET /api/status`** gains `counts.processes`, `counts.processLeaves`,
+  `counts.processPacks`, and `coverage` as `{covered, total}` over services and
+  topics.
 - **`GET /api/prompt`** must serve
   [`prompts/author-processes.md`](prompts/author-processes.md), which needs
   three substitutions beyond the `{{SCHEMA}}` it already does: `{{PACK}}` from
@@ -334,16 +390,6 @@ Extend four existing endpoints:
   author does not collide with another pack. Without those the prompt is
   useless, because its central rule is "only reference components that exist".
 
-- **`GET /api/node?id=`** gains `processes: [{code, name, level, via}]` — every
-  process that touches this component, most direct first. This is what puts
-  "which business processes use this service" on the node page.
-- **`GET /api/graph`** gains `process=<code>`: restrict to that process's
-  components and edges. Combined with `focus`, the process wins as the filter
-  and `focus` only selects.
-- **`GET /api/status`** gains `counts.processes`, `counts.processLeaves`,
-  `counts.processPacks`, and `coverage` as `{covered, total}` over services and
-  topics.
-
 ---
 
 ## 8 · The UI
@@ -351,32 +397,32 @@ Extend four existing endpoints:
 ### `/processes` — the tree
 
 The L1/L2/L3 hierarchy as an indented, collapsible tree, ordered by `sort_key`.
-Each row: code, name, owner, and a small coverage indicator (how many components
-it touches). L1 and L2 rows show their child count. Clicking a row opens the
-detail page; the expand/collapse state persists in `localStorage`.
+Each row: the code with its `L` prefix, the name, the owner, and — for a leaf —
+the component it happens at. Parent rows show their child count.
 
-Keep it dense. Twenty-four rows should fit on one screen without scrolling —
-this is a navigation surface, not a report.
+Keep it dense. This is a navigation surface, not a report: a level 1 and its
+level 2 children should fit on one screen.
 
 ### `/process?code=` — the detail
 
 The most important new page. In order:
 
-1. **Header** — `2.1.1 · Validate and price the order`, the owner, the level,
-   and breadcrumbs of its ancestors as links.
-2. **Description**, plus `trigger` and `outcome` when present.
-3. **Steps**, for a leaf — a numbered list, each step showing its name,
-   description, actor, the component it happens at (linked), and the interaction
-   it travels over rendered readably (`order-service → publishes → orders.placed.v1`,
-   using `EDGE_LABEL` and `flowDirection()` from `lib/nodes.ts`). A step whose
-   node or interaction did not resolve is marked plainly — *"no such component
-   in the map"* — not hidden.
-4. **Children**, for a parent — each with its own step and component counts.
-5. **Components used** — grouped by kind, each linked, each marked `step`,
-   `touches` or `rollup`.
-6. **Services involved** — the distinct services across the whole subtree. For
-   an L1 this is the answer to "how many teams does this process cross", so make
-   it prominent.
+1. **Header** — `L2.1.1 · Get prices from the pricing service`, the owner, the
+   level, and breadcrumbs of its ancestors as links.
+2. **Description**, plus `trigger`, `outcome` and `actor` where present.
+3. **Children**, in order — the decomposition. Each row shows its code, name,
+   the component it happens at and the interaction it travels over, rendered
+   readably (`order-service → calls → pricing-service`, using `EDGE_LABEL` and
+   `flowDirection()` from `lib/nodes.ts`). This list *is* the flow, so number it
+   and let it read top to bottom. A child whose component or interaction did not
+   resolve is marked plainly — *"no such component in the map"* — never hidden.
+4. **This process's own component and interaction**, when it has them — the
+   usual case at level 3, where there are no children and this is the content.
+5. **Components used** — the full rolled-up list, grouped by kind, each linked
+   and marked with its `via`.
+6. **Services involved** — the distinct services across the whole subtree. For a
+   level 1 this is the answer to "how many teams does this process cross", so
+   make it prominent.
 7. **Findings** naming this process.
 8. **Source** — the attribution, with `asOf` shown as an age. A process nobody
    has confirmed in a year should look like it.
@@ -384,31 +430,32 @@ The most important new page. In order:
 ### Node detail gains a Processes card
 
 On `/node?id=`, list the processes that touch this component, deepest level
-first. On a topic this is the payoff: *"these four business processes flow
-through this topic"*, directly under the producers and consumers.
+first, each showing how it touches it. On a topic this is the payoff: *"these
+four business processes flow through this topic"*, directly under the producers
+and consumers.
 
 ### The map gains a process overlay
 
-In the filter row, a **Process** picker. With one selected, the map draws only
-that process's components and the edges between them; everything else is
-dropped, not merely dimmed. The existing `focus`/`depth` controls still work
-within that subgraph.
+In the filter row, a **Process** picker over the tree. With one selected, the map
+draws only that process's rolled-up components and the edges between them;
+everything else is dropped, not merely dimmed. The existing `focus`/`depth`
+controls still work within that subgraph.
 
-This is the feature that makes the whole project worth having: pick "Place an
-order", see exactly the services, topics and databases it runs through, across
-every repository, laid out. Give it the care it deserves.
+This is the feature that makes the whole project worth having: pick "Getting
+estimate", see exactly the services, endpoints, caches and topics it runs
+through, across every repository, laid out. Give it the care it deserves.
 
-### A leaf process renders as a sequence diagram
+### A process renders as a flow diagram
 
-Mermaid is already a dependency and `reference/` showed how the sibling project
-loads it lazily and offline. Generate a `sequenceDiagram` from a leaf's steps:
-participants are the distinct services, each step an arrow using the resolved
-interaction, `Note over` for a step with no interaction. Put it on the process
-detail page behind a chart/diagram toggle.
+Mermaid is already a dependency. For any process with children, generate a
+`sequenceDiagram` from **the children in order** — participants are the distinct
+services, each child an arrow using its resolved interaction, `Note over` for a
+child with no interaction. Because the children are the flow, this works at
+every level: `L2` draws four boxes, `L2.1` draws its four actions.
 
-This closes the loop with where the project started — hand-drawn mermaid process
-diagrams — except now they are generated from data that is checked against the
-code.
+Put it on the process detail page behind a diagram/list toggle. This closes the
+loop with where the project started — hand-drawn mermaid process diagrams —
+except now they are generated from data that is checked against the code.
 
 ### The scan page gains a second tab
 
@@ -424,10 +471,10 @@ cases. Do not invent a new rendering path.
 | type | what it shows | fields |
 |---|---|---|
 | `process-tree` | the hierarchy, collapsible | `rootCode`, `maxLevel` |
-| `process-steps` | one process's steps | `code` (empty follows the filter row) |
-| `process-flow` | the mermaid sequence view | `code` |
+| `process-children` | one process's children, in order, with their components | `code` (empty follows the filter row) |
+| `process-flow` | the mermaid view of a process's children | `code` |
 | `process-coverage` | components covered vs not, by kind | `nodeKind` |
-| `process-list` | leaves with step and component counts | `owner`, `limit` |
+| `process-list` | leaves with their components | `owner`, `limit` |
 
 Add a seeded **Processes** page (`slug: 'processes'`) carrying the tree, a
 coverage widget and a stat row, alongside the five that exist.
@@ -438,11 +485,10 @@ coverage widget and a stat row, alongside the five that exist.
 
 **Phase 7 — schema and ingest.** The §3 tables, `server/src/processes.js`, the
 sweep routing, `validate.mjs` routing, `POST /api/ingest/process-pack`. Prove it
-with `schema/example.trading-processes.json` and a deliberately broken copy.
+with `schema/example.order-and-execution.json` and a deliberately broken copy.
 
-**Phase 8 — rollup and findings.** The §5 rollup and the seven new findings,
-wired into the existing link pass. Still no UI; verifiable from the command
-line.
+**Phase 8 — rollup and findings.** The §5 rollup and the six new findings, wired
+into the existing link pass. Still no UI; verifiable from the command line.
 
 **Phase 9 — demo packs.** Three packs covering the Meridian estate (§11),
 written into `demo/processes/`, loaded by `npm run seed:demo` alongside the
@@ -452,8 +498,8 @@ until this passes** — every screen below is easier to build against real data.
 **Phase 10 — read API and the core pages.** §7 in full, then `/processes`, the
 process detail page, the Processes card on node detail, and search.
 
-**Phase 11 — the payoff.** The map's process overlay, the mermaid flow view,
-the five widgets and the seeded Processes page.
+**Phase 11 — the payoff.** The map's process overlay, the mermaid flow view, the
+five widgets and the seeded Processes page.
 
 Stopping after Phase 10 leaves something genuinely useful. Phase 11 is where it
 becomes the thing that was asked for — do not start it on a broken Phase 10.
@@ -466,59 +512,68 @@ Extend `server/scripts/verify.mjs` with a process stage in the same style. Every
 assertion below is checkable without the real repositories.
 
 **Phase 7**
-- `npm run validate -- schema/example.trading-processes.json` exits 0 and says
+- `npm run validate -- schema/example.order-and-execution.json` exits 0 and says
   it validated a *process pack*.
-- The same file with `"code": "2.1.1"` changed to `"2.1.1.4"` (four segments)
-  exits 1 naming the offending path.
+- The same file with a code changed to `2.1.1.4` (four segments) exits 1 naming
+  the offending path.
+- A pack whose code is written `L2.1.1` ingests to the same row as `2.1.1`.
 - Posting a broken pack leaves exactly one `process_packs` row with
-  `status='quarantined'` and **zero** rows in `processes` and `process_steps`.
+  `status='quarantined'` and **zero** rows in `processes`.
 - Ingesting the example twice leaves one `active` pack and does not double
   anything.
 - `proc:2.1.1` has `level` 3, `parent_id` `proc:2.1`, `sort_key`
   `0002.0001.0001`.
-- Every one of the example's 16 steps that carries an interaction resolved to a
-  non-null `edge_id` against the seeded estate.
+- All 15 of the example's leaves resolved to a non-null `edge_id` against the
+  seeded estate.
 - **Ingesting the example created no new rows in `nodes` or `edges`.** Assert
   the counts are identical before and after. This is the invariant that matters
   most in Phase 7.
 
 **Phase 8**
-- `processes` ordered by `sort_key` puts `2.9` before `2.10` — insert a
-  throwaway `2.9` and `2.10` to prove it, then remove them.
+- Ordering by `sort_key` puts `2.9` before `2.10` — insert a throwaway `2.9` and
+  `2.10`, assert, remove them.
 - `proc:2` rolls up every component of its descendants; `process_components` for
   `proc:2` is a superset of those for `proc:2.1.1`.
-- `via` is `step` where a step named the component and `rollup` on the parent.
+- `proc:2.1.2` calls `api:pricing-service/GET /v1/rates/{}` and therefore also
+  has `svc:pricing-service` with `via='exposes'`.
+- `via` is `node` or `interaction` where the process named the component, and
+  `rollup` on its parent.
 
 **Phase 9** — after `npm run seed:demo`:
 
 | | expected |
 |---|---|
 | process packs, active | 3 |
-| processes total | 24 |
-| level 1 / 2 / 3 | 3 / 7 / 14 |
-| leaves carrying steps | 14 |
-| `process-missing-component` findings | exactly 1 |
-| `process-orphan-code` findings | 0 |
-| `process-duplicate-code` findings | 0 |
-| `process-steps-on-parent` findings | 0 |
-| `uncovered-component` findings | ≥ 1, including `topic:risk.flagged.v1` |
+| processes total | 46 |
+| level 1 / 2 / 3 | 3 / 9 / 34 |
+| leaves | 34 |
+| `process-missing-component` | exactly 1 — `topic:trades.enriched.v1` from `3.1.1` |
+| `process-missing-interaction` | exactly 1 — `3.2.3`, reporting calling the wallet balance endpoint |
+| `process-orphan-code` | 0 |
+| `process-duplicate-code` | 0 |
+| `process-no-detail` | 0 |
+| `uncovered-component` | exactly 2 — `topic:risk.flagged.v1` and `topic:notifications.requested.v1` |
+| services with no process | 0 |
 
-- `GET /api/node?id=topic:orders.matched.v1` lists at least the ledger and
+- `GET /api/node?id=topic:orders.matched.v1` lists the ledger, wallet and
   reporting processes.
 - `GET /api/process?code=2` reports services from more than one team.
-- Removing the demo (`npm run seed:demo -- --remove`) clears packs, processes,
-  steps and the join tables, and leaves zero process findings.
+- `GET /api/process?code=L2` returns the same thing as `code=2`.
+- Removing the demo (`npm run seed:demo -- --remove`) clears packs, processes
+  and the join tables, and leaves zero process findings.
+- **`npm run verify` still passes every existing Layer A assertion.**
 
 **Phase 10**
-- Searching `2.2.2` finds that process; searching `orders.matched.v1` finds the
-  topic *and* the processes that flow through it.
-- A step whose component does not resolve renders as unresolved rather than
+- Searching `2.3.3` and `L2.3.3` both find that process; searching
+  `orders.matched.v1` finds the topic *and* the processes that flow through it.
+- A process whose component does not resolve renders as unresolved rather than
   vanishing.
 
 **Phase 11**
 - Selecting a process on the map shows only its components, and the node count
   matches `GET /api/process?code=`'s component count.
-- The mermaid diagram for `2.1.1` renders in both themes.
+- The mermaid diagram for `2.1` renders in both themes and shows four actions in
+  order.
 - Dark mode is legible on every new screen; no horizontal page scroll at 1280px.
 
 ---
@@ -530,54 +585,76 @@ loaded by `npm run seed:demo` exactly as the manifests are — generated, writte
 to disk, then read back off disk and ingested, so what is committed is what is
 verified.
 
-`schema/example.trading-processes.json` **is** the `trading` pack. Move or copy
-it into the demo set rather than writing a second version of it; if you move it,
-leave the schema example pointing at the demo copy.
+[`schema/example.order-and-execution.json`](schema/example.order-and-execution.json)
+**is** the `order-and-execution` pack, unchanged. Copy it into the demo set; do
+not write a second version of it, and do not add the defects below to it — it is
+the fixture that must stay clean.
 
-**Pack `trading`** — 10 processes, already written:
-`2` Trade → `2.1` Place an order (`2.1.1`, `2.1.2`), `2.2` Match and settle
-(`2.2.1`, `2.2.2`, `2.2.3`), `2.3` Tell the customer (`2.3.1`).
+**Pack `order-and-execution`** — 20 processes, already written: `2` with `2.1`
+Getting estimate, `2.2` Accepting estimate and placing order, `2.3` Matching and
+settlement, `2.4` Telling the customer.
 
-**Pack `onboarding`** — 8 processes:
+**Pack `onboarding`** — 15 processes:
 
 | code | name |
 |---|---|
-| `1` | Onboard a customer |
-| `1.1` | Open an account |
+| `1` | Onboarding and funding |
+| `1.1` | Opening an account |
 | `1.1.1` | Create the customer record |
-| `1.1.2` | Verify identity |
+| `1.1.2` | Announce the new customer |
 | `1.1.3` | Open the wallets |
-| `1.2` | Fund the account |
-| `1.2.1` | Take the payment |
-| `1.2.2` | Post the deposit to the ledger |
+| `1.1.4` | Start the session |
+| `1.2` | Verifying identity |
+| `1.2.1` | Record the verification result |
+| `1.2.2` | Announce approval |
+| `1.2.3` | Enable trading on the wallet |
+| `1.3` | Funding the account |
+| `1.3.1` | Take the card payment |
+| `1.3.2` | Record the payment |
+| `1.3.3` | Announce the settled payment |
+| `1.3.4` | Post the deposit to the ledger |
 
-Between them these must touch `svc:identity-service`, `svc:wallet-service`,
-`svc:payments-service`, `svc:gateway-api`, `topic:users.created.v2`,
-`topic:kyc.approved.v1`, `topic:payments.settled.v1`, `db:postgres/identity`,
-`db:postgres/wallet`, `db:postgres/payments`, `cache:redis/session` and
-`ext:stripe`.
+Between them these must reach `svc:identity-service`, `svc:wallet-service`,
+`svc:payments-service`, `svc:gateway-api`, `svc:ledger-service`,
+`topic:users.created.v2`, `topic:kyc.approved.v1`, `topic:payments.settled.v1`,
+`db:postgres/identity`, `db:postgres/wallet`, `db:postgres/payments`,
+`cache:redis/session` and `ext:stripe`.
 
-**Pack `reporting`** — 6 processes:
+**Pack `reporting`** — 11 processes:
 
 | code | name |
 |---|---|
-| `3` | Report |
-| `3.1` | Build the read models |
-| `3.1.1` | Ingest matched trades |
-| `3.1.2` | Ingest balance changes |
-| `3.2` | Serve reports |
-| `3.2.1` | Answer a report request |
+| `3` | Reporting |
+| `3.1` | Building the read models |
+| `3.1.1` | Enrich matched trades |
+| `3.1.2` | Ingest matched trades |
+| `3.1.3` | Ingest balance changes |
+| `3.1.4` | Write the warehouse |
+| `3.1.5` | Reconcile against the ledger |
+| `3.2` | Serving reports |
+| `3.2.1` | Index the report |
+| `3.2.2` | Answer a report request |
+| `3.2.3` | Look up live balances for the statement |
 
-**The deliberate defect.** `3.1.1` has a step referencing
-`topic:trades.enriched.v1`, which does not exist in the estate — an enrichment
-topic the reporting team's document still describes but which was folded into
-the matching engine. It produces exactly one `process-missing-component`, and it
-is the demo of the cross-check that justifies the whole layer. Give it a
-description that says as much.
+### The two deliberate defects, both in `reporting`
 
-Everything else must resolve cleanly. Write real step descriptions, not filler:
-this demo is what the screens are designed against, and lorem-grade text
-produces lorem-grade layout decisions.
+**`3.1.1` Enrich matched trades** consumes `topic:trades.enriched.v1`, which does
+not exist in the estate — an enrichment topic the reporting team's document still
+describes, but which was folded into the matching engine a year ago. Exactly one
+`process-missing-component`.
+
+**`3.2.3` Look up live balances for the statement** has
+`svc:reporting-service` calling `api:wallet-service/GET /v1/wallets/{}/balance`.
+Both ends exist; that call is not in the code, because statements are built from
+the warehouse instead. Exactly one `process-missing-interaction`.
+
+Together they are the demo of the cross-check that justifies this whole layer:
+one document naming a component that is gone, one naming a call that was never
+made. Give both a description that says as much.
+
+Everything else must resolve cleanly. Write real descriptions, not filler: this
+demo is what the screens are designed against, and lorem-grade text produces
+lorem-grade layout decisions.
 
 ---
 
@@ -588,18 +665,20 @@ On top of SPEC.md §15, which all still hold:
 1. **A process pack never creates or modifies a node or an edge.** It reads
    topology and reports what it cannot find.
 2. **A quarantined pack imports nothing.** No partial packs, ever.
-3. **`code` is the identity.** Level and parent are derived from it; never store
-   a second, independent parent pointer.
-4. **Never order by `code`.** Order by `sort_key`, or `2.10` sorts before `2.9`.
-5. **A process with children has no steps.** Report it as a finding rather than
-   silently rolling up something incoherent.
-6. **Rollups are derived, never authored.** A parent's components come from its
-   descendants at link time.
-7. **Interactions resolve through `edgeId()`** from `ingest.js`. One hashing
+3. **The levels are decomposition, not sequence.** A level 3 is the atomic unit
+   of work. There are no steps beneath it, and there is no step table.
+4. **Order comes from the code.** No sequence field, anywhere. Siblings are
+   ordered by their last segment.
+5. **`code` is the identity.** Level and parent are derived from it; never store
+   a second, independent parent pointer. An `L` prefix is stripped on input.
+6. **Never order by `code`.** Order by `sort_key`, or `2.10` sorts before `2.9`.
+7. **Rollups are derived, never authored.** A parent's components come from its
+   children at link time.
+8. **Interactions resolve through `edgeId()`** from `ingest.js`. One hashing
    rule, one place.
-8. **Processes carry a source, not evidence.** Never fabricate a file and line
+9. **Processes carry a source, not evidence.** Never fabricate a file and line
    for a human-asserted fact.
-9. **An unresolved step is shown, not hidden.** Its whole value is that it is
-   visible.
-10. **Layer A stays independently correct.** Every one of SPEC.md §14's existing
+10. **An unresolved reference is shown, not hidden.** Its whole value is that it
+    is visible.
+11. **Layer A stays independently correct.** Every one of SPEC.md §14's existing
     assertions must still pass when you are done. `npm run verify` is the gate.
