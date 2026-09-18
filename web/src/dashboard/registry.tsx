@@ -627,6 +627,17 @@ const DRIFT_KINDS: Record<string, { title: string; why: string }> = {
   },
 }
 
+/**
+ * Where a finding's subject lives. A process finding names a process, a
+ * topology finding names a node, and they are different pages — a `proc:` id
+ * is not a node and never has been.
+ */
+const isProcess = (id: string | null | undefined) => !!id?.startsWith('proc:')
+
+const subjectHref = (id: string) => (isProcess(id) ? processHref(id.slice(5)) : nodeHref(id))
+
+const subjectLabel = (id: string) => (isProcess(id) ? displayCode(id.slice(5)) : idValue(id))
+
 /** The nodes named inside a finding's `data`, whatever shape that kind uses. */
 function participants(f: DriftFinding): { id: string | null; label: string; note?: string }[] {
   const d = f.data as Record<string, unknown> | unknown[] | null
@@ -644,6 +655,22 @@ function participants(f: DriftFinding): { id: string | null; label: string; note
       label: x.name ?? idValue(x.serviceId),
       note: note(x as never),
     }))
+
+  // The component a process named and the map does not have. There is no page
+  // to link it to — that is the finding.
+  const component = (d as { component?: string; how?: string }).component
+  if (component) return [{ id: null, label: component, note: (d as { how?: string }).how }]
+
+  // A call the document describes and no repository makes. Both ends are real,
+  // so both link.
+  const from = (d as { from?: string; to?: string; kind?: string }).from
+  if (from) {
+    const row = d as { from: string; to: string; kind: string; fromName?: string; toName?: string }
+    return [
+      { id: row.from, label: row.fromName ?? idValue(row.from), note: row.kind },
+      { id: row.to, label: row.toName ?? idValue(row.to), note: 'the other end' },
+    ]
+  }
 
   const services = (d as { services?: { serviceId: string; name?: string; how?: string }[] }).services
   if (services) return services.map((x) => ({ id: x.serviceId, label: x.name ?? idValue(x.serviceId), note: x.how }))
@@ -706,28 +733,29 @@ function Finding({ finding }: { finding: DriftFinding }) {
   const [open, setOpen] = useState(false)
   const [evidence, setEvidence] = useState<Evidence[] | null>(null)
   const who = participants(finding)
+  const subject = finding.subject_id
+  const process = isProcess(subject)
 
-  // The citations are fetched when a finding is opened, not for all of them up
-  // front — most findings are never expanded.
+  // Citations are fetched when a finding is opened, not for all of them up
+  // front — most findings are never expanded. A process has no evidence by
+  // design: its facts are asserted by people, so there is nothing to fetch.
   useEffect(() => {
-    if (!open || evidence || !finding.subject_id) return
+    if (!open || evidence || !subject || process) return
     let cancelled = false
     api
-      .get<NodeDetail>('/node', { id: finding.subject_id })
+      .get<NodeDetail>('/node', { id: subject })
       .then((d) => !cancelled && setEvidence(d.evidence.slice(0, 3)))
       .catch(() => !cancelled && setEvidence([]))
     return () => {
       cancelled = true
     }
-  }, [open, evidence, finding.subject_id])
+  }, [open, evidence, subject, process])
 
   return (
     <li className={`drift-finding ${finding.severity}`}>
       <button type="button" className="drift-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <span className={`drift-dot ${finding.severity}`} aria-hidden="true" />
-        <span className="drift-subject">
-          {finding.subject_id ? idValue(finding.subject_id) : 'the estate'}
-        </span>
+        <span className="drift-subject">{subject ? subjectLabel(subject) : 'the estate'}</span>
         <span className="drift-detail">{finding.detail}</span>
         <span className="drift-caret" aria-hidden="true">
           {open ? '−' : '+'}
@@ -740,13 +768,17 @@ function Finding({ finding }: { finding: DriftFinding }) {
             <ul className="drift-parties">
               {who.map((p) => (
                 <li key={`${p.id ?? ''}${p.label}`}>
-                  {p.id ? <NodeLink id={p.id} label={p.label} /> : <code>{p.label}</code>}
+                  {p.id ? (
+                    <NodeLink id={p.id} label={p.label} />
+                  ) : (
+                    <code className="proc-missing">{p.label}</code>
+                  )}
                   {p.note && <span className="muted"> · {p.note}</span>}
                 </li>
               ))}
             </ul>
           )}
-          {finding.subject_id && (
+          {subject && !process && (
             <>
               {evidence === null ? (
                 <span className="spinner" />
@@ -757,9 +789,15 @@ function Finding({ finding }: { finding: DriftFinding }) {
                   No citation on the subject itself — its edges carry the evidence.
                 </p>
               )}
-              <Link to={nodeHref(finding.subject_id)}>Open details →</Link>
             </>
           )}
+          {process && (
+            <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+              A process is asserted by a person, not derived from code, so it carries a source rather
+              than a file and a line.
+            </p>
+          )}
+          {subject && <Link to={subjectHref(subject)}>Open details →</Link>}
         </div>
       )}
     </li>
