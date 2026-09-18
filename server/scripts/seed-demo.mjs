@@ -17,11 +17,14 @@ import path from 'node:path'
 import { ROOT } from '../src/config.js'
 import { db } from '../src/db.js'
 import { ingestManifest, rebuildSearch, validateManifest } from '../src/ingest.js'
+import { ingestProcessPack, validateProcessPack } from '../src/processes.js'
 import { linkPass } from '../src/link.js'
 import { buildManifests } from './demo/manifests.mjs'
 import { SERVICES } from './demo/estate.mjs'
+import { PACK_IDS, buildPacks } from './demo/packs.mjs'
 
 const DIR = path.join(ROOT, 'demo', 'manifests')
+const PACK_DIR = path.join(ROOT, 'demo', 'processes')
 const REPOS = SERVICES.map((s) => s.repo)
 const args = process.argv.slice(2)
 
@@ -33,23 +36,31 @@ if (args.includes('--remove')) {
 
 function seed({ writeOnly }) {
   fs.mkdirSync(DIR, { recursive: true })
+  fs.mkdirSync(PACK_DIR, { recursive: true })
   const manifests = buildManifests()
+  const packs = buildPacks()
 
   let invalid = 0
-  for (const m of manifests) {
-    const { ok, errors } = validateManifest(m)
+  const write = (dir, name, body, check, label) => {
+    const { ok, errors } = check(body)
     if (!ok) {
       invalid++
-      console.error(`✗ ${m.repo} is not schema-valid:`)
+      console.error(`✗ ${label} is not schema-valid:`)
       for (const e of errors) console.error(`    ${e.path} ${e.message}`)
     }
-    fs.writeFileSync(path.join(DIR, `${m.repo}.json`), `${JSON.stringify(m, null, 2)}\n`)
+    fs.writeFileSync(path.join(dir, `${name}.json`), `${JSON.stringify(body, null, 2)}\n`)
   }
+
+  for (const m of manifests) write(DIR, m.repo, m, validateManifest, m.repo)
+  for (const p of packs) write(PACK_DIR, p.pack, p, validateProcessPack, p.pack)
+
   if (invalid) {
-    console.error(`\n${invalid} manifest(s) failed validation — not ingesting.`)
+    console.error(`\n${invalid} file(s) failed validation — not ingesting.`)
     process.exit(1)
   }
-  console.log(`Wrote ${manifests.length} manifests to demo/manifests/`)
+  console.log(
+    `Wrote ${manifests.length} manifests to demo/manifests/ and ${packs.length} process packs to demo/processes/`
+  )
   if (writeOnly) return
 
   // Read them back off disk and ingest those: what is committed is exactly
@@ -68,14 +79,35 @@ function seed({ writeOnly }) {
     )
   }
 
+  // Packs after the manifests, because a pack resolves against topology — and
+  // the link pass re-resolves after every ingest, so the order is a courtesy
+  // rather than a requirement.
+  for (const pack of PACK_IDS) {
+    const file = `${pack}.json`
+    const json = JSON.parse(fs.readFileSync(path.join(PACK_DIR, file), 'utf8'))
+    const result = ingestProcessPack(json, file)
+    if (!result.ok) {
+      console.error(`✗ ${pack} was quarantined:`, result.errors)
+      process.exit(1)
+    }
+    const c = result.counts
+    console.log(
+      `  ✓ ${pack.padEnd(21)} ${String(c.processes).padStart(2)} processes  ` +
+        `${c.level1}/${c.level2}/${c.level3} by level`
+    )
+  }
+
   summarise()
 }
 
 function remove() {
   const marks = REPOS.map(() => '?').join(',')
+  const packMarks = PACK_IDS.map(() => '?').join(',')
   db.transaction(() => {
-    // Derived rows cascade off the manifest; nodes are reference-counted.
+    // Derived rows cascade off the manifest and the pack; nodes are
+    // reference-counted, and the join tables are rebuilt by the link pass.
     db.prepare(`DELETE FROM manifests WHERE repo IN (${marks})`).run(...REPOS)
+    db.prepare(`DELETE FROM process_packs WHERE pack IN (${packMarks})`).run(...PACK_IDS)
     db.prepare(
       `DELETE FROM nodes
        WHERE id NOT IN (SELECT node_id FROM node_sources)
@@ -87,16 +119,22 @@ function remove() {
   rebuildSearch()
 
   let removed = 0
-  if (fs.existsSync(DIR)) {
-    for (const repo of REPOS) {
-      const file = path.join(DIR, `${repo}.json`)
+  for (const [dir, names] of [
+    [DIR, REPOS],
+    [PACK_DIR, PACK_IDS],
+  ]) {
+    if (!fs.existsSync(dir)) continue
+    for (const name of names) {
+      const file = path.join(dir, `${name}.json`)
       if (fs.existsSync(file)) {
         fs.unlinkSync(file)
         removed++
       }
     }
   }
-  console.log(`Removed the demo estate: ${removed} manifest files, ${REPOS.length} repos cleared from the database.`)
+  console.log(
+    `Removed the demo estate: ${removed} files, ${REPOS.length} repos and ${PACK_IDS.length} process packs cleared from the database.`
+  )
   summarise()
 }
 
@@ -115,6 +153,12 @@ function summarise() {
     `  edges ${n('SELECT COUNT(*) n FROM edges')} · evidence ${n('SELECT COUNT(*) n FROM evidence')} · ` +
       `unresolved ${n('SELECT COUNT(*) n FROM unresolved')} · orphans ${n('SELECT COUNT(*) n FROM nodes WHERE orphan = 1')} · ` +
       `quarantined ${n(`SELECT COUNT(*) n FROM manifests WHERE status = 'quarantined'`)}`
+  )
+  const levels = [1, 2, 3].map((l) => n(`SELECT COUNT(*) n FROM processes WHERE level = ${l}`))
+  console.log(
+    `  packs ${n(`SELECT COUNT(*) n FROM process_packs WHERE status = 'active'`)} · ` +
+      `processes ${n('SELECT COUNT(*) n FROM processes')} (${levels.join('/')} by level) · ` +
+      `component links ${n('SELECT COUNT(*) n FROM process_components')}`
   )
   const drift = db.prepare('SELECT kind, COUNT(*) AS n FROM drift GROUP BY kind ORDER BY kind').all()
   console.log(`  drift ${drift.length ? drift.map((d) => `${d.kind} ${d.n}`).join(' · ') : 'none'}\n`)

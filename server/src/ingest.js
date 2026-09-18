@@ -367,8 +367,47 @@ export function rebuildSearch() {
       const body = [u.expected, u.reason, u.repo, ...cited('unresolved', String(u.id))]
       add.run('unresolved', String(u.id), u.raw, body.filter(Boolean).join('\n'), u.repo)
     }
+
+    // Layer B. The code goes in twice, with and without its prefix, because
+    // people type both — and every component the process touches goes in with
+    // it, so searching a service id finds the processes that run through it.
+    const componentsOf = new Map()
+    for (const r of db.prepare('SELECT process_id, node_id FROM process_components').all()) {
+      if (!componentsOf.has(r.process_id)) componentsOf.set(r.process_id, [])
+      componentsOf.get(r.process_id).push(r.node_id)
+    }
+    for (const p of db.prepare('SELECT * FROM processes').all()) {
+      const components = componentsOf.get(p.id) ?? []
+      const body = [
+        p.code,
+        `L${p.code}`,
+        p.name,
+        p.description,
+        p.trigger,
+        p.outcome,
+        p.owner,
+        p.actor,
+        p.notes,
+        ...(parseList(p.tags)),
+        p.node_id,
+        p.edge_from,
+        p.edge_to,
+        ...components,
+        ...components.map((id) => named.get(id)).filter(Boolean),
+      ]
+      add.run('process', p.id, `L${p.code} · ${p.name}`, body.filter(Boolean).join('\n'), p.owner ?? '')
+    }
   })
   write()
+}
+
+const parseList = (json) => {
+  try {
+    const v = JSON.parse(json ?? '[]')
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
+  }
 }
 
 /* ────────────────────────────────────────────────────── inbox */

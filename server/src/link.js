@@ -32,6 +32,21 @@ const PREFIX_KIND = {
 
 const idValue = (id) => id.slice(id.indexOf(':') + 1)
 
+/** How an edge kind reads in a sentence, for findings people have to act on. */
+const EDGE_PHRASE = {
+  'kafka.produce': 'publishes to',
+  'kafka.consume': 'consumes',
+  'db.read': 'reads',
+  'db.write': 'writes',
+  'db.owns': 'owns',
+  'cache.read': 'reads from the cache',
+  'cache.write': 'writes to the cache',
+  'http.call': 'calls',
+  'http.expose': 'serves',
+  'depends.on': 'depends on',
+  'topic.schema': 'carries',
+}
+
 /** `a`, `a and b`, `a, b and c` — these strings are read by people. */
 const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`)
 
@@ -406,8 +421,8 @@ function processFindings(write, { nodes, nameOf, label }) {
   for (const p of procs) {
     /* a component the document names and the map has never seen */
     const referenced = new Map()
-    if (p.node_id) referenced.set(p.node_id, 'happens at')
-    for (const t of touches.get(p.id) ?? []) if (!referenced.has(t)) referenced.set(t, 'also uses')
+    if (p.node_id) referenced.set(p.node_id, 'the component it happens at')
+    for (const t of touches.get(p.id) ?? []) if (!referenced.has(t)) referenced.set(t, 'a component it also uses')
     if (p.edge_from) {
       if (!referenced.has(p.edge_from)) referenced.set(p.edge_from, 'the near end of its interaction')
       if (!referenced.has(p.edge_to)) referenced.set(p.edge_to, 'the far end of its interaction')
@@ -419,8 +434,8 @@ function processFindings(write, { nodes, nameOf, label }) {
         'process-missing-component',
         p.id,
         'warn',
-        `${named(p)} ${how} ${id}, which no scan has ever found. Either the scan missed it, ` +
-          `or the process document is describing something that no longer exists.`,
+        `${named(p)} names ${id} as ${how}, and no scan has ever found it. Either the scan missed it, ` +
+          `or this document is describing something that no longer exists.`,
         { code: p.code, name: p.name, component: id, how, kind: PREFIX_KIND[id.split(':', 1)[0]] ?? null }
       )
     }
@@ -435,9 +450,9 @@ function processFindings(write, { nodes, nameOf, label }) {
         'process-missing-interaction',
         p.id,
         'warn',
-        `${named(p)} says ${label(p.edge_from)} ${p.edge_kind} ${label(p.edge_to)}. ` +
-          `Both ends exist, but no scanned repository makes that call — either the scan missed it, ` +
-          `or this stopped being true and the document did not follow.`,
+        `${named(p)} says ${label(p.edge_from)} ${EDGE_PHRASE[p.edge_kind] ?? p.edge_kind} ${label(p.edge_to)}. ` +
+          `Both ends exist, but no scanned repository does that — either the scan missed it, or this ` +
+          `stopped being true and the document did not follow.`,
         {
           code: p.code,
           name: p.name,

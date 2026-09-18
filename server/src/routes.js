@@ -101,7 +101,27 @@ router.get('/status', wrap(async (req, res) => {
       drift: db.prepare('SELECT COUNT(*) AS n FROM drift').get().n,
       driftWarn: db.prepare(`SELECT COUNT(*) AS n FROM drift WHERE severity = 'warn'`).get().n,
       quarantined: db.prepare(`SELECT COUNT(*) AS n FROM manifests WHERE status = 'quarantined'`).get().n,
+      processes: db.prepare('SELECT COUNT(*) AS n FROM processes').get().n,
+      processLeaves: db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM processes p
+           WHERE NOT EXISTS (SELECT 1 FROM processes c WHERE c.parent_id = p.id)`
+        )
+        .get().n,
+      processPacks: db.prepare(`SELECT COUNT(*) AS n FROM process_packs WHERE status = 'active'`).get().n,
+      quarantinedPacks: db
+        .prepare(`SELECT COUNT(*) AS n FROM process_packs WHERE status = 'quarantined'`)
+        .get().n,
     },
+    // How much of the estate any documented process accounts for, over the two
+    // kinds worth asking about. Zero of zero when nothing is loaded.
+    coverage: db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN id IN (SELECT node_id FROM process_components) THEN 1 ELSE 0 END) AS covered
+         FROM nodes WHERE kind IN ('service', 'kafka.topic')`
+      )
+      .get(),
     driftByKind,
     repos: db
       .prepare(
@@ -202,6 +222,18 @@ router.get('/node', wrap(async (req, res) => {
     }
   }
 
+  // Which business processes run through this component. Deepest first: a
+  // level 3 says what actually happens here, a level 1 says which part of the
+  // business it belongs to, and both are worth showing.
+  const processes = db
+    .prepare(
+      `SELECT p.id, p.code, p.name, p.level, p.owner, c.via
+       FROM process_components c JOIN processes p ON p.id = c.process_id
+       WHERE c.node_id = ?
+       ORDER BY p.level DESC, p.sort_key`
+    )
+    .all(id)
+
   res.json({
     node,
     out,
@@ -211,6 +243,7 @@ router.get('/node', wrap(async (req, res) => {
     bindings,
     viaContract,
     neighbours,
+    processes,
     drift: db.prepare('SELECT * FROM drift WHERE subject_id = ?').all(id),
   })
 }))
@@ -470,6 +503,19 @@ router.get('/graph', wrap(async (req, res) => {
   const allEdges = db.prepare('SELECT * FROM edges').all()
   let keep = null
 
+  // A process is a filter, not a selection: asking for 2 gives the whole of
+  // order and execution, 2.1 gives just the estimate. Combined with a focus,
+  // the process bounds the graph and the focus picks within it.
+  const processCode = String(req.query.process || '').trim().replace(/^[Ll]/, '')
+  let withinProcess = null
+  if (processCode) {
+    const proc = db.prepare('SELECT id FROM processes WHERE code = ?').get(processCode)
+    if (!proc) return res.json({ nodes: [], edges: [], process: null })
+    withinProcess = new Set(
+      db.prepare('SELECT node_id FROM process_components WHERE process_id = ?').all(proc.id).map((r) => r.node_id)
+    )
+  }
+
   if (focus) {
     keep = new Set([focus])
     for (let hop = 0; hop < depth && hop < 12; hop++) {
@@ -487,6 +533,9 @@ router.get('/graph', wrap(async (req, res) => {
   }
 
   const nodeRows = db.prepare('SELECT * FROM nodes').all().filter((n) => {
+    // The process filter is absolute — everything outside it is dropped, not
+    // dimmed, and not exempted by being the focus.
+    if (withinProcess && !withinProcess.has(n.id)) return false
     if (keep && !keep.has(n.id)) return false
     if (kinds.length && !kinds.includes(n.kind) && n.id !== focus) return false
     if (!includeExternal && (n.orphan || n.kind === 'external') && n.id !== focus) return false
@@ -500,6 +549,7 @@ router.get('/graph', wrap(async (req, res) => {
   res.json({
     nodes,
     edges: allEdges.filter((e) => ids.has(e.from_id) && ids.has(e.to_id)).map(edgeRow),
+    process: processCode || null,
   })
 }))
 
@@ -553,15 +603,44 @@ router.get('/repos', wrap(async (req, res) => {
 }))
 
 /** The scan prompt with {{SCHEMA}} and {{REPO}} filled in, ready to paste. */
+/** Which schema a prompt inlines. A process prompt gets the pack schema. */
+const PROMPT_SCHEMA = {
+  'author-processes': 'process-pack.schema.json',
+}
+
 router.get('/prompt', wrap(async (req, res) => {
   const name = String(req.query.name || 'scan-pass1').replace(/[^a-z0-9-]/gi, '')
   const file = path.join(ROOT, 'prompts', `${name}.md`)
   if (!fs.existsSync(file)) return res.status(404).json({ error: 'No such prompt' })
-  const schema = fs.readFileSync(path.join(ROOT, 'schema', 'manifest.schema.json'), 'utf8')
+  const schema = fs.readFileSync(
+    path.join(ROOT, 'schema', PROMPT_SCHEMA[name] ?? 'manifest.schema.json'),
+    'utf8'
+  )
+
+  // Every component in the map, and every code already taken. Without these
+  // the authoring prompt is useless: its central rule is "only reference
+  // components that exist", and it cannot be followed blind.
+  const byKind = new Map()
+  for (const n of db.prepare('SELECT id, kind, name FROM nodes ORDER BY kind, id').all()) {
+    if (!byKind.has(n.kind)) byKind.set(n.kind, [])
+    byKind.get(n.kind).push(`- \`${n.id}\` · ${n.name}`)
+  }
+  const components = byKind.size
+    ? [...byKind].map(([kind, lines]) => `**${kind}**\n${lines.join('\n')}`).join('\n\n')
+    : '_Nothing has been ingested yet, so there are no components to reference._'
+
+  const taken = db.prepare('SELECT code, name FROM processes ORDER BY sort_key').all()
+  const processes = taken.length
+    ? taken.map((p) => `- \`L${p.code}\` · ${p.name}`).join('\n')
+    : '_No process codes are in use yet._'
+
   const text = fs
     .readFileSync(file, 'utf8')
     .replace(/\{\{SCHEMA\}\}/g, schema)
     .replace(/\{\{REPO\}\}/g, String(req.query.repo || '<repo>'))
+    .replace(/\{\{PACK\}\}/g, String(req.query.pack || '<pack>'))
+    .replace(/\{\{COMPONENTS\}\}/g, components)
+    .replace(/\{\{PROCESSES\}\}/g, processes)
   res.json({ name, text })
 }))
 
@@ -595,6 +674,168 @@ router.post('/ingest/sweep', wrap(async (req, res) => {
 router.post('/ingest/process-pack', wrap(async (req, res) => {
   const { ingestProcessPack } = await import('./processes.js')
   res.json(ingestProcessPack(req.body, req.body?.pack ? `${req.body.pack}.json` : null))
+}))
+
+/**
+ * The whole tree in one call. It is small — a few dozen rows — and every
+ * screen that shows processes wants all of it, so paging it would cost more
+ * than it saves.
+ */
+const processRow = (r) => ({
+  id: r.id,
+  code: r.code,
+  level: r.level,
+  parentId: r.parent_id,
+  name: r.name,
+  description: r.description,
+  owner: r.owner,
+  actor: r.actor,
+  trigger: r.trigger,
+  outcome: r.outcome,
+  optional: !!r.optional,
+  notes: r.notes,
+  tags: parse(r.tags, []),
+  source: parse(r.source, null),
+  packId: r.pack_id,
+  node: r.node_id,
+  // Kept verbatim whether or not it resolved: an interaction the code does not
+  // have still says what the author meant, and hiding it hides the finding.
+  edge: r.edge_from ? { id: r.edge_id, from: r.edge_from, kind: r.edge_kind, to: r.edge_to } : null,
+  childCount: r.child_count ?? 0,
+  componentCount: r.component_count ?? 0,
+  unresolved: {
+    node: !!r.node_id && !r.node_known,
+    edge: !!r.edge_from && !r.edge_id,
+  },
+})
+
+const PROCESS_SELECT = `
+  SELECT p.*,
+         (SELECT COUNT(*) FROM processes c WHERE c.parent_id = p.id) AS child_count,
+         (SELECT COUNT(*) FROM process_components pc WHERE pc.process_id = p.id) AS component_count,
+         (SELECT COUNT(*) FROM nodes n WHERE n.id = p.node_id) AS node_known
+  FROM processes p`
+
+router.get('/processes', wrap(async (req, res) => {
+  const where = []
+  const args = []
+  if (req.query.root) {
+    const root = normaliseCode(req.query.root)
+    where.push('(p.code = ? OR p.code LIKE ?)')
+    args.push(root, `${root}.%`)
+  }
+  if (req.query.maxLevel) {
+    where.push('p.level <= ?')
+    args.push(Number(req.query.maxLevel))
+  }
+  if (req.query.owner) {
+    where.push('p.owner = ?')
+    args.push(req.query.owner)
+  }
+  res.json({
+    processes: db
+      .prepare(
+        `${PROCESS_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY p.sort_key LIMIT ?`
+      )
+      .all(...args, Number(req.query.limit) || 2000)
+      .map(processRow),
+  })
+}))
+
+/** `L2.1.1` and `2.1.1` are the same process; normalise before looking up. */
+const normaliseCode = (code) => String(code ?? '').trim().replace(/^[Ll]/, '')
+
+router.get('/process', wrap(async (req, res) => {
+  const code = normaliseCode(req.query.code)
+  const row = db.prepare(`${PROCESS_SELECT} WHERE p.code = ?`).get(code)
+  if (!row) return res.status(404).json({ error: 'No such process' })
+  const process = processRow(row)
+
+  // Ancestors from the code itself — 2.1.1 → 2.1 → 2 — because the code is the
+  // hierarchy and there is no second parent pointer to disagree with it.
+  const parts = code.split('.')
+  const ancestorCodes = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('.'))
+  const ancestors = ancestorCodes.length
+    ? db
+        .prepare(`${PROCESS_SELECT} WHERE p.code IN (${ancestorCodes.map(() => '?').join(',')}) ORDER BY p.sort_key`)
+        .all(...ancestorCodes)
+        .map(processRow)
+    : []
+
+  const children = db.prepare(`${PROCESS_SELECT} WHERE p.parent_id = ? ORDER BY p.sort_key`).all(row.id).map(processRow)
+  const descendants = db
+    .prepare(`${PROCESS_SELECT} WHERE p.code LIKE ? ORDER BY p.sort_key`)
+    .all(`${code}.%`)
+    .map(processRow)
+
+  const ov = overrideMap('node')
+  const components = db
+    .prepare(
+      `SELECT n.*, c.via FROM process_components c JOIN nodes n ON n.id = c.node_id
+       WHERE c.process_id = ? ORDER BY n.kind, n.name`
+    )
+    .all(row.id)
+    .map((r) => ({ ...applyNodeOverrides(nodeRow(r), ov), via: r.via }))
+
+  const edges = db
+    .prepare(
+      `SELECT e.*, pe.via FROM process_edges pe JOIN edges e ON e.id = pe.edge_id
+       WHERE pe.process_id = ? ORDER BY e.from_id, e.kind`
+    )
+    .all(row.id)
+    .map((r) => ({ ...edgeRow(r), via: r.via }))
+
+  res.json({
+    process,
+    ancestors,
+    children,
+    descendants,
+    components,
+    edges,
+    // The distinct services across the whole subtree: at level 1 this is the
+    // answer to "how many teams does this process cross".
+    services: components.filter((c) => c.kind === 'service'),
+    drift: db.prepare('SELECT * FROM drift WHERE subject_id = ?').all(row.id).map((r) => ({ ...r, data: parse(r.data, null) })),
+    pack: db
+      .prepare('SELECT id, pack, name, description, authored_at, ingested_at, source FROM process_packs WHERE id = ?')
+      .get(row.pack_id) ?? null,
+  })
+}))
+
+/**
+ * The join read from the component side: what the estate has, and which
+ * documented processes account for it. The question a platform team asks once
+ * a quarter and cannot otherwise answer.
+ */
+router.get('/coverage', wrap(async (req, res) => {
+  const kinds = list(req.query.kinds)
+  const rows = db
+    .prepare(
+      `SELECT * FROM nodes
+       ${kinds.length ? `WHERE kind IN (${kinds.map(() => '?').join(',')})` : ''}
+       ORDER BY kind, name`
+    )
+    .all(...kinds)
+
+  const byNode = new Map()
+  for (const r of db
+    .prepare(
+      `SELECT c.node_id, p.code, p.name, p.level, c.via
+       FROM process_components c JOIN processes p ON p.id = c.process_id
+       ORDER BY p.sort_key`
+    )
+    .all()) {
+    if (!byNode.has(r.node_id)) byNode.set(r.node_id, [])
+    byNode.get(r.node_id).push({ code: r.code, name: r.name, level: r.level, via: r.via })
+  }
+
+  const ov = overrideMap('node')
+  res.json({
+    components: rows.map((r) => {
+      const processes = byNode.get(r.id) ?? []
+      return { node: applyNodeOverrides(nodeRow(r), ov), processes, covered: processes.length > 0 }
+    }),
+  })
 }))
 
 router.get('/process-packs', wrap(async (req, res) => {

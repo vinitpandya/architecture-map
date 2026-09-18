@@ -8,9 +8,10 @@
  * what the demo estate is for. It runs against throwaway databases under
  * data/verify/ and never touches the working one, so it is safe at any time.
  *
- * The §14 items it cannot do are the four Phase 5 ones: stable positions across
- * two loads, arrow direction, dark mode and no horizontal scroll at 1280px.
- * Those want a browser and a pair of eyes.
+ * Covers SPEC.md §14 (Layer A, phases 1–6) and SPEC-PROCESSES.md §10 (Layer B,
+ * phases 7–11). The items neither can do here are the browser ones — stable
+ * positions across two loads, arrow direction, mermaid, dark mode, horizontal
+ * scroll. Those are `npm run verify:ui`.
  */
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -43,7 +44,7 @@ if (!stage) {
   const tmp = path.join(ROOT, 'data', 'verify')
   fs.rmSync(tmp, { recursive: true, force: true })
   let bad = 0
-  for (const s of ['ingest', 'estate']) {
+  for (const s of ['ingest', 'estate', 'processes']) {
     const res = spawnSync(process.execPath, [fileURLToPath(import.meta.url), `--stage=${s}`], {
       stdio: 'inherit',
       env: { ...process.env, DATA_DIR: path.join(tmp, s), INBOX_DIR: path.join(tmp, s, 'inbox') },
@@ -256,6 +257,230 @@ if (stage === 'estate') {
     reingested.body.node.description
   )
   is('the estate is unchanged by the re-ingest', (await get('/status')).body.counts.services, 10)
+
+  server.close()
+  done()
+}
+
+/* ────────────────────── stage: processes (SPEC-PROCESSES.md §10, phases 7–9) */
+
+if (stage === 'processes') {
+  console.log('\nPhases 7–9 — process packs, over HTTP')
+  const seed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs')], {
+    encoding: 'utf8',
+    env: process.env,
+  })
+  if (seed.status !== 0) {
+    console.log(`  ✗ seed:demo failed\n${seed.stdout}${seed.stderr}`)
+    process.exit(1)
+  }
+  pass('seed:demo writes and ingests three process packs')
+
+  const express = (await import('express')).default
+  const { router } = await import('../src/routes.js')
+  const { db } = await import('../src/db.js')
+  const { ingestProcessPack } = await import('../src/processes.js')
+  const app = express()
+  app.use(express.json({ limit: '16mb' }))
+  app.use('/api', router)
+  const server = app.listen(0)
+  await new Promise((r) => server.once('listening', r))
+  const base = `http://127.0.0.1:${server.address().port}/api`
+  const get = async (p) => {
+    const res = await fetch(`${base}${p}`)
+    return { status: res.status, body: await res.json() }
+  }
+  const one = (sql, ...a) => db.prepare(sql).get(...a)
+  const n = (sql, ...a) => one(sql, ...a).n
+
+  /* ---- §10 Phase 7: the contract, and the invariant that matters most */
+  const cli = (file) =>
+    spawnSync(process.execPath, [path.join(HERE, 'validate.mjs'), file], { encoding: 'utf8' })
+  const example = path.join(ROOT, 'schema', 'example.order-and-execution.json')
+  const run = cli(example)
+  is('validate.mjs exits 0 on the example pack', run.status, 0)
+  ok('  …and says it validated a process pack', run.stdout.includes('valid process pack'), run.stdout.trim())
+
+  const fourSegments = path.join(process.env.DATA_DIR, 'four-segments.json')
+  const pack = JSON.parse(fs.readFileSync(example, 'utf8'))
+  const broken = structuredClone(pack)
+  broken.processes.find((p) => p.code === '2.1.1').code = '2.1.1.4'
+  fs.mkdirSync(path.dirname(fourSegments), { recursive: true })
+  fs.writeFileSync(fourSegments, JSON.stringify(broken))
+  const brokenRun = cli(fourSegments)
+  is('a four-segment code exits 1', brokenRun.status, 1)
+  ok(
+    '  …naming the offending path',
+    /\/processes\/\d+\/code/.test(brokenRun.stderr),
+    brokenRun.stderr.trim()
+  )
+
+  const beforeQuarantine = {
+    packs: n(`SELECT COUNT(*) n FROM process_packs WHERE status = 'quarantined'`),
+    processes: n('SELECT COUNT(*) n FROM processes'),
+  }
+  ingestProcessPack(broken, 'four-segments.json')
+  is(
+    'a broken pack leaves exactly one more quarantined row',
+    n(`SELECT COUNT(*) n FROM process_packs WHERE status = 'quarantined'`),
+    beforeQuarantine.packs + 1
+  )
+  is('  …and imports zero processes', n('SELECT COUNT(*) n FROM processes'), beforeQuarantine.processes)
+
+  const beforeTopology = {
+    nodes: n('SELECT COUNT(*) n FROM nodes'),
+    edges: n('SELECT COUNT(*) n FROM edges'),
+  }
+  const before = {
+    processes: n('SELECT COUNT(*) n FROM processes'),
+    active: n(`SELECT COUNT(*) n FROM process_packs WHERE status = 'active'`),
+  }
+  const prefixed = structuredClone(pack)
+  for (const p of prefixed.processes) p.code = `L${p.code}`
+  ingestProcessPack(prefixed, 'order-and-execution.json')
+
+  is('an L-prefixed pack ingests to the same rows', n('SELECT COUNT(*) n FROM processes'), before.processes)
+  is('  …leaving one active pack per pack id', n(`SELECT COUNT(*) n FROM process_packs WHERE status = 'active'`), before.active)
+  ok('  …and proc:2.1.1 is still there', !!one(`SELECT 1 AS n FROM processes WHERE id = 'proc:2.1.1'`), 'proc:2.1.1 vanished')
+  is(
+    'INGESTING A PACK CREATES NO NODES',
+    n('SELECT COUNT(*) n FROM nodes'),
+    beforeTopology.nodes
+  )
+  is('INGESTING A PACK CREATES NO EDGES', n('SELECT COUNT(*) n FROM edges'), beforeTopology.edges)
+
+  const row = one(`SELECT level, parent_id, sort_key FROM processes WHERE id = 'proc:2.1.1'`)
+  is('proc:2.1.1 level', row.level, 3)
+  is('proc:2.1.1 parent_id', row.parent_id, 'proc:2.1')
+  is('proc:2.1.1 sort_key', row.sort_key, '0002.0001.0001')
+  is(
+    "all 15 of the example's leaves resolved to an edge",
+    n(`SELECT COUNT(*) n FROM processes WHERE pack_id = (SELECT id FROM process_packs WHERE pack = 'order-and-execution' AND status = 'active') AND edge_id IS NOT NULL`),
+    15
+  )
+
+  /* ---- §10 Phase 8: the rollup */
+  const throwaway = db.prepare(
+    `INSERT INTO processes (id, code, level, parent_id, sort_key, name, optional, pack_id, first_seen, last_seen)
+     VALUES (?, ?, 2, 'proc:2', ?, 'throwaway', 0,
+             (SELECT id FROM process_packs WHERE status = 'active' LIMIT 1), 'x', 'x')`
+  )
+  throwaway.run('proc:2.9', '2.9', '0002.0009')
+  throwaway.run('proc:2.10', '2.10', '0002.0010')
+  const bySort = db.prepare(`SELECT code FROM processes WHERE code IN ('2.9','2.10') ORDER BY sort_key`).all()
+  const byCode = db.prepare(`SELECT code FROM processes WHERE code IN ('2.9','2.10') ORDER BY code`).all()
+  ok('sort_key puts 2.9 before 2.10', bySort[0].code === '2.9', bySort.map((r) => r.code).join(' then '))
+  ok('  …where ordering by code would not', byCode[0].code === '2.10', byCode.map((r) => r.code).join(' then '))
+  db.prepare(`DELETE FROM processes WHERE code IN ('2.9','2.10')`).run()
+
+  const compsOf = (id) =>
+    new Set(db.prepare('SELECT node_id FROM process_components WHERE process_id = ?').all(id).map((r) => r.node_id))
+  const parent = compsOf('proc:2')
+  ok(
+    'proc:2 rolls up every component of its descendants',
+    db
+      .prepare(`SELECT id FROM processes WHERE id LIKE 'proc:2.%'`)
+      .all()
+      .every((p) => [...compsOf(p.id)].every((c) => parent.has(c))),
+    'a descendant component is missing from proc:2'
+  )
+  is(
+    'proc:2.1.2 reaches pricing-service through the endpoint it calls',
+    one(`SELECT via FROM process_components WHERE process_id = 'proc:2.1.2' AND node_id = 'svc:pricing-service'`)?.via,
+    'exposes'
+  )
+  is(
+    "  …while the component it names itself is via 'node'",
+    one(`SELECT via FROM process_components WHERE process_id = 'proc:2.1.2' AND node_id = 'svc:order-service'`)?.via,
+    'node'
+  )
+  is(
+    "  …and on its parent the same component is via 'rollup'",
+    one(`SELECT via FROM process_components WHERE process_id = 'proc:2.1' AND node_id = 'svc:order-service'`)?.via,
+    'rollup'
+  )
+
+  /* ---- §10 Phase 9: the demo packs */
+  const { body: status } = await get('/status')
+  is('active process packs', status.counts.processPacks, 3)
+  is('processes', status.counts.processes, 46)
+  is('leaves', status.counts.processLeaves, 34)
+  for (const [level, expected] of [[1, 3], [2, 9], [3, 34]]) {
+    is(`level ${level}`, n('SELECT COUNT(*) n FROM processes WHERE level = ?', level), expected)
+  }
+
+  const { body: drift } = await get('/drift')
+  const of = (kind) => drift.findings.filter((f) => f.kind === kind)
+  is('exactly one process-missing-component', of('process-missing-component').length, 1)
+  is('  …from 3.1.1', of('process-missing-component')[0]?.subject_id, 'proc:3.1.1')
+  is(
+    '  …for topic:trades.enriched.v1',
+    of('process-missing-component')[0]?.data?.component,
+    'topic:trades.enriched.v1'
+  )
+  is('exactly one process-missing-interaction', of('process-missing-interaction').length, 1)
+  is('  …from 3.2.3', of('process-missing-interaction')[0]?.subject_id, 'proc:3.2.3')
+  is('zero process-orphan-code', of('process-orphan-code').length, 0)
+  is('zero process-duplicate-code', of('process-duplicate-code').length, 0)
+  is('zero process-no-detail', of('process-no-detail').length, 0)
+  is('exactly two uncovered-component', of('uncovered-component').length, 2)
+  ok(
+    '  …risk.flagged.v1 and notifications.requested.v1',
+    of('uncovered-component')
+      .map((f) => f.subject_id)
+      .sort()
+      .join(',') === 'topic:notifications.requested.v1,topic:risk.flagged.v1',
+    of('uncovered-component').map((f) => f.subject_id).join(', ')
+  )
+  is(
+    'every service is touched by some process',
+    n(`SELECT COUNT(*) n FROM nodes WHERE kind = 'service' AND id NOT IN (SELECT node_id FROM process_components)`),
+    0
+  )
+
+  /* ---- the questions the join exists to answer */
+  const { body: matched } = await get(`/node?id=${encodeURIComponent('topic:orders.matched.v1')}`)
+  const services = new Set((matched.processes ?? []).map((p) => p.code.split('.')[0]))
+  ok(
+    'orders.matched.v1 lists the ledger, wallet and reporting processes',
+    ['2.3.3', '2.3.4', '3.1.2'].every((c) => (matched.processes ?? []).some((p) => p.code === c)),
+    (matched.processes ?? []).map((p) => p.code).join(', ')
+  )
+  void services
+
+  const { body: two } = await get('/process?code=2')
+  const teams = new Set((two.services ?? []).map((s) => s.team).filter(Boolean))
+  ok('process 2 crosses more than one team', teams.size > 1, [...teams].join(', '))
+  const { body: prefixedRead } = await get('/process?code=L2')
+  is('code=L2 reads the same process as code=2', prefixedRead.process?.id, two.process?.id)
+
+  /* ---- search (§6) */
+  for (const q of ['2.3.3', 'L2.3.3']) {
+    const { body } = await get(`/search?q=${encodeURIComponent(q)}`)
+    ok(`search "${q}" finds the process`, body.hits.some((h) => h.subject_id === 'proc:2.3.3'), body.hits.map((h) => h.subject_id).join(', '))
+  }
+  const { body: topicSearch } = await get(`/search?q=${encodeURIComponent('orders.matched.v1')}`)
+  ok(
+    'searching a topic finds the topic and the processes on it',
+    topicSearch.hits.some((h) => h.subject_id === 'topic:orders.matched.v1') &&
+      topicSearch.hits.some((h) => h.subject_kind === 'process'),
+    topicSearch.hits.map((h) => h.subject_id).slice(0, 6).join(', ')
+  )
+
+  /* ---- removal */
+  const removed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs'), '--remove'], {
+    encoding: 'utf8',
+    env: process.env,
+  })
+  is('seed:demo --remove exits 0', removed.status, 0)
+  is('  …clearing the packs', n(`SELECT COUNT(*) n FROM process_packs WHERE status = 'active'`), 0)
+  is('  …and the processes', n('SELECT COUNT(*) n FROM processes'), 0)
+  is('  …and the join tables', n('SELECT COUNT(*) n FROM process_components'), 0)
+  is(
+    '  …and leaving zero process findings',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind LIKE 'process-%' OR kind = 'uncovered-component'`),
+    0
+  )
 
   server.close()
   done()
