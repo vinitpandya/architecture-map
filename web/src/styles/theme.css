@@ -1,0 +1,134 @@
+/*
+ * Design tokens. Every value here is validated — the categorical set passes the
+ * adjacent CVD / lightness / chroma / normal-vision gates in both modes, and the
+ * blue ordinal ramp passes the ordinal gates at every length it is used at.
+ * Light mode caps the ordinal ramp at 5 steps (see palette.ts).
+ */
+
+:root {
+  color-scheme: light;
+
+  /* surfaces & ink */
+  --surface-1: #fcfcfb;
+  --surface-2: #f9f9f7;
+  --page: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --gridline: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+  --hover-wash: rgba(11, 11, 11, 0.04);
+  --selected-wash: rgba(42, 120, 214, 0.1);
+
+  /* categorical slots — fixed order, never cycled */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+
+  /* status — reserved, never used for a series */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+  --delta-good: #006300;
+
+  /* blue ramp (sequential / ordinal source) */
+  --blue-100: #cde2fb;
+  --blue-150: #b7d3f6;
+  --blue-200: #9ec5f4;
+  --blue-250: #86b6ef;
+  --blue-300: #6da7ec;
+  --blue-350: #5598e7;
+  --blue-400: #3987e5;
+  --blue-450: #2a78d6;
+  --blue-500: #256abf;
+  --blue-550: #1c5cab;
+  --blue-600: #184f95;
+  --blue-650: #104281;
+  --blue-700: #0d366b;
+
+  --accent: var(--blue-450);
+
+  /* Meter segments are the validated 3-step ordinal ramp, darkest = done —
+     the same reading direction as the cumulative flow. */
+  --meter-done: var(--blue-700);
+  --meter-progress: var(--blue-450);
+  --meter-track: var(--blue-250);
+
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(11, 11, 11, 0.05);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) {
+    color-scheme: dark;
+
+    --surface-1: #1a1a19;
+    --surface-2: #131312;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+    --hover-wash: rgba(255, 255, 255, 0.06);
+    --selected-wash: rgba(57, 135, 229, 0.16);
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+
+    --delta-good: #0ca30c;
+
+    --accent: var(--blue-400);
+    --meter-done: var(--blue-600);
+    --meter-progress: var(--blue-350);
+    --meter-track: var(--blue-100);
+    --shadow: none;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --surface-1: #1a1a19;
+  --surface-2: #131312;
+  --page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --gridline: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+  --hover-wash: rgba(255, 255, 255, 0.06);
+  --selected-wash: rgba(57, 135, 229, 0.16);
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  --delta-good: #0ca30c;
+
+  --accent: var(--blue-400);
+  --meter-done: var(--blue-600);
+  --meter-progress: var(--blue-350);
+  --meter-track: var(--blue-100);
+  --shadow: none;
+}

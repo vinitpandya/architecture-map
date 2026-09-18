@@ -1,0 +1,17 @@
+{
+  "$comment": "Copy to repos.json (gitignored) and edit. The workspace is where checkouts land; the app reads this list to render per-repo scan prompts and to show what has been scanned. Nothing here is fetched automatically.",
+  "workspace": "../_repos",
+  "defaultBranch": "main",
+  "repos": [
+    { "repo": "gateway-api",          "url": "git@github.com:meridian/gateway-api.git" },
+    { "repo": "identity-service",     "url": "git@github.com:meridian/identity-service.git" },
+    { "repo": "wallet-service",       "url": "git@github.com:meridian/wallet-service.git" },
+    { "repo": "order-service",        "url": "git@github.com:meridian/order-service.git" },
+    { "repo": "matching-engine",      "url": "git@github.com:meridian/matching-engine.git" },
+    { "repo": "ledger-service",       "url": "git@github.com:meridian/ledger-service.git" },
+    { "repo": "pricing-service",      "url": "git@github.com:meridian/pricing-service.git" },
+    { "repo": "payments-service",     "url": "git@github.com:meridian/payments-service.git" },
+    { "repo": "notification-service", "url": "git@github.com:meridian/notification-service.git" },
+    { "repo": "reporting-service",    "url": "git@github.com:meridian/reporting-service.git" }
+  ]
+}

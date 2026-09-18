@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bitpanda.internal/architecture-map/manifest.schema.json",
+  "title": "Service scan manifest",
+  "description": "One manifest per repository, produced by a pass-1 scan. Describes the topology this service participates in: what it owns, what it talks to, and the evidence in the source for every claim. Every fact MUST cite a file and line in this repository. If you cannot cite it, put it in `unresolved` instead of guessing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "repo", "commit", "scannedAt", "producer", "service", "nodes", "edges", "unresolved"],
+
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Version of this schema. Always 1."
+    },
+    "promptVersion": {
+      "type": "string",
+      "description": "Version of the scan prompt that produced this manifest, e.g. '2026-09-18a'. Copy it verbatim from the prompt.",
+      "maxLength": 40
+    },
+    "repo": {
+      "type": "string",
+      "description": "Repository name as it appears in the repo list, e.g. 'payments-service'.",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "commit": {
+      "type": "string",
+      "description": "Full or short SHA of the commit that was scanned.",
+      "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "branch": {
+      "type": "string",
+      "description": "Branch the commit was taken from, if known."
+    },
+    "scannedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the scan ran, ISO 8601."
+    },
+    "producer": {
+      "type": "object",
+      "description": "What generated this manifest. Ingest uses this to decide trust and precedence.",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["claude", "parser", "human"],
+          "description": "'claude' for an LLM scan, 'parser' for the deterministic extractor, 'human' for a hand-written manifest."
+        },
+        "model": { "type": "string", "description": "Model id, when kind is 'claude'." },
+        "tool": { "type": "string", "description": "Tool and version, when kind is 'parser'." },
+        "author": { "type": "string", "description": "Who wrote it, when kind is 'human'." }
+      }
+    },
+
+    "service": {
+      "type": "object",
+      "description": "The service this repository builds. Exactly one per manifest. If a repo builds several deployable services, emit one manifest per service.",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId",
+          "description": "Always 'svc:<deployable artifact name>' - the name it deploys under, not a human label. Lowercase."
+        },
+        "name": { "type": "string", "description": "Human-readable name, e.g. 'Payments Service'." },
+        "language": {
+          "type": "string",
+          "description": "Primary language, lowercase: kotlin, java, typescript, python, go."
+        },
+        "team": { "type": "string", "description": "Owning team, if discoverable from CODEOWNERS or similar." },
+        "description": {
+          "type": "string",
+          "description": "One or two sentences on what this service is responsible for, in plain language. Derive it from the README and the code, not from the repo name.",
+          "maxLength": 600
+        },
+        "tags": {
+          "type": "array",
+          "description": "Free-form labels, e.g. 'pci', 'public-facing'.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "nodes": {
+      "type": "array",
+      "description": "Everything OTHER than this service that it touches: topics, databases, caches, endpoints, contracts, and external systems. Do not repeat the service itself here. Other Bitpanda services referenced by this one DO belong here, with kind 'service' and only the fields you can evidence.",
+      "items": { "$ref": "#/$defs/node" }
+    },
+
+    "edges": {
+      "type": "array",
+      "description": "What this service does to those nodes. `from` is ALWAYS this service's id - never reverse it to express direction; the `kind` carries the direction. One edge per distinct relationship; do not emit one edge per call site, collect the call sites as multiple evidence entries on a single edge.",
+      "items": { "$ref": "#/$defs/edge" }
+    },
+
+    "unresolved": {
+      "type": "array",
+      "description": "Things you could see were happening but could not pin down - a topic name built at runtime, a base URL from an env var you could not trace, a client whose target you could not identify. This is a first-class result, not a failure. Never invent a value to avoid using this list.",
+      "items": { "$ref": "#/$defs/unresolved" }
+    }
+  },
+
+  "$defs": {
+    "nodeId": {
+      "type": "string",
+      "description": "A globally unique id, '<prefix>:<value>'. The value is ALWAYS the wire value, never a human label, because another repo scanned in a separate session must produce a byte-identical string for the same thing. svc:<artifact-name> | topic:<literal topic string, resolved through constants> | db:<engine>/<database-name> | cache:<engine>/<logical-name> | api:<svc-name>/<METHOD> <path template with {} placeholders> | contract:<fully.qualified.ClassName> or contract:<avro-subject> | ext:<vendor-name>. Lowercase everything except class names and topic strings, which keep their exact casing.",
+      "pattern": "^(svc|topic|db|cache|api|contract|ext):\\S.*$",
+      "maxLength": 300
+    },
+
+    "evidence": {
+      "type": "object",
+      "description": "Where in this repository the fact is visible. Required on every node and edge.",
+      "additionalProperties": false,
+      "required": ["file", "line", "snippet"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path relative to the repository root, forward slashes.",
+          "pattern": "^[^/].*$"
+        },
+        "line": { "type": "integer", "minimum": 1, "description": "1-based line number." },
+        "endLine": { "type": "integer", "minimum": 1, "description": "Last line, when the evidence spans a range." },
+        "snippet": {
+          "type": "string",
+          "description": "The line itself, verbatim and trimmed. Must appear in the file at that line - ingest re-checks it, and a snippet that no longer matches marks the fact stale.",
+          "maxLength": 400
+        }
+      }
+    },
+
+    "confidence": {
+      "enum": ["high", "medium", "low"],
+      "description": "'high' - the evidence states it outright (a literal topic string, an explicit migration, a declared dependency). 'medium' - you resolved it through one level of indirection, such as a constant or an injected config value with a visible default. 'low' - you inferred it from naming or convention. Do not emit 'low' for anything you could instead put in `unresolved`."
+    },
+
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "name", "evidence"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nodeId" },
+        "kind": {
+          "enum": ["service", "kafka.topic", "database", "cache", "endpoint", "contract", "external"],
+          "description": "'external' is anything outside the organisation - a payment provider, S3, an exchange API."
+        },
+        "name": { "type": "string", "description": "Human-readable label for the graph." },
+        "description": {
+          "type": "string",
+          "description": "What this thing is or carries, in one sentence. Most valuable on topics and contracts.",
+          "maxLength": 400
+        },
+        "engine": {
+          "type": "string",
+          "description": "Only for kind 'database' or 'cache': postgres, mysql, redis, elasticsearch."
+        },
+        "method": {
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+          "description": "Only for kind 'endpoint'."
+        },
+        "path": {
+          "type": "string",
+          "description": "Only for kind 'endpoint'. The path template with every path variable normalised to {}, e.g. '/v1/accounts/{}/balance'. Do not keep the parameter name - two repos will spell it differently and the ids must match."
+        },
+        "contractType": {
+          "enum": ["avro", "protobuf", "json-schema", "class", "openapi"],
+          "description": "Only for kind 'contract'."
+        },
+        "version": {
+          "type": "string",
+          "description": "Only for kind 'contract'. The version this repo binds to, exactly as the build file or schema declares it, e.g. '3.2.0'."
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "kind", "confidence", "evidence"],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/nodeId",
+          "description": "Always this manifest's service id."
+        },
+        "to": {
+          "$ref": "#/$defs/nodeId",
+          "description": "The other end. It does not need to appear in `nodes` if it is owned by a different repo - the link pass resolves it."
+        },
+        "kind": {
+          "enum": [
+            "kafka.produce", "kafka.consume",
+            "db.read", "db.write", "db.owns",
+            "cache.read", "cache.write",
+            "http.call", "http.expose",
+            "depends.on", "topic.schema"
+          ],
+          "description": "'db.owns' means this repo holds the migrations for that database. 'http.expose' means this service serves that endpoint; 'http.call' means it calls someone else's. 'depends.on' points at a contract and carries the version binding. 'topic.schema' declares which contract a topic carries - emit it from whichever side you can see it."
+        },
+        "contract": {
+          "$ref": "#/$defs/nodeId",
+          "description": "Optional contract id for the payload on this edge. On a kafka edge this is the event class or Avro subject, and it is the single most useful field for detecting version skew across services - fill it whenever the type is visible at the call site."
+        },
+        "description": {
+          "type": "string",
+          "description": "What this interaction is for, in one sentence, in business terms rather than mechanics. 'Publishes a settled trade so ledger can post it', not 'sends to Kafka'.",
+          "maxLength": 400
+        },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Every call site you found for this relationship, up to a sensible handful.",
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+
+    "unresolved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected", "raw", "reason", "evidence"],
+      "properties": {
+        "expected": {
+          "enum": ["kafka.topic", "database", "cache", "endpoint", "contract", "service", "external"],
+          "description": "What kind of thing you believe this is."
+        },
+        "raw": {
+          "type": "string",
+          "description": "The literal expression you saw, e.g. 'Topics.USER_CREATED' or '${PRICING_BASE_URL}'."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why you could not resolve it, in one sentence.",
+          "maxLength": 300
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    }
+  }
+}

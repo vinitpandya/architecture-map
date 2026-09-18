@@ -1,0 +1,243 @@
+{
+  "schemaVersion": 1,
+  "promptVersion": "2026-09-18a",
+  "repo": "payments-service",
+  "commit": "a3f91c2",
+  "branch": "main",
+  "scannedAt": "2026-09-18T09:14:22Z",
+  "producer": { "kind": "claude", "model": "claude-opus-5" },
+
+  "service": {
+    "id": "svc:payments-service",
+    "name": "Payments Service",
+    "language": "kotlin",
+    "team": "payments",
+    "description": "Authorises and captures card payments, and publishes settled payments for the ledger to post.",
+    "tags": ["pci"]
+  },
+
+  "nodes": [
+    {
+      "id": "topic:payments.settled.v1",
+      "kind": "kafka.topic",
+      "name": "payments.settled.v1",
+      "description": "A payment that has cleared and is ready to be posted to the ledger.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/bitpanda/payments/kafka/Topics.kt",
+          "line": 7,
+          "snippet": "const val PAYMENTS_SETTLED = \"payments.settled.v1\""
+        }
+      ]
+    },
+    {
+      "id": "topic:users.created.v2",
+      "kind": "kafka.topic",
+      "name": "users.created.v2",
+      "evidence": [
+        {
+          "file": "src/main/resources/application.yml",
+          "line": 34,
+          "snippet": "topic: users.created.v2"
+        }
+      ]
+    },
+    {
+      "id": "db:postgres/payments",
+      "kind": "database",
+      "name": "payments",
+      "engine": "postgres",
+      "description": "Payment intents, authorisations and captures.",
+      "evidence": [
+        {
+          "file": "src/main/resources/db/migration/V1__init.sql",
+          "line": 1,
+          "snippet": "CREATE TABLE payment_intent ("
+        }
+      ]
+    },
+    {
+      "id": "cache:redis/payments-idempotency",
+      "kind": "cache",
+      "name": "payments-idempotency",
+      "engine": "redis",
+      "description": "Idempotency keys for capture requests, 24h TTL.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/bitpanda/payments/IdempotencyStore.kt",
+          "line": 22,
+          "snippet": "redis.setex(\"idem:\" + key, 86_400, marker)"
+        }
+      ]
+    },
+    {
+      "id": "contract:com.bitpanda.events.PaymentSettled",
+      "kind": "contract",
+      "name": "PaymentSettled",
+      "contractType": "class",
+      "version": "3.2.0",
+      "description": "Event payload published when a payment clears.",
+      "evidence": [
+        {
+          "file": "build.gradle.kts",
+          "line": 41,
+          "snippet": "implementation(\"com.bitpanda:platform-events:3.2.0\")"
+        }
+      ]
+    },
+    {
+      "id": "api:pricing-service/GET /v1/rates/{}",
+      "kind": "endpoint",
+      "name": "GET /v1/rates/{}",
+      "method": "GET",
+      "path": "/v1/rates/{}",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/bitpanda/payments/client/PricingClient.kt",
+          "line": 18,
+          "snippet": "@GetMapping(\"/v1/rates/{currency}\")"
+        }
+      ]
+    },
+    {
+      "id": "svc:pricing-service",
+      "kind": "service",
+      "name": "Pricing Service",
+      "evidence": [
+        {
+          "file": "src/main/resources/application.yml",
+          "line": 51,
+          "snippet": "pricing.base-url: http://pricing-service:8080"
+        }
+      ]
+    },
+    {
+      "id": "ext:stripe",
+      "kind": "external",
+      "name": "Stripe",
+      "description": "Card authorisation and capture provider.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/bitpanda/payments/psp/StripeGateway.kt",
+          "line": 29,
+          "snippet": "private val base = \"https://api.stripe.com/v1\""
+        }
+      ]
+    }
+  ],
+
+  "edges": [
+    {
+      "from": "svc:payments-service",
+      "to": "topic:payments.settled.v1",
+      "kind": "kafka.produce",
+      "contract": "contract:com.bitpanda.events.PaymentSettled",
+      "description": "Publishes a settled payment so the ledger can post it.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/bitpanda/payments/SettlementPublisher.kt",
+          "line": 47,
+          "snippet": "kafka.send(Topics.PAYMENTS_SETTLED, event)"
+        }
+      ]
+    },
+    {
+      "from": "svc:payments-service",
+      "to": "topic:users.created.v2",
+      "kind": "kafka.consume",
+      "description": "Creates a payment profile when a new user is onboarded.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/bitpanda/payments/UserListener.kt",
+          "line": 41,
+          "snippet": "@KafkaListener(topics = [\"${kafka.topics.users-created}\"])"
+        }
+      ]
+    },
+    {
+      "from": "svc:payments-service",
+      "to": "db:postgres/payments",
+      "kind": "db.owns",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/resources/db/migration/V1__init.sql",
+          "line": 1,
+          "snippet": "CREATE TABLE payment_intent ("
+        }
+      ]
+    },
+    {
+      "from": "svc:payments-service",
+      "to": "cache:redis/payments-idempotency",
+      "kind": "cache.write",
+      "description": "Records an idempotency key so a retried capture does not double-charge.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/bitpanda/payments/IdempotencyStore.kt",
+          "line": 22,
+          "snippet": "redis.setex(\"idem:\" + key, 86_400, marker)"
+        }
+      ]
+    },
+    {
+      "from": "svc:payments-service",
+      "to": "api:pricing-service/GET /v1/rates/{}",
+      "kind": "http.call",
+      "description": "Fetches the FX rate used to convert the charge into the account currency.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/bitpanda/payments/client/PricingClient.kt",
+          "line": 18,
+          "snippet": "@GetMapping(\"/v1/rates/{currency}\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:payments-service",
+      "to": "contract:com.bitpanda.events.PaymentSettled",
+      "kind": "depends.on",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "build.gradle.kts",
+          "line": 41,
+          "snippet": "implementation(\"com.bitpanda:platform-events:3.2.0\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:payments-service",
+      "to": "topic:payments.settled.v1",
+      "kind": "topic.schema",
+      "contract": "contract:com.bitpanda.events.PaymentSettled",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/bitpanda/payments/SettlementPublisher.kt",
+          "line": 44,
+          "snippet": "val event = PaymentSettled(paymentId, amount, settledAt)"
+        }
+      ]
+    }
+  ],
+
+  "unresolved": [
+    {
+      "expected": "kafka.topic",
+      "raw": "\"payments.dlq.\" + env",
+      "reason": "Topic name is built at runtime from an environment variable that has no default in the repo.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/bitpanda/payments/kafka/DeadLetter.kt",
+          "line": 19,
+          "snippet": "val dlq = \"payments.dlq.\" + System.getenv(\"ENV\")"
+        }
+      ]
+    }
+  ]
+}
