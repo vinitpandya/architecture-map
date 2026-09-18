@@ -1,4 +1,10 @@
-# Architecture Map — Build Specification
+# Architecture Map — Build Specification (Layer A)
+
+> **Phases 1–6 are complete and verified** — see `HANDOVER.md`. This file is now
+> the record of the topology layer and the reference for the data model, API and
+> invariants it established. The current work is
+> [SPEC-PROCESSES.md](SPEC-PROCESSES.md), which adds the L1/L2/L3 business
+> processes on top of it.
 
 **Status:** v1 MVP spec. Written to be executed by an agent with no access to the
 real Bitpanda service repositories and no ability to ask questions.

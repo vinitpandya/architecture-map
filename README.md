@@ -16,6 +16,14 @@ per repository. A manifest can come from Claude reading the repo, from a
 deterministic parser over build files and migrations, or from a human writing
 one by hand — the app cannot tell the difference and does not need to.
 
+**In progress — business processes.** A second layer for the L1/L2/L3 process
+hierarchy, which spans repositories and Kafka hops, and the components each
+process uses. It arrives as **process packs** conforming to
+[`schema/process-pack.schema.json`](schema/process-pack.schema.json). A pack only
+ever *references* components a scan already found, so a process claiming to use
+something the code does not have becomes a finding rather than a fiction.
+Specification: [SPEC-PROCESSES.md](SPEC-PROCESSES.md).
+
 ## Quick start
 
 ```bash

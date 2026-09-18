@@ -1,0 +1,283 @@
+{
+  "schemaVersion": 1,
+  "promptVersion": "2026-09-18a",
+  "pack": "trading",
+  "name": "Trading processes",
+  "description": "How an order becomes a settled trade, from the customer pressing buy to the balance moving. Does not cover onboarding, funding or reporting — those are separate packs.",
+  "authoredAt": "2026-09-18T11:00:00Z",
+  "producer": { "kind": "claude", "model": "claude-opus-5", "author": "vinit" },
+  "source": {
+    "kind": "confluence",
+    "url": "https://meridian.atlassian.net/wiki/spaces/TRADE/pages/118/Trading+process+map",
+    "title": "Trading process map",
+    "owner": "trading",
+    "asOf": "2026-09-01"
+  },
+
+  "processes": [
+    {
+      "code": "2",
+      "name": "Trade",
+      "description": "A customer converts one asset into another at a price the platform is willing to honour, and both sides of the exchange are recorded so the books balance.",
+      "owner": "trading",
+      "tags": ["customer-facing", "regulated"]
+    },
+
+    {
+      "code": "2.1",
+      "name": "Place an order",
+      "description": "Everything between the customer submitting an order and that order being accepted for matching: validating it, pricing it, and durably recording it.",
+      "owner": "trading"
+    },
+    {
+      "code": "2.1.1",
+      "name": "Validate and price the order",
+      "description": "Checks the customer may trade, that they hold enough of the asset they are selling, and attaches the rate the order will be matched against. A rejection here never reaches the matching engine.",
+      "owner": "trading",
+      "trigger": "The customer submits an order through the app or the public API.",
+      "outcome": "The order is priced and persisted as PENDING, or rejected with a reason the customer can act on.",
+      "steps": [
+        {
+          "seq": 1,
+          "name": "Receive the order",
+          "description": "The gateway terminates the customer session and forwards the order; from here on the customer id is trusted.",
+          "actor": "customer",
+          "node": "svc:gateway-api",
+          "interaction": {
+            "from": "svc:gateway-api",
+            "kind": "http.call",
+            "to": "api:order-service/POST /v1/orders"
+          }
+        },
+        {
+          "seq": 2,
+          "name": "Check the customer may trade",
+          "description": "Reads the KYC state. A customer who has not passed verification is rejected here rather than later, so the rejection is fast and explainable.",
+          "node": "svc:order-service",
+          "interaction": {
+            "from": "svc:order-service",
+            "kind": "http.call",
+            "to": "api:identity-service/GET /v1/users/{}"
+          }
+        },
+        {
+          "seq": 3,
+          "name": "Check the balance covers the order",
+          "description": "Reads the live wallet balance. This is a check, not a reservation — the funds are only moved once the order matches, so an order can still fail later if the balance moves underneath it.",
+          "node": "svc:order-service",
+          "interaction": {
+            "from": "svc:order-service",
+            "kind": "http.call",
+            "to": "api:wallet-service/GET /v1/wallets/{}/balance"
+          }
+        },
+        {
+          "seq": 4,
+          "name": "Attach the rate",
+          "description": "Takes the quote from the local Redis copy when it is fresh, and calls pricing only on a miss. The cache is what keeps order placement fast during a market move.",
+          "node": "svc:order-service",
+          "interaction": {
+            "from": "svc:order-service",
+            "kind": "cache.read",
+            "to": "cache:redis/pricing-quotes"
+          }
+        },
+        {
+          "seq": 5,
+          "name": "Call pricing on a cache miss",
+          "description": "Only runs when the cached quote is missing or stale.",
+          "optional": true,
+          "node": "svc:order-service",
+          "interaction": {
+            "from": "svc:order-service",
+            "kind": "http.call",
+            "to": "api:pricing-service/GET /v1/rates/{}"
+          }
+        },
+        {
+          "seq": 6,
+          "name": "Persist the order",
+          "description": "Writes the order as PENDING before anything is published, so a crash between here and the publish leaves a recoverable record rather than a lost order.",
+          "node": "svc:order-service",
+          "interaction": {
+            "from": "svc:order-service",
+            "kind": "db.write",
+            "to": "db:postgres/orders"
+          }
+        }
+      ]
+    },
+    {
+      "code": "2.1.2",
+      "name": "Route the order to matching",
+      "description": "Publishes the accepted order for the matching engine to pick up. The publish is the handover point: once it succeeds, order-service is no longer responsible for the outcome.",
+      "owner": "trading",
+      "trigger": "An order has been persisted as PENDING by 2.1.1.",
+      "outcome": "The order is on the wire and the matching engine owns it.",
+      "steps": [
+        {
+          "seq": 1,
+          "name": "Publish the order",
+          "description": "Keyed by instrument so one instrument's orders stay in sequence on a single partition.",
+          "node": "svc:order-service",
+          "interaction": {
+            "from": "svc:order-service",
+            "kind": "kafka.produce",
+            "to": "topic:orders.placed.v1"
+          }
+        },
+        {
+          "seq": 2,
+          "name": "Pick the order up",
+          "description": "The matching engine holds its book in memory; this consume is how an order enters it.",
+          "node": "svc:matching-engine",
+          "interaction": {
+            "from": "svc:matching-engine",
+            "kind": "kafka.consume",
+            "to": "topic:orders.placed.v1"
+          }
+        }
+      ]
+    },
+
+    {
+      "code": "2.2",
+      "name": "Match and settle",
+      "description": "Turning a resting order into an executed trade, and moving the money so the books and the customer's balance agree.",
+      "owner": "trading"
+    },
+    {
+      "code": "2.2.1",
+      "name": "Match the order",
+      "description": "Crosses the order against the book. Unmatched orders rest until they match, expire or are cancelled — this process only covers the matching itself.",
+      "owner": "trading",
+      "trigger": "An order arrives on orders.placed.v1, or a price tick moves the book.",
+      "outcome": "A fill is published, or the order rests.",
+      "steps": [
+        {
+          "seq": 1,
+          "name": "Keep the book priced",
+          "description": "Market ticks continuously reprice the resting book; a tick can trigger a match with no new order involved.",
+          "node": "svc:matching-engine",
+          "interaction": {
+            "from": "svc:matching-engine",
+            "kind": "kafka.consume",
+            "to": "topic:prices.ticked.v1"
+          }
+        },
+        {
+          "seq": 2,
+          "name": "Publish the fill",
+          "description": "One event per fill. A large order that fills in parts produces several, all carrying the same order id.",
+          "node": "svc:matching-engine",
+          "interaction": {
+            "from": "svc:matching-engine",
+            "kind": "kafka.produce",
+            "to": "topic:orders.matched.v1"
+          }
+        }
+      ]
+    },
+    {
+      "code": "2.2.2",
+      "name": "Post the trade to the ledger",
+      "description": "Writes the double-entry postings for the fill. This is the point the trade becomes real for accounting, and it must be idempotent because the fill event can be redelivered.",
+      "owner": "ledger",
+      "trigger": "A fill is published on orders.matched.v1.",
+      "outcome": "Balanced postings exist for both legs of the trade.",
+      "steps": [
+        {
+          "seq": 1,
+          "name": "Consume the fill",
+          "node": "svc:ledger-service",
+          "interaction": {
+            "from": "svc:ledger-service",
+            "kind": "kafka.consume",
+            "to": "topic:orders.matched.v1"
+          }
+        },
+        {
+          "seq": 2,
+          "name": "Write the postings",
+          "description": "Both legs in one transaction, keyed on the fill id so a redelivered event is a no-op rather than a double posting.",
+          "node": "svc:ledger-service",
+          "interaction": {
+            "from": "svc:ledger-service",
+            "kind": "db.write",
+            "to": "db:postgres/ledger"
+          }
+        }
+      ]
+    },
+    {
+      "code": "2.2.3",
+      "name": "Move the customer balance",
+      "description": "Updates the wallet the customer actually sees, and announces the change for anything downstream that cares.",
+      "owner": "wallet",
+      "trigger": "A fill is published on orders.matched.v1.",
+      "outcome": "The customer's visible balance reflects the trade.",
+      "steps": [
+        {
+          "seq": 1,
+          "name": "Apply the fill to the wallet",
+          "node": "svc:wallet-service",
+          "interaction": {
+            "from": "svc:wallet-service",
+            "kind": "db.write",
+            "to": "db:postgres/wallet"
+          }
+        },
+        {
+          "seq": 2,
+          "name": "Announce the new balance",
+          "description": "Consumed by notification and reporting. Carries the balance after the change, not the delta.",
+          "node": "svc:wallet-service",
+          "interaction": {
+            "from": "svc:wallet-service",
+            "kind": "kafka.produce",
+            "to": "topic:wallet.balance.changed.v1"
+          }
+        }
+      ]
+    },
+
+    {
+      "code": "2.3",
+      "name": "Tell the customer",
+      "description": "Getting the fill in front of the customer, through whichever channel they have enabled.",
+      "owner": "growth",
+      "touches": ["ext:sendgrid"]
+    },
+    {
+      "code": "2.3.1",
+      "name": "Send the fill notification",
+      "description": "Fans the balance change out to email and push. Best-effort: a failure here never blocks the trade, which has already settled by this point.",
+      "owner": "growth",
+      "trigger": "A balance change is announced on wallet.balance.changed.v1.",
+      "outcome": "The customer has been told, or the failure has been logged and dropped.",
+      "steps": [
+        {
+          "seq": 1,
+          "name": "Consume the balance change",
+          "node": "svc:notification-service",
+          "interaction": {
+            "from": "svc:notification-service",
+            "kind": "kafka.consume",
+            "to": "topic:wallet.balance.changed.v1"
+          }
+        },
+        {
+          "seq": 2,
+          "name": "Send the message",
+          "description": "Channel and locale come from the customer's notification preferences.",
+          "node": "svc:notification-service",
+          "interaction": {
+            "from": "svc:notification-service",
+            "kind": "http.call",
+            "to": "ext:sendgrid"
+          }
+        }
+      ]
+    }
+  ]
+}

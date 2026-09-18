@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bitpanda.internal/architecture-map/process-pack.schema.json",
+  "title": "Process pack",
+  "description": "A set of business processes — the L1/L2/L3 hierarchy — and the components each one uses. Unlike a scan manifest, which is derived from code and covers one repository, a pack is authored by people and spans every repository a process runs through. A pack NEVER creates a component: it only references components that a scan already established. A reference to something that does not exist is reported as a finding, because it means either the scan missed it or this document is stale — and both are worth knowing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "pack", "name", "authoredAt", "producer", "processes"],
+
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Version of this schema. Always 1."
+    },
+    "promptVersion": {
+      "type": "string",
+      "description": "Version of the authoring prompt that produced this pack, when one did. Copy it verbatim from the prompt.",
+      "maxLength": 40
+    },
+    "pack": {
+      "type": "string",
+      "description": "Stable id for this pack, lowercase. The unit of re-ingest: loading a pack replaces every process it previously contributed and touches nothing else. Split packs by domain or owning team, e.g. 'trading', 'onboarding'.",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "maxLength": 80
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable name for the pack, e.g. 'Trading processes'."
+    },
+    "description": {
+      "type": "string",
+      "description": "What this pack covers, and just as usefully what it does not.",
+      "maxLength": 800
+    },
+    "authoredAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the pack was written or last revised, ISO 8601."
+    },
+    "producer": {
+      "type": "object",
+      "description": "Who or what wrote this pack. Ingest uses it to decide trust and precedence.",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["human", "claude", "import"],
+          "description": "'human' for hand-authored, 'claude' for an LLM draft, 'import' for a conversion from an existing document such as a Confluence page or a mermaid diagram."
+        },
+        "model": { "type": "string", "description": "Model id, when kind is 'claude'." },
+        "author": { "type": "string", "description": "Who wrote or approved it." },
+        "tool": { "type": "string", "description": "Converter and version, when kind is 'import'." }
+      }
+    },
+    "source": {
+      "$ref": "#/$defs/source",
+      "description": "Default provenance for every process in the pack. A process may override it with its own `source`."
+    },
+    "processes": {
+      "type": "array",
+      "description": "Every process in the pack, as a FLAT list. The hierarchy is carried by `code`, not by nesting — do not nest children inside parents.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/process" }
+    }
+  },
+
+  "$defs": {
+    "code": {
+      "type": "string",
+      "description": "The process number as people say it out loud: '2', '2.6', '2.6.13'. This is the identifier and it carries the whole hierarchy — the number of segments is the level (1, 2 or 3) and the parent is the code with its last segment removed, so '2.6.13' is a level 3 whose parent is '2.6'. Every code except a level 1 must have its parent present somewhere in the estate, in this pack or an already-loaded one. Segments are positive integers with no leading zeros. Codes are stable: people cite them in tickets and documents, so renumbering is a real cost — pick a number and keep it.",
+      "pattern": "^[1-9][0-9]*(\\.[1-9][0-9]*){0,2}$",
+      "maxLength": 40
+    },
+
+    "nodeId": {
+      "type": "string",
+      "description": "A component id exactly as the topology holds it: 'svc:order-service', 'topic:orders.placed.v1', 'db:postgres/orders', 'cache:redis/session', 'api:pricing-service/GET /v1/rates/{}', 'contract:com.meridian.events.OrderPlaced', 'ext:stripe'. Never invent one — if the component you mean is not in the map, reference it anyway and let the finding surface; do not guess at a different id that happens to exist.",
+      "pattern": "^(svc|topic|db|cache|api|contract|ext):\\S.*$",
+      "maxLength": 300
+    },
+
+    "source": {
+      "type": "object",
+      "description": "Where this knowledge came from. Process facts are asserted by people, not derived from code, so they carry attribution rather than the file-and-line evidence a scan manifest carries. Do not fabricate a code citation for a process.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["confluence", "diagram", "interview", "code", "runbook", "ticket", "other"],
+          "description": "What sort of source this is."
+        },
+        "url": { "type": "string", "description": "Link to the document, diagram or ticket." },
+        "title": { "type": "string", "description": "Its title, so the reference survives a dead link." },
+        "owner": { "type": "string", "description": "The person or team who confirmed this is accurate." },
+        "asOf": { "type": "string", "description": "When it was last confirmed accurate, YYYY-MM-DD. A process nobody has confirmed in a year is worth knowing about." }
+      }
+    },
+
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "name"],
+      "properties": {
+        "code": { "$ref": "#/$defs/code" },
+        "name": {
+          "type": "string",
+          "description": "The process title, as a thing the business does: 'Place an order', not 'Order service flow'. Keep it short enough to read in a tree.",
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "description": "What this process is and when it runs, in plain language a new joiner would understand. At level 1 describe the outcome for the customer or the business; at level 3 describe the actual work. Do not restate the title.",
+          "maxLength": 2000
+        },
+        "owner": {
+          "type": "string",
+          "description": "The team accountable for this process."
+        },
+        "trigger": {
+          "type": "string",
+          "description": "What starts it — a customer action, a schedule, an upstream event. Most useful at the leaf.",
+          "maxLength": 300
+        },
+        "outcome": {
+          "type": "string",
+          "description": "What is true once it has finished. Most useful at the leaf.",
+          "maxLength": 300
+        },
+        "tags": {
+          "type": "array",
+          "description": "Free-form labels, e.g. 'regulated', 'customer-facing'.",
+          "items": { "type": "string" }
+        },
+        "source": { "$ref": "#/$defs/source" },
+        "touches": {
+          "type": "array",
+          "description": "Components this process uses, for a process whose steps are not written yet or whose use of a component does not belong to any one step. A parent's component usage is DERIVED by rolling up its children, so do not repeat a child's components here — list only what this level adds.",
+          "items": { "$ref": "#/$defs/nodeId" }
+        },
+        "steps": {
+          "type": "array",
+          "description": "The ordered work, for a LEAF process only. A process that has children must not have steps: the children are its detail. Steps are where the business process meets the architecture, so bind each one to the component or the interaction it actually uses.",
+          "items": { "$ref": "#/$defs/step" }
+        }
+      }
+    },
+
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "name"],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Position in the process, from 1. Must be unique within the process. Gaps are allowed so a step can be inserted later without renumbering."
+        },
+        "name": {
+          "type": "string",
+          "description": "What happens, as an action: 'Reserve the funds', not 'Fund reservation'.",
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "description": "What this step actually does and why, including anything a reader would otherwise get wrong — retries, idempotency, what happens when it fails.",
+          "maxLength": 1200
+        },
+        "actor": {
+          "type": "string",
+          "description": "Who or what performs the step, when it is not the service in `node` — a customer, an operator, a scheduled job, an external provider."
+        },
+        "node": {
+          "$ref": "#/$defs/nodeId",
+          "description": "The component this step happens at or to — usually the service doing the work."
+        },
+        "interaction": {
+          "$ref": "#/$defs/interaction",
+          "description": "The relationship this step travels over, when it crosses a boundary: a Kafka publish, an HTTP call, a database write."
+        },
+        "optional": {
+          "type": "boolean",
+          "description": "True when the step only runs in some cases; explain when in `description`."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Anything that does not fit elsewhere: known issues, planned changes, why it is done this odd way.",
+          "maxLength": 600
+        }
+      }
+    },
+
+    "interaction": {
+      "type": "object",
+      "description": "A relationship in the topology, described the way a person can write it. Ingest resolves it to the edge the scan found, by the same from|kind|to key the scan used — you never write an edge id by hand. `from` is ALWAYS the service, exactly as in a scan manifest; `kind` carries the direction, so a step where a service consumes an event is still from the service to the topic.",
+      "additionalProperties": false,
+      "required": ["from", "kind", "to"],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/nodeId",
+          "description": "Always the service, never the other end."
+        },
+        "kind": {
+          "enum": [
+            "kafka.produce", "kafka.consume",
+            "db.read", "db.write", "db.owns",
+            "cache.read", "cache.write",
+            "http.call", "http.expose",
+            "depends.on", "topic.schema"
+          ],
+          "description": "Same set a scan manifest uses; the two must match exactly or the interaction will not resolve."
+        },
+        "to": {
+          "$ref": "#/$defs/nodeId",
+          "description": "The other end: the topic, database, cache, endpoint or contract."
+        }
+      }
+    }
+  }
+}

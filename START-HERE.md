@@ -1,7 +1,7 @@
 # Start here
 
 You are building the Architecture Map. Read this file first, then get the app
-running, then start at Phase 1. Nobody is available to answer questions — make
+running, then start at Phase 7. Nobody is available to answer questions — make
 the call, write it down, keep going.
 
 ---
@@ -10,34 +10,42 @@ the call, write it down, keep going.
 
 ```bash
 npm install
+npm run seed:demo     # the fictional Meridian estate — ten services
 npm run dev
+npm run verify        # 53 assertions; all should pass before you touch anything
 ```
 
-UI on http://localhost:5173, API on http://localhost:8787. You should see a
-sidebar with five pages (Map, Estate, Messaging, Contracts, Health), a working
-widget grid, and every widget showing an empty state. **That is correct.** The
-shell is finished; the data underneath it is not.
+UI on http://localhost:5173, API on http://localhost:8787. Layer A is finished:
+a working map, five pages, search, drift findings, and a ten-service estate to
+look at.
 
-Click around for two minutes before you write any code. Add a page. Add a
-widget. Drag it. Open the ⚙ editor. Look at `/scan` and copy the prompt. This
-is the machine you are filling, and you will make better decisions having seen
-it work.
+Click around for five minutes before you write any code. Open the **Map** and
+focus a service. Open a topic and look at its producers and consumers. Read
+**Health** — those findings are the tone to match. Add a page, add a widget,
+open the settings editor on it. Look at `/scan`.
+
+What you are adding is the layer that says *what the business does* on top of
+what the code does. You will make much better decisions having seen the half
+that already exists.
 
 ## 2 · Then read, in this order
 
 | File | Why |
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | How to work here. Short. Read it fully. |
-| [`SPEC.md`](SPEC.md) | The build specification. §0 tells you what already exists, §13 is your task list, §14 is how you prove each phase. |
-| [`schema/manifest.schema.json`](schema/manifest.schema.json) | The contract everything hangs off. Its `description` fields are the prompt Claude gets during a scan — read them as instructions, not documentation. |
-| [`schema/example.payments-service.json`](schema/example.payments-service.json) | One valid manifest. Your Phase 1 fixture. |
+| [`SPEC-PROCESSES.md`](SPEC-PROCESSES.md) | **The current work — phases 7–11.** Business processes: the L1/L2/L3 hierarchy and the components each one uses. This is your task list. |
+| [`SPEC.md`](SPEC.md) | Layer A, phases 1–6. Complete and verified. Read it as background: §3–§8 is the data model and API you are extending, §15 the invariants that still hold. |
+| [`schema/process-pack.schema.json`](schema/process-pack.schema.json) | The Layer B contract. Written and validated. Its `description` fields are instructions to whoever authors a pack, not documentation. |
+| [`schema/example.trading-processes.json`](schema/example.trading-processes.json) | A valid pack against the demo estate. Your Phase 7 fixture. |
+| [`schema/manifest.schema.json`](schema/manifest.schema.json) | The Layer A contract. Background — you are not changing it. |
+| [`HANDOVER.md`](HANDOVER.md), [`DECISIONS.md`](DECISIONS.md) | What the last session built, verified and decided. Read before re-deciding anything. |
 
-Skim `reference/jira-reports/` for house style before your first component.
-Never import from it; delete the folder in the final phase.
+For house style, read the code that is already there — `server/src/ingest.js`
+and `server/src/link.js` are the two files your work mirrors most closely.
 
 ---
 
-## 3 · What this is, and the four ideas behind it
+## 3 · What this is, and the five ideas behind it
 
 A map of a service estate — services, Kafka topics, databases, caches, REST
 endpoints, shared contracts — built from **manifests**: one schema-valid JSON
@@ -45,7 +53,7 @@ file per repository, describing what that service owns and what it talks to.
 The app ingests manifests. It never scans anything itself.
 
 Most architecture diagrams are wrong within a quarter, and once people catch
-one lying twice they stop opening it. Four decisions exist to prevent that.
+one lying twice they stop opening it. Five decisions exist to prevent that.
 Understand them and most judgement calls answer themselves:
 
 **Evidence is mandatory.** Every node and edge carries `repo`, `file`, `line`
@@ -68,11 +76,34 @@ them and the next ingest eats somebody's work.
 either a boundary with another team or a dead listener. Both are worth knowing.
 Never smooth one over, never invent a value to fill one.
 
+**The two layers cross-check each other.** This is what you are building. A
+business process that claims to use a component the code does not have means
+either the scan missed it or the document has gone stale — and nothing else in
+the estate can catch that. It is the reason Layer B is worth having, and it only
+works because a process pack is never allowed to create the component it is
+missing.
+
 ---
 
-## 4 · Start at Phase 1
+## 4 · Start at Phase 7
 
-Everything else is blocked on this, and finishing it lights up most of the app
+Phases 1–6 are done: the topology layer, the map, search and drift all work, and
+`npm run verify` passes 53 assertions against a seeded ten-service estate. Run
+`npm run seed:demo` and look at it before you start.
+
+**Your work is [`SPEC-PROCESSES.md`](SPEC-PROCESSES.md) — Layer B.** Read it in
+full, then begin at its §9 Phase 7: the process-pack tables, ingest, and sweep
+routing. The schema and a worked example are already written and validated.
+
+The old Phase 1 instructions below are kept because the shape of that work is
+the shape of yours — process-pack ingest deliberately mirrors manifest ingest,
+and `server/src/ingest.js` is the file to read before writing
+`server/src/processes.js`.
+
+<details>
+<summary>Phase 1, for reference — complete</summary>
+
+Everything else was blocked on this, and finishing it lit up most of the app
 at once.
 
 **Finish the topology upsert in [`server/src/ingest.js`](server/src/ingest.js).**
@@ -95,6 +126,8 @@ later:
   contribution and touches nothing else.
 
 Then work down SPEC.md §13: link pass → demo estate → search index → the map.
+
+</details>
 
 ---
 
@@ -122,22 +155,29 @@ Violating any of these makes the product wrong rather than merely buggy.
    is wrong. No force simulation anywhere.
 9. **Don't touch `web/src/styles/theme.css` values.** Validated palette. Add
    tokens; never retune existing ones.
+10. **A process pack never creates a component.** Layer B reads topology and
+    reports what it cannot find. If a pack could create nodes, the estate would
+    fill with components nobody has seen in code and the evidence guarantee
+    would stop meaning anything. See SPEC-PROCESSES.md §12 for the rest.
+11. **Layer A stays correct.** Every existing assertion must still pass when you
+    are done. `npm run verify` is the gate, not your judgement.
 
 ---
 
 ## 6 · Prove it, then commit
 
-Every phase in SPEC.md §13 has verification steps in **SPEC.md §14**. Run them.
-They are all checkable without the real service repositories — that is what the
-demo estate in §12 is for.
+Every phase in SPEC-PROCESSES.md §9 has verification steps in its **§10**. Run
+them, and extend `server/scripts/verify.mjs` with them as you go — that script is
+this project's test suite, and it is how the next person trusts your work.
 
-Two that matter more than the rest:
+Three that matter more than the rest:
 
-- After the demo seeder: `/api/drift` contains exactly one `no-producer` (for
-  `topic:risk.flagged.v1`), exactly one `shared-database` (for
-  `db:postgres/ledger`), and at least three `version-skew` findings.
-- Set a `description` override on a node, re-ingest that repo, confirm the
-  override is still there.
+- **`npm run verify` still passes in full.** Layer A must stay correct. That is
+  the gate, not your judgement about whether a change was safe.
+- Ingesting a process pack creates **zero** new rows in `nodes` and `edges`.
+  Assert the counts before and after.
+- After the demo packs load: exactly one `process-missing-component` finding,
+  and ordering by `sort_key` puts `2.9` before `2.10`.
 
 Commit per phase with the phase name in the message. Push to `main` as you go —
 the work needs to be visible, not sitting in a local branch. Never force-push,
