@@ -1,6 +1,7 @@
 # Decisions
 
-Judgement calls made while building SPEC.md §13, one line each with the reason.
+Judgement calls made while building SPEC.md §13 (Layer A, phases 1–6) and
+SPEC-PROCESSES.md §9 (Layer B, phases 7–11), with the reason for each.
 Where the spec was silent I chose the option most consistent with the
 surrounding design; where the spec contradicted itself I have said so and shown
 the working.
@@ -111,12 +112,100 @@ services produce.
   than its card scrolls inside the card; the page never scrolls sideways.
   `app.css` and `theme.css` are untouched.
 
+## Layer B — processes (phases 7–11)
+
+### The migration
+
+- **The legacy `DROP TABLE` is guarded, not unconditional.** SPEC-PROCESSES §3
+  says to drop `processes` and `process_steps` "at the top of the schema block".
+  Taken literally that runs on every boot and throws the real processes away
+  every time the server restarts. It now fires only when the legacy shape
+  (a `key` column) is what is actually there, which is what the sentence after
+  it — "so an existing database picks up the new shape" — is asking for.
+
+### Ingest
+
+- **Superseded packs stay in the log, so the derived rows go explicitly.** §4
+  says a superseded pack's rows "cascade away", but a cascade only fires on
+  DELETE and the pack row is kept for the ingest log, exactly as a manifest is.
+  `DELETE FROM processes WHERE pack_id IN (…)` does it, the same way Layer A
+  does.
+- **`touches` is read back off the pack's raw body.** §3's schema has no column
+  for it and only the link pass consumes it, so denormalising it would create a
+  table nothing else would ever read.
+- **`process-duplicate-code` is computed from the active packs, not the rows.**
+  `processes.code` is unique and `id` is the primary key, so when two packs
+  declare one code the row can only hold the last writer. The finding needs to
+  see both, so it parses the packs. This is also why the insert is an upsert
+  rather than a failure: a duplicate is a finding, and a finding cannot be
+  raised by a transaction that rolled back.
+- **ingest.js and processes.js import each other.** The sweep needs to route by
+  shape and processes.js needs `edgeId()` and the shared ajv. Every reference on
+  both sides is inside a function body, so nothing is touched until both modules
+  have finished evaluating. The alternative was moving `sweepInbox` to a new
+  module, which SPEC-PROCESSES §4 discusses as staying where it is.
+
+### The link pass
+
+- **Interactions re-resolve by their three parts, in SQL, not by re-hashing.**
+  An edge's id IS `sha1(from|kind|to)`, so the row carrying those three values
+  is by construction the one the author described. It gives the identical answer,
+  keeps `edgeId()` as the single hashing rule (§12.8) by not hashing at all, and
+  avoids link.js importing ingest.js. It has to re-run every pass because
+  whether that edge exists is a fact about the topology, and the topology moves.
+- **A component the map does not have never enters `process_components`.** The
+  join is what the two layers agree on; the disagreement is a finding. Putting
+  unresolved ids in the join would break `uncovered-component`'s arithmetic and
+  put non-existent nodes in every components list.
+- **Process findings name the process; `uncovered-component` names the node.**
+  Every finding subject therefore has a page to open. The drift UI routes on the
+  `proc:` prefix.
+- **`process-no-detail` fires only for leaves**, since a parent with no
+  component of its own is the normal case §5 explicitly declines to flag.
+
+### API and UI
+
+- **The §7 read API landed in Phase 9, not Phase 10.** §10's Phase 9
+  verification asserts through `/api/node`, `/api/process` and `/api/search`,
+  so the API is a dependency of the phase that comes before it in §9's list.
+- **`?process=` is an absolute filter.** §7 says "the process wins as the filter
+  and `focus` only selects", so a node outside the process is dropped even when
+  it is the focus — the one place `focus` does not exempt a node.
+- **The nav carries `Processes` (the tree) and a seeded `Process map` page.** §8
+  asks for both a `/processes` page and a `processes` dashboard slug; naming them
+  the same thing twice in one sidebar would be worse than either. The tree is
+  under Find, beside Search, because that is what it is for.
+- **Manifests became the ingest log for both kinds.** Packs arrive through the
+  same inbox and route by shape, so they read side by side rather than needing a
+  page of their own.
+- **In a diagram an endpoint is drawn as the service that serves it.** §8 says
+  participants are the distinct services; `api:pricing-service/GET /v1/rates/{}`
+  carries the service name in the id by construction, and "gateway →
+  pricing-service" reads as a call where "gateway → GET /v1/rates/{}" does not.
+  Topics and stores stay as participants of their own, because that is how an
+  event flow is actually drawn.
+- **`search_index` gained a `process` subject kind without a schema change.**
+  The FTS5 table's columns are as §4 created them; the code goes into `body`
+  twice, with and without its `L`, because people type both.
+
+### The demo packs
+
+- **The demo packs declare `producer.kind: "import"`.** They come out of the
+  generator in this repository, not out of anybody's Confluence, and the ingest
+  log should not claim otherwise.
+- **Their structure is kept apart from their prose** in
+  `server/scripts/demo/packs.mjs`. The structure is what §10 asserts; the prose
+  is what the screens are designed against, and mixing them makes it easy to
+  break the first while editing the second.
+
 ## Working
 
 - **`npm run verify` was added** — SPEC.md §14 as a runnable check, over HTTP,
   against throwaway databases under `data/verify/`. Every §14 item that does not
   need a browser is in it.
-- **The four Phase 5 checks were run in a real browser** (Chromium at 1280×900)
-  but are not committed. They need Playwright, which is not one of §2's
-  dependencies and has no business in a fresh `npm install`. HANDOVER.md says
-  what was run and what it showed.
+- **The browser checks are committed as `npm run verify:ui`**, with Playwright
+  as a root devDependency. The earlier session ran them from outside the repo to
+  keep §2's dependency list exact; that made them unrepeatable by anybody else,
+  which is a worse trade than one more devDependency. The script finds whatever
+  Chromium build is on disk rather than the one its library expects, because in
+  a container those are routinely out of step.
