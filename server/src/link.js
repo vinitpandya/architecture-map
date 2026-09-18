@@ -53,8 +53,139 @@ export function linkPass(now = new Date().toISOString()) {
 const run = db.transaction((now) => {
   createOrphans(now)
   resolveOwnership()
+  // Layer B before the findings: a manifest landing today can resolve a
+  // process that did not resolve yesterday, and the findings have to see that.
+  resolveInteractions()
+  rebuildProcessRollup()
   rebuildDrift(now)
 })
+
+/* ─────────────────────────────────────────── layer B: process rollup
+
+   Rebuilt whole on every pass, from the processes and the topology, and never
+   authored. A parent's components are its children's; nothing writes them by
+   hand, and nothing here writes to `nodes` or `edges` — a process pack reads
+   topology and reports what it cannot find.
+*/
+
+/** Most direct provenance wins when two paths reach the same component. */
+const VIA_RANK = { node: 0, interaction: 1, touches: 2, exposes: 3, rollup: 4 }
+
+/**
+ * An interaction resolves by its three parts, not by re-hashing them: an
+ * edge's id IS sha1(from|kind|to), so the row carrying those three values is
+ * by construction the one the author described. Re-run every pass, because
+ * whether that edge exists is a fact about the topology and the topology moves.
+ */
+function resolveInteractions() {
+  db.prepare(
+    `UPDATE processes SET edge_id = (
+       SELECT e.id FROM edges e
+       WHERE e.from_id = processes.edge_from
+         AND e.kind    = processes.edge_kind
+         AND e.to_id   = processes.edge_to
+     ) WHERE edge_from IS NOT NULL`
+  ).run()
+  db.prepare('UPDATE processes SET edge_id = NULL WHERE edge_from IS NULL').run()
+}
+
+/**
+ * `touches` is a set per process, read only here, so it is taken back off the
+ * pack's raw body rather than denormalised into a table nothing else would
+ * use. Also yields which pack declared which code, for the duplicate finding —
+ * the `processes` row can only hold the last writer.
+ */
+function fromActivePacks() {
+  const touches = new Map()
+  const owners = new Map()
+  for (const row of db.prepare(`SELECT pack, raw FROM process_packs WHERE status = 'active'`).all()) {
+    let parsed = null
+    try {
+      parsed = JSON.parse(row.raw)
+    } catch {
+      continue
+    }
+    for (const p of parsed.processes ?? []) {
+      const code = String(p.code ?? '').trim().replace(/^[Ll]/, '')
+      const id = `proc:${code}`
+      if (!owners.has(code)) owners.set(code, new Set())
+      owners.get(code).add(row.pack)
+      if (!p.touches?.length) continue
+      if (!touches.has(id)) touches.set(id, new Set())
+      for (const nodeId of p.touches) touches.get(id).add(nodeId)
+    }
+  }
+  return { touches, owners }
+}
+
+function rebuildProcessRollup() {
+  db.prepare('DELETE FROM process_components').run()
+  db.prepare('DELETE FROM process_edges').run()
+
+  const procs = db.prepare('SELECT * FROM processes ORDER BY sort_key').all()
+  if (!procs.length) return
+
+  const { touches } = fromActivePacks()
+  const kindOf = new Map(db.prepare('SELECT id, kind FROM nodes').all().map((n) => [n.id, n.kind]))
+  const exposedBy = new Map(
+    db.prepare(`SELECT to_id, from_id FROM edges WHERE kind = 'http.expose'`).all().map((e) => [e.to_id, e.from_id])
+  )
+
+  const comps = new Map()
+  const edges = new Map()
+  const bag = (map, key) => {
+    if (!map.has(key)) map.set(key, new Map())
+    return map.get(key)
+  }
+  /** A component a pack named but the map does not have is a finding, not a
+   *  row in the join — the join is what the two layers agree on. */
+  const addComp = (pid, nodeId, via) => {
+    if (!nodeId || !kindOf.has(nodeId)) return
+    const b = bag(comps, pid)
+    if (!b.has(nodeId) || VIA_RANK[via] < VIA_RANK[b.get(nodeId)]) b.set(nodeId, via)
+  }
+  const addEdge = (pid, edgeId, via) => {
+    if (!edgeId) return
+    const b = bag(edges, pid)
+    if (!b.has(edgeId) || VIA_RANK[via] < VIA_RANK[b.get(edgeId)]) b.set(edgeId, via)
+  }
+
+  // 1 · what each process names for itself
+  for (const p of procs) {
+    addComp(p.id, p.node_id, 'node')
+    if (p.edge_id) {
+      addComp(p.id, p.edge_from, 'interaction')
+      addComp(p.id, p.edge_to, 'interaction')
+      addEdge(p.id, p.edge_id, 'interaction')
+    }
+    for (const t of touches.get(p.id) ?? []) addComp(p.id, t, 'touches')
+  }
+
+  // 2 · an endpoint is served by somebody. Without this a process that calls
+  // api:pricing-service/GET /v1/rates/{} would never register as using
+  // pricing-service, and "which processes use this service" would be wrong.
+  // It stops here on purpose: a process on a topic does NOT thereby touch
+  // everything else on that topic, or every process would touch everything.
+  for (const p of procs) {
+    for (const [nodeId] of bag(comps, p.id)) {
+      if (kindOf.get(nodeId) !== 'endpoint') continue
+      const service = exposedBy.get(nodeId)
+      if (service) addComp(p.id, service, 'exposes')
+    }
+  }
+
+  // 3 · upward, deepest first, so a level 3's components reach the level 1
+  for (const p of [...procs].sort((a, b) => b.level - a.level)) {
+    if (!p.parent_id) continue
+    for (const [nodeId] of bag(comps, p.id)) addComp(p.parent_id, nodeId, 'rollup')
+    for (const [edgeId] of bag(edges, p.id)) addEdge(p.parent_id, edgeId, 'rollup')
+  }
+
+  const insComp = db.prepare('INSERT INTO process_components (process_id, node_id, via) VALUES (?, ?, ?)')
+  const insEdge = db.prepare('INSERT INTO process_edges (process_id, edge_id, via) VALUES (?, ?, ?)')
+  for (const [pid, b] of comps) for (const [nodeId, via] of b) insComp.run(pid, nodeId, via)
+  for (const [pid, b] of edges) for (const [edgeId, via] of b) insEdge.run(pid, edgeId, via)
+}
 
 /* ─────────────────────────────────────────────────────── orphan creation */
 
@@ -247,6 +378,129 @@ function rebuildDrift(now) {
       'info',
       `${ep.name} is called by ${callers.length} service${callers.length === 1 ? '' : 's'}, but no scanned repo exposes it.`,
       { callers: callers.map((e) => ({ serviceId: e.from_id, name: label(e.from_id), repo: e.repo })) }
+    )
+  }
+
+  processFindings(write, { nodes, nameOf, label })
+}
+
+/* ──────────────────────────────────── layer B: where the two layers disagree
+
+   This is the reason Layer B is worth having. A document naming a component
+   the code does not have, or a call the code does not make, is a finding no
+   other part of the estate can produce — and it is always reported, never
+   repaired. A pack does not get to create what it is missing.
+*/
+
+function processFindings(write, { nodes, nameOf, label }) {
+  const procs = db.prepare('SELECT * FROM processes ORDER BY sort_key').all()
+  const packs = db.prepare(`SELECT COUNT(*) AS n FROM process_packs WHERE status = 'active'`).get().n
+  if (!procs.length) return
+
+  const { touches, owners } = fromActivePacks()
+  const known = new Set(nodes.map((n) => n.id))
+  const byId = new Map(procs.map((p) => [p.id, p]))
+  const hasChildren = new Set(procs.map((p) => p.parent_id).filter(Boolean))
+  const named = (p) => `L${p.code} · ${p.name}`
+
+  for (const p of procs) {
+    /* a component the document names and the map has never seen */
+    const referenced = new Map()
+    if (p.node_id) referenced.set(p.node_id, 'happens at')
+    for (const t of touches.get(p.id) ?? []) if (!referenced.has(t)) referenced.set(t, 'also uses')
+    if (p.edge_from) {
+      if (!referenced.has(p.edge_from)) referenced.set(p.edge_from, 'the near end of its interaction')
+      if (!referenced.has(p.edge_to)) referenced.set(p.edge_to, 'the far end of its interaction')
+    }
+
+    const missing = [...referenced].filter(([id]) => !known.has(id))
+    for (const [id, how] of missing) {
+      write(
+        'process-missing-component',
+        p.id,
+        'warn',
+        `${named(p)} ${how} ${id}, which no scan has ever found. Either the scan missed it, ` +
+          `or the process document is describing something that no longer exists.`,
+        { code: p.code, name: p.name, component: id, how, kind: PREFIX_KIND[id.split(':', 1)[0]] ?? null }
+      )
+    }
+
+    /* the most interesting finding in the tool: both ends are real, and the
+       relationship between them is not. The document describes a call the code
+       does not make. Reported only when nothing is missing underneath it — a
+       missing component is the root cause, and root causes do not get reported
+       twice. */
+    if (p.edge_from && !p.edge_id && !missing.length) {
+      write(
+        'process-missing-interaction',
+        p.id,
+        'warn',
+        `${named(p)} says ${label(p.edge_from)} ${p.edge_kind} ${label(p.edge_to)}. ` +
+          `Both ends exist, but no scanned repository makes that call — either the scan missed it, ` +
+          `or this stopped being true and the document did not follow.`,
+        {
+          code: p.code,
+          name: p.name,
+          from: p.edge_from,
+          kind: p.edge_kind,
+          to: p.edge_to,
+          fromName: nameOf.get(p.edge_from) ?? null,
+          toName: nameOf.get(p.edge_to) ?? null,
+        }
+      )
+    }
+
+    /* a code whose parent is nowhere in the estate */
+    if (p.parent_id && !byId.has(p.parent_id)) {
+      write(
+        'process-orphan-code',
+        p.id,
+        'warn',
+        `${named(p)} is a level ${p.level}, so its parent is ${p.parent_id.slice(5)} — and no pack declares that code.`,
+        { code: p.code, name: p.name, parentCode: p.parent_id.slice(5) }
+      )
+    }
+
+    /* a leaf that is a title and nothing else */
+    const leaf = !hasChildren.has(p.id)
+    if (leaf && !p.node_id && !p.edge_from && !(touches.get(p.id)?.size)) {
+      write(
+        'process-no-detail',
+        p.id,
+        'info',
+        `${named(p)} decomposes into nothing and names no component, so nothing connects it to the estate.`,
+        { code: p.code, name: p.name, level: p.level }
+      )
+    }
+  }
+
+  /* two packs claiming one number. The processes row can only hold the last
+     writer, so this is read off the packs themselves. */
+  for (const [code, claimed] of owners) {
+    if (claimed.size < 2) continue
+    write(
+      'process-duplicate-code',
+      `proc:${code}`,
+      'warn',
+      `${andList([...claimed].sort())} both declare L${code}. Codes are cited in tickets, so one pack has to renumber — a human decides which.`,
+      { code, packs: [...claimed].sort() }
+    )
+  }
+
+  /* what no documented process accounts for. Only services and topics, and
+     only once something is loaded — fired against an empty Layer B it would
+     report the whole estate and train people to ignore it. */
+  if (!packs) return
+  const covered = new Set(db.prepare('SELECT DISTINCT node_id FROM process_components').all().map((r) => r.node_id))
+  for (const n of nodes) {
+    if (n.kind !== 'service' && n.kind !== 'kafka.topic') continue
+    if (covered.has(n.id)) continue
+    write(
+      'uncovered-component',
+      n.id,
+      'info',
+      `No documented process touches ${n.name}. Either a process pack is incomplete, or nothing in the business depends on it.`,
+      { kind: n.kind, ownerRepo: n.owner_repo ?? null }
     )
   }
 }
