@@ -32,6 +32,9 @@ const PREFIX_KIND = {
 
 const idValue = (id) => id.slice(id.indexOf(':') + 1)
 
+/** `a`, `a and b`, `a, b and c` — these strings are read by people. */
+const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`)
+
 /**
  * Two ids are a near miss when they collapse to the same string: case,
  * separators and a trailing version suffix removed. `users.created.v2` and
@@ -170,7 +173,7 @@ function rebuildDrift(now) {
         'version-skew',
         contractId,
         'warn',
-        `${label(contractId)} is bound at ${versions.sort().join(' and ')} across ${list.length} services.`,
+        `${label(contractId)} is bound at ${andList(versions.sort())} across ${list.length} services.`,
         list.map((b) => ({ service_id: b.service_id, name: label(b.service_id), version: b.version }))
       )
     }

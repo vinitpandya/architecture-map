@@ -1,0 +1,387 @@
+{
+  "schemaVersion": 1,
+  "promptVersion": "2026-09-18a",
+  "repo": "reporting-service",
+  "commit": "616c019",
+  "branch": "main",
+  "scannedAt": "2026-09-18T09:03:00Z",
+  "producer": {
+    "kind": "parser",
+    "tool": "seed-demo/1"
+  },
+  "service": {
+    "id": "svc:reporting-service",
+    "name": "Reporting Service",
+    "language": "python",
+    "team": "data",
+    "description": "Builds the trading and balance warehouse and the searchable report index. Reads from the event stream and, for reconciliation, straight out of the ledger database."
+  },
+  "nodes": [
+    {
+      "id": "topic:orders.matched.v1",
+      "kind": "kafka.topic",
+      "name": "orders.matched.v1",
+      "description": "A fill: two orders matched, with price, quantity and both sides.",
+      "evidence": [
+        {
+          "file": "app/kafka/topics.py",
+          "line": 29,
+          "snippet": "ORDERS_MATCHED = \"orders.matched.v1\""
+        }
+      ]
+    },
+    {
+      "id": "topic:wallet.balance.changed.v1",
+      "kind": "kafka.topic",
+      "name": "wallet.balance.changed.v1",
+      "description": "A balance moved, with the asset, the delta and the reason it moved.",
+      "evidence": [
+        {
+          "file": "app/kafka/topics.py",
+          "line": 37,
+          "snippet": "WALLET_BALANCE_CHANGED = \"wallet.balance.changed.v1\""
+        }
+      ]
+    },
+    {
+      "id": "topic:prices.ticked.v1",
+      "kind": "kafka.topic",
+      "name": "prices.ticked.v1",
+      "description": "Reference price tick per trading pair, emitted on every vendor update.",
+      "evidence": [
+        {
+          "file": "app/kafka/topics.py",
+          "line": 43,
+          "snippet": "PRICES_TICKED = \"prices.ticked.v1\""
+        }
+      ]
+    },
+    {
+      "id": "db:postgres/reporting",
+      "kind": "database",
+      "name": "reporting",
+      "engine": "postgres",
+      "description": "The trade and balance warehouse.",
+      "evidence": [
+        {
+          "file": "alembic/versions/0001_initial.py",
+          "line": 12,
+          "snippet": "op.create_table(\"fact_trade\","
+        }
+      ]
+    },
+    {
+      "id": "db:elasticsearch/search",
+      "kind": "database",
+      "name": "search",
+      "engine": "elasticsearch",
+      "description": "Report and statement search index.",
+      "evidence": [
+        {
+          "file": "app/search/bootstrap.py",
+          "line": 19,
+          "snippet": "es.indices.create(index=\"reports\", mappings=MAPPING, ignore=400)"
+        }
+      ]
+    },
+    {
+      "id": "db:postgres/ledger",
+      "kind": "database",
+      "name": "ledger",
+      "engine": "postgres",
+      "description": "Double-entry accounts and postings.",
+      "evidence": [
+        {
+          "file": "app/exports/ledger_export.py",
+          "line": 14,
+          "snippet": "rows = ledger.execute(text(\"SELECT id, account, amount FROM posting WHERE id > :cursor\"), {\"cursor\": cursor})"
+        }
+      ]
+    },
+    {
+      "id": "api:reporting-service/GET /v1/reports/{}",
+      "kind": "endpoint",
+      "name": "GET /v1/reports/{}",
+      "method": "GET",
+      "path": "/v1/reports/{}",
+      "description": "One generated report by id.",
+      "evidence": [
+        {
+          "file": "app/api/reports.py",
+          "line": 30,
+          "snippet": "@router.get(\"/v1/reports/{report_id}\")"
+        }
+      ]
+    },
+    {
+      "id": "api:ledger-service/GET /v1/postings",
+      "kind": "endpoint",
+      "name": "GET /v1/postings",
+      "method": "GET",
+      "path": "/v1/postings",
+      "evidence": [
+        {
+          "file": "app/clients/.py",
+          "line": 35,
+          "snippet": "resp = httpx.get(f\"{self.base}/v1/postings\", params=params)"
+        }
+      ]
+    },
+    {
+      "id": "svc:ledger-service",
+      "kind": "service",
+      "name": "Ledger Service",
+      "evidence": [
+        {
+          "file": "app/settings.py",
+          "line": 35,
+          "snippet": "ledger_base_url: str = \"http://ledger-service:8080\""
+        }
+      ]
+    },
+    {
+      "id": "contract:com.meridian.events.OrderMatched",
+      "kind": "contract",
+      "name": "OrderMatched",
+      "contractType": "class",
+      "version": "2.8.1",
+      "description": "Event payload for a fill, carrying both sides of the trade.",
+      "evidence": [
+        {
+          "file": "pyproject.toml",
+          "line": 17,
+          "snippet": "meridian-platform-events = \"2.8.1\""
+        }
+      ]
+    },
+    {
+      "id": "contract:com.meridian.events.BalanceChanged",
+      "kind": "contract",
+      "name": "BalanceChanged",
+      "contractType": "class",
+      "version": "2.8.1",
+      "description": "Event payload for a balance movement on one asset.",
+      "evidence": [
+        {
+          "file": "pyproject.toml",
+          "line": 17,
+          "snippet": "meridian-platform-events = \"2.8.1\""
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "svc:reporting-service",
+      "to": "topic:orders.matched.v1",
+      "kind": "kafka.consume",
+      "contract": "contract:com.meridian.events.OrderMatched",
+      "description": "Loads fills into the trade warehouse.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "app/consumers/orders_matched.py",
+          "line": 48,
+          "snippet": "consumer.subscribe([ORDERS_MATCHED])"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "topic:wallet.balance.changed.v1",
+      "kind": "kafka.consume",
+      "contract": "contract:com.meridian.events.BalanceChanged",
+      "description": "Keeps the balance history the statements are built from.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "app/consumers/wallet_balance_changed.py",
+          "line": 49,
+          "snippet": "consumer.subscribe([WALLET_BALANCE_CHANGED])"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "topic:prices.ticked.v1",
+      "kind": "kafka.consume",
+      "description": "Stores the price series trades are valued against.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "app/consumers/prices_ticked.py",
+          "line": 41,
+          "snippet": "consumer.subscribe([PRICES_TICKED])"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "db:postgres/reporting",
+      "kind": "db.owns",
+      "description": "Holds the migrations for reporting.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "alembic/versions/0001_initial.py",
+          "line": 12,
+          "snippet": "op.create_table(\"fact_trade\","
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "db:postgres/reporting",
+      "kind": "db.write",
+      "description": "Writes fact_trade as the owning service.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "app/db/warehouse.py",
+          "line": 46,
+          "snippet": "session.execute(text(\"INSERT INTO fact_trade (id, seen_at) VALUES (:id, :seen_at)\"), row)"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "db:postgres/reporting",
+      "kind": "db.read",
+      "description": "Reads fact_trade to serve its own API.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "app/db/warehouse.py",
+          "line": 54,
+          "snippet": "session.execute(text(\"SELECT * FROM fact_trade WHERE seen_at > :since\"), {\"since\": since})"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "db:elasticsearch/search",
+      "kind": "db.owns",
+      "description": "Holds the index mappings for search.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "app/search/bootstrap.py",
+          "line": 19,
+          "snippet": "es.indices.create(index=\"reports\", mappings=MAPPING, ignore=400)"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "db:elasticsearch/search",
+      "kind": "db.write",
+      "description": "Writes reports as the owning service.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "app/search/index.py",
+          "line": 41,
+          "snippet": "es.index(index=\"reports\", id=doc[\"id\"], document=doc)"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "db:postgres/ledger",
+      "kind": "db.read",
+      "description": "Reads postings straight out of the ledger schema to reconcile the warehouse against the event stream.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "app/exports/ledger_export.py",
+          "line": 14,
+          "snippet": "rows = ledger.execute(text(\"SELECT id, account, amount FROM posting WHERE id > :cursor\"), {\"cursor\": cursor})"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "db:postgres/ledger",
+      "kind": "db.write",
+      "description": "Keeps its own export checkpoint table inside the ledger schema.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "app/exports/ledger_export.py",
+          "line": 17,
+          "snippet": "ledger.execute(text(\"INSERT INTO reporting_checkpoint (job, last_id) VALUES (:job, :id) ON CONFLICT (job) DO UPDATE SET last_id = :id\"), mark)"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "api:reporting-service/GET /v1/reports/{}",
+      "kind": "http.expose",
+      "description": "One generated report by id.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "app/api/reports.py",
+          "line": 30,
+          "snippet": "@router.get(\"/v1/reports/{report_id}\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "api:ledger-service/GET /v1/postings",
+      "kind": "http.call",
+      "description": "Pulls the postings the warehouse reconciles the event stream against.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "app/clients/.py",
+          "line": 35,
+          "snippet": "resp = httpx.get(f\"{self.base}/v1/postings\", params=params)"
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "contract:com.meridian.events.OrderMatched",
+      "kind": "depends.on",
+      "description": "Binds OrderMatched at 2.8.1.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "pyproject.toml",
+          "line": 17,
+          "snippet": "meridian-platform-events = \"2.8.1\""
+        }
+      ]
+    },
+    {
+      "from": "svc:reporting-service",
+      "to": "contract:com.meridian.events.BalanceChanged",
+      "kind": "depends.on",
+      "description": "Binds BalanceChanged at 2.8.1.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "pyproject.toml",
+          "line": 17,
+          "snippet": "meridian-platform-events = \"2.8.1\""
+        }
+      ]
+    }
+  ],
+  "unresolved": [
+    {
+      "expected": "database",
+      "raw": "f\"reports-{tenant}-{period}\"",
+      "reason": "The search index name is composed per tenant and period at call time, so the concrete indices are not visible in the source.",
+      "evidence": [
+        {
+          "file": "app/search/index.py",
+          "line": 49,
+          "snippet": "index = f\"reports-{tenant}-{period}\""
+        }
+      ]
+    }
+  ]
+}

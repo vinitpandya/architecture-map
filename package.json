@@ -11,7 +11,8 @@
     "build": "npm run build --workspace web",
     "start": "npm run start --workspace server",
     "validate": "node server/scripts/validate.mjs",
-    "seed:demo": "node server/scripts/seed-demo.mjs"
+    "seed:demo": "node server/scripts/seed-demo.mjs",
+    "verify": "node server/scripts/verify.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

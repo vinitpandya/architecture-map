@@ -330,7 +330,11 @@ router.get('/search', wrap(async (req, res) => {
 
 router.get('/graph', wrap(async (req, res) => {
   const focus = String(req.query.focus || '')
-  const depth = req.query.depth === 'all' ? Infinity : Number(req.query.depth || 1)
+  const asked = Number(req.query.depth)
+  // 'all' and 0 both mean the whole connected component; anything else is a
+  // hop count, defaulting to the focus plus its direct neighbours.
+  const depth =
+    req.query.depth === 'all' || asked === 0 ? Infinity : Number.isFinite(asked) && asked > 0 ? asked : 1
   const kinds = list(req.query.kinds)
   const includeExternal = req.query.includeExternal !== 'false'
 
@@ -340,12 +344,16 @@ router.get('/graph', wrap(async (req, res) => {
   if (focus) {
     keep = new Set([focus])
     for (let hop = 0; hop < depth && hop < 12; hop++) {
-      const before = keep.size
+      // Each hop's finds are collected separately and merged at the end of the
+      // pass. Adding them to `keep` as we go would let one pass walk the whole
+      // graph, and depth would stop meaning anything.
+      const next = new Set()
       for (const e of allEdges) {
-        if (keep.has(e.from_id)) keep.add(e.to_id)
-        else if (keep.has(e.to_id)) keep.add(e.from_id)
+        if (keep.has(e.from_id) === keep.has(e.to_id)) continue
+        next.add(keep.has(e.from_id) ? e.to_id : e.from_id)
       }
-      if (keep.size === before) break
+      if (!next.size) break
+      for (const id of next) keep.add(id)
     }
   }
 

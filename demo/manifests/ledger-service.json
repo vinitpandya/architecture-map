@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "promptVersion": "2026-09-18a",
+  "repo": "ledger-service",
+  "commit": "e7a7172",
+  "branch": "main",
+  "scannedAt": "2026-09-18T08:35:00Z",
+  "producer": {
+    "kind": "parser",
+    "tool": "seed-demo/1"
+  },
+  "service": {
+    "id": "svc:ledger-service",
+    "name": "Ledger Service",
+    "language": "kotlin",
+    "team": "ledger",
+    "description": "The double-entry book of record. Posts every matched trade and settled payment, and serves postings for reconciliation.",
+    "tags": [
+      "financial-record"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "topic:orders.matched.v1",
+      "kind": "kafka.topic",
+      "name": "orders.matched.v1",
+      "description": "A fill: two orders matched, with price, quantity and both sides.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/ledger/kafka/Topics.kt",
+          "line": 32,
+          "snippet": "const val ORDERS_MATCHED = \"orders.matched.v1\""
+        }
+      ]
+    },
+    {
+      "id": "topic:payments.settled.v1",
+      "kind": "kafka.topic",
+      "name": "payments.settled.v1",
+      "description": "A card payment that has cleared and is ready to be posted to the ledger.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/ledger/kafka/Topics.kt",
+          "line": 36,
+          "snippet": "const val PAYMENTS_SETTLED = \"payments.settled.v1\""
+        }
+      ]
+    },
+    {
+      "id": "topic:risk.flagged.v1",
+      "kind": "kafka.topic",
+      "name": "risk.flagged.v1",
+      "description": "A transaction the risk platform has flagged for review. Produced by a team outside this scan, which is why nothing here claims it.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/ledger/kafka/Topics.kt",
+          "line": 42,
+          "snippet": "const val RISK_FLAGGED = \"risk.flagged.v1\""
+        }
+      ]
+    },
+    {
+      "id": "db:postgres/ledger",
+      "kind": "database",
+      "name": "ledger",
+      "engine": "postgres",
+      "description": "Double-entry accounts and postings.",
+      "evidence": [
+        {
+          "file": "src/main/resources/db/migration/V1__init.sql",
+          "line": 1,
+          "snippet": "CREATE TABLE posting ("
+        }
+      ]
+    },
+    {
+      "id": "api:ledger-service/GET /v1/postings",
+      "kind": "endpoint",
+      "name": "GET /v1/postings",
+      "method": "GET",
+      "path": "/v1/postings",
+      "description": "Postings in a time window, for reconciliation.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/ledger/api/LedgerController.kt",
+          "line": 33,
+          "snippet": "@GetMapping(\"/v1/postings\")"
+        }
+      ]
+    },
+    {
+      "id": "contract:com.meridian.events.OrderMatched",
+      "kind": "contract",
+      "name": "OrderMatched",
+      "contractType": "class",
+      "version": "3.2.0",
+      "description": "Event payload for a fill, carrying both sides of the trade.",
+      "evidence": [
+        {
+          "file": "build.gradle.kts",
+          "line": 16,
+          "snippet": "implementation(\"com.meridian:platform-events:3.2.0\")"
+        }
+      ]
+    },
+    {
+      "id": "contract:com.meridian.events.PaymentSettled",
+      "kind": "contract",
+      "name": "PaymentSettled",
+      "contractType": "class",
+      "version": "3.2.0",
+      "description": "Event payload published when a card payment clears.",
+      "evidence": [
+        {
+          "file": "build.gradle.kts",
+          "line": 16,
+          "snippet": "implementation(\"com.meridian:platform-events:3.2.0\")"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "svc:ledger-service",
+      "to": "topic:orders.matched.v1",
+      "kind": "kafka.consume",
+      "contract": "contract:com.meridian.events.OrderMatched",
+      "description": "Posts both sides of the fill to the customer accounts.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/ledger/kafka/LedgerListener.kt",
+          "line": 39,
+          "snippet": "@KafkaListener(topics = [Topics.ORDERS_MATCHED], groupId = \"ledger-service\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:ledger-service",
+      "to": "topic:payments.settled.v1",
+      "kind": "kafka.consume",
+      "contract": "contract:com.meridian.events.PaymentSettled",
+      "description": "Posts the cleared payment against the customer account.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/ledger/kafka/LedgerListener.kt",
+          "line": 46,
+          "snippet": "@KafkaListener(topics = [Topics.PAYMENTS_SETTLED], groupId = \"ledger-service\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:ledger-service",
+      "to": "topic:risk.flagged.v1",
+      "kind": "kafka.consume",
+      "description": "Holds postings for any transaction the risk platform has flagged.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/ledger/kafka/LedgerListener.kt",
+          "line": 59,
+          "snippet": "@KafkaListener(topics = [Topics.RISK_FLAGGED], groupId = \"ledger-service\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:ledger-service",
+      "to": "db:postgres/ledger",
+      "kind": "db.owns",
+      "description": "Holds the migrations for ledger.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/resources/db/migration/V1__init.sql",
+          "line": 1,
+          "snippet": "CREATE TABLE posting ("
+        }
+      ]
+    },
+    {
+      "from": "svc:ledger-service",
+      "to": "db:postgres/ledger",
+      "kind": "db.write",
+      "description": "Writes posting as the owning service.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/ledger/store/LedgerRepository.kt",
+          "line": 40,
+          "snippet": "jdbc.update(\"INSERT INTO posting (id, updated_at) VALUES (?, ?)\", id, now)"
+        }
+      ]
+    },
+    {
+      "from": "svc:ledger-service",
+      "to": "db:postgres/ledger",
+      "kind": "db.read",
+      "description": "Reads posting to serve its own API.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/ledger/store/LedgerRepository.kt",
+          "line": 44,
+          "snippet": "jdbc.query(\"SELECT * FROM posting WHERE id = ?\", rowMapper, id)"
+        }
+      ]
+    },
+    {
+      "from": "svc:ledger-service",
+      "to": "api:ledger-service/GET /v1/postings",
+      "kind": "http.expose",
+      "description": "Postings in a time window, for reconciliation.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/ledger/api/LedgerController.kt",
+          "line": 33,
+          "snippet": "@GetMapping(\"/v1/postings\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:ledger-service",
+      "to": "contract:com.meridian.events.OrderMatched",
+      "kind": "depends.on",
+      "description": "Binds OrderMatched at 3.2.0.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "build.gradle.kts",
+          "line": 16,
+          "snippet": "implementation(\"com.meridian:platform-events:3.2.0\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:ledger-service",
+      "to": "contract:com.meridian.events.PaymentSettled",
+      "kind": "depends.on",
+      "description": "Binds PaymentSettled at 3.2.0.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "build.gradle.kts",
+          "line": 16,
+          "snippet": "implementation(\"com.meridian:platform-events:3.2.0\")"
+        }
+      ]
+    }
+  ],
+  "unresolved": []
+}
