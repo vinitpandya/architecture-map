@@ -12,10 +12,12 @@
     "start": "npm run start --workspace server",
     "validate": "node server/scripts/validate.mjs",
     "seed:demo": "node server/scripts/seed-demo.mjs",
-    "verify": "node server/scripts/verify.mjs"
+    "verify": "node server/scripts/verify.mjs",
+    "verify:ui": "node server/scripts/verify-ui.mjs"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "playwright": "^1.49.1"
   },
   "engines": {
     "node": ">=20.11"

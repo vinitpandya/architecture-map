@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 1,
+  "promptVersion": "2026-09-18a",
+  "repo": "matching-engine",
+  "commit": "6eece63",
+  "branch": "main",
+  "scannedAt": "2026-09-18T08:28:00Z",
+  "producer": {
+    "kind": "parser",
+    "tool": "seed-demo/1"
+  },
+  "service": {
+    "id": "svc:matching-engine",
+    "name": "Matching Engine",
+    "language": "java",
+    "team": "trading",
+    "description": "Keeps the order book in memory and matches incoming orders against it. Deliberately has no database — the book is rebuilt from the topic on start."
+  },
+  "nodes": [
+    {
+      "id": "topic:orders.matched.v1",
+      "kind": "kafka.topic",
+      "name": "orders.matched.v1",
+      "description": "A fill: two orders matched, with price, quantity and both sides.",
+      "evidence": [
+        {
+          "file": "src/main/java/com/meridian/matching/kafka/Topics.java",
+          "line": 40,
+          "snippet": "public static final String ORDERS_MATCHED = \"orders.matched.v1\";"
+        }
+      ]
+    },
+    {
+      "id": "topic:orders.placed.v1",
+      "kind": "kafka.topic",
+      "name": "orders.placed.v1",
+      "description": "An order that passed validation and is admitted to the book.",
+      "evidence": [
+        {
+          "file": "src/main/java/com/meridian/matching/kafka/Topics.java",
+          "line": 44,
+          "snippet": "public static final String ORDERS_PLACED = \"orders.placed.v1\";"
+        }
+      ]
+    },
+    {
+      "id": "topic:prices.ticked.v1",
+      "kind": "kafka.topic",
+      "name": "prices.ticked.v1",
+      "description": "Reference price tick per trading pair, emitted on every vendor update.",
+      "evidence": [
+        {
+          "file": "src/main/java/com/meridian/matching/kafka/Topics.java",
+          "line": 50,
+          "snippet": "public static final String PRICES_TICKED = \"prices.ticked.v1\";"
+        }
+      ]
+    },
+    {
+      "id": "contract:com.meridian.events.OrderPlaced",
+      "kind": "contract",
+      "name": "OrderPlaced",
+      "contractType": "class",
+      "version": "3.2.0",
+      "description": "Event payload for an order admitted to the book.",
+      "evidence": [
+        {
+          "file": "build.gradle",
+          "line": 42,
+          "snippet": "implementation 'com.meridian:platform-events:3.2.0'"
+        }
+      ]
+    },
+    {
+      "id": "contract:com.meridian.events.OrderMatched",
+      "kind": "contract",
+      "name": "OrderMatched",
+      "contractType": "class",
+      "version": "3.2.0",
+      "description": "Event payload for a fill, carrying both sides of the trade.",
+      "evidence": [
+        {
+          "file": "build.gradle",
+          "line": 42,
+          "snippet": "implementation 'com.meridian:platform-events:3.2.0'"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "svc:matching-engine",
+      "to": "topic:orders.matched.v1",
+      "kind": "kafka.produce",
+      "contract": "contract:com.meridian.events.OrderMatched",
+      "description": "Publishes a fill so the ledger can post it and reporting can count it.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "src/main/java/com/meridian/matching/kafka/MatchingPublisher.java",
+          "line": 7,
+          "snippet": "producer.send(new ProducerRecord<>(Topics.ORDERS_MATCHED, event.key(), event));"
+        }
+      ]
+    },
+    {
+      "from": "svc:matching-engine",
+      "to": "topic:orders.matched.v1",
+      "kind": "topic.schema",
+      "contract": "contract:com.meridian.events.OrderMatched",
+      "description": "OrderMatched is the payload on orders.matched.v1.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/java/com/meridian/matching/kafka/MatchingPublisher.java",
+          "line": 15,
+          "snippet": "OrderMatched event = OrderMatched.newBuilder().setTradeId(trade.id()).build();"
+        }
+      ]
+    },
+    {
+      "from": "svc:matching-engine",
+      "to": "topic:orders.placed.v1",
+      "kind": "kafka.consume",
+      "contract": "contract:com.meridian.events.OrderPlaced",
+      "description": "Takes admitted orders into the book.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "src/main/java/com/meridian/matching/kafka/MatchingListener.java",
+          "line": 37,
+          "snippet": "@KafkaListener(topics = Topics.ORDERS_PLACED, groupId = \"matching-engine\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:matching-engine",
+      "to": "topic:prices.ticked.v1",
+      "kind": "kafka.consume",
+      "description": "Keeps the reference price the book validates limit orders against.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "src/main/java/com/meridian/matching/kafka/MatchingListener.java",
+          "line": 44,
+          "snippet": "@KafkaListener(topics = Topics.PRICES_TICKED, groupId = \"matching-engine\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:matching-engine",
+      "to": "contract:com.meridian.events.OrderPlaced",
+      "kind": "depends.on",
+      "description": "Binds OrderPlaced at 3.2.0.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "build.gradle",
+          "line": 42,
+          "snippet": "implementation 'com.meridian:platform-events:3.2.0'"
+        }
+      ]
+    },
+    {
+      "from": "svc:matching-engine",
+      "to": "contract:com.meridian.events.OrderMatched",
+      "kind": "depends.on",
+      "description": "Binds OrderMatched at 3.2.0.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "build.gradle",
+          "line": 42,
+          "snippet": "implementation 'com.meridian:platform-events:3.2.0'"
+        }
+      ]
+    }
+  ],
+  "unresolved": []
+}
