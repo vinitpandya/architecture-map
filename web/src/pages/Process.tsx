@@ -101,6 +101,15 @@ export function ProcessPage() {
 
       {process.description && <p className="proc-lede">{process.description}</p>}
 
+      {/* Known issues, planned changes, why it is done this odd way. Quieter
+          than the description because it is an aside, but it is often the
+          sentence somebody needed. */}
+      {process.notes && (
+        <p className="proc-notes">
+          <span className="nav-group-label">Note</span> {process.notes}
+        </p>
+      )}
+
       {(process.trigger || process.outcome) && (
         <div className="row proc-bookends">
           {process.trigger && (
@@ -273,6 +282,11 @@ function Step({ process }: { process: Process }) {
         )}
       </div>
       {process.description && <p className="proc-step-desc">{process.description}</p>}
+      {process.notes && (
+        <p className="proc-step-desc proc-notes">
+          <span className="nav-group-label">Note</span> {process.notes}
+        </p>
+      )}
       <Binding process={process} compact />
     </li>
   )

@@ -1,0 +1,243 @@
+{
+  "schemaVersion": 1,
+  "promptVersion": "2026-09-18a",
+  "repo": "gateway-api",
+  "commit": "738b2fe",
+  "branch": "main",
+  "scannedAt": "2026-09-18T08:00:00Z",
+  "producer": {
+    "kind": "parser",
+    "tool": "seed-demo/1"
+  },
+  "service": {
+    "id": "svc:gateway-api",
+    "name": "Gateway API",
+    "language": "kotlin",
+    "team": "platform",
+    "description": "The single public entry point. Terminates customer sessions, fans requests out to the internal services and returns one aggregated response.",
+    "tags": [
+      "public-facing"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "db:elasticsearch/search",
+      "kind": "database",
+      "name": "search",
+      "engine": "elasticsearch",
+      "description": "Report and statement search index.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/search/ReportSearch.kt",
+          "line": 13,
+          "snippet": "client.search({ it.index(\"reports\").query(query) }, Report::class.java)"
+        }
+      ]
+    },
+    {
+      "id": "cache:redis/session",
+      "kind": "cache",
+      "name": "session",
+      "engine": "redis",
+      "description": "Customer session tokens, 30 minute sliding TTL.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/cache/GatewayCache.kt",
+          "line": 43,
+          "snippet": "redis.opsForValue().set(\"session:$key\", value, Duration.ofMinutes(30))"
+        }
+      ]
+    },
+    {
+      "id": "api:identity-service/GET /v1/users/{}",
+      "kind": "endpoint",
+      "name": "GET /v1/users/{}",
+      "method": "GET",
+      "path": "/v1/users/{}",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/client/IdentityClient.kt",
+          "line": 19,
+          "snippet": "@GetMapping(\"/v1/users/{userId}\")"
+        }
+      ]
+    },
+    {
+      "id": "svc:identity-service",
+      "kind": "service",
+      "name": "Identity Service",
+      "evidence": [
+        {
+          "file": "src/main/resources/application.yml",
+          "line": 42,
+          "snippet": "identity.base-url: http://identity-service:8080"
+        }
+      ]
+    },
+    {
+      "id": "api:wallet-service/GET /v1/wallets/{}/balance",
+      "kind": "endpoint",
+      "name": "GET /v1/wallets/{}/balance",
+      "method": "GET",
+      "path": "/v1/wallets/{}/balance",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/client/WalletClient.kt",
+          "line": 38,
+          "snippet": "@GetMapping(\"/v1/wallets/{walletId}/balance\")"
+        }
+      ]
+    },
+    {
+      "id": "svc:wallet-service",
+      "kind": "service",
+      "name": "Wallet Service",
+      "evidence": [
+        {
+          "file": "src/main/resources/application.yml",
+          "line": 51,
+          "snippet": "wallet.base-url: http://wallet-service:8080"
+        }
+      ]
+    },
+    {
+      "id": "api:order-service/POST /v1/orders",
+      "kind": "endpoint",
+      "name": "POST /v1/orders",
+      "method": "POST",
+      "path": "/v1/orders",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/client/OrderClient.kt",
+          "line": 43,
+          "snippet": "@PostMapping(\"/v1/orders\")"
+        }
+      ]
+    },
+    {
+      "id": "svc:order-service",
+      "kind": "service",
+      "name": "Order Service",
+      "evidence": [
+        {
+          "file": "src/main/resources/application.yml",
+          "line": 54,
+          "snippet": "order.base-url: http://order-service:8080"
+        }
+      ]
+    },
+    {
+      "id": "api:reporting-service/GET /v1/reports/{}",
+      "kind": "endpoint",
+      "name": "GET /v1/reports/{}",
+      "method": "GET",
+      "path": "/v1/reports/{}",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/client/ReportingClient.kt",
+          "line": 45,
+          "snippet": "@GetMapping(\"/v1/reports/{report_id}\")"
+        }
+      ]
+    },
+    {
+      "id": "svc:reporting-service",
+      "kind": "service",
+      "name": "Reporting Service",
+      "evidence": [
+        {
+          "file": "src/main/resources/application.yml",
+          "line": 63,
+          "snippet": "reporting.base-url: http://reporting-service:8080"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "svc:gateway-api",
+      "to": "db:elasticsearch/search",
+      "kind": "db.read",
+      "description": "Serves report search straight from the index rather than going through reporting.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/search/ReportSearch.kt",
+          "line": 13,
+          "snippet": "client.search({ it.index(\"reports\").query(query) }, Report::class.java)"
+        }
+      ]
+    },
+    {
+      "from": "svc:gateway-api",
+      "to": "cache:redis/session",
+      "kind": "cache.write",
+      "description": "Stores the session on login so later requests skip identity.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/cache/GatewayCache.kt",
+          "line": 43,
+          "snippet": "redis.opsForValue().set(\"session:$key\", value, Duration.ofMinutes(30))"
+        }
+      ]
+    },
+    {
+      "from": "svc:gateway-api",
+      "to": "api:identity-service/GET /v1/users/{}",
+      "kind": "http.call",
+      "description": "Looks the customer up to check their trading status.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/client/IdentityClient.kt",
+          "line": 19,
+          "snippet": "@GetMapping(\"/v1/users/{userId}\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:gateway-api",
+      "to": "api:wallet-service/GET /v1/wallets/{}/balance",
+      "kind": "http.call",
+      "description": "Checks the customer can cover the order before admitting it.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/client/WalletClient.kt",
+          "line": 38,
+          "snippet": "@GetMapping(\"/v1/wallets/{walletId}/balance\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:gateway-api",
+      "to": "api:order-service/POST /v1/orders",
+      "kind": "http.call",
+      "description": "Forwards the customer order from the public API.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/client/OrderClient.kt",
+          "line": 43,
+          "snippet": "@PostMapping(\"/v1/orders\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:gateway-api",
+      "to": "api:reporting-service/GET /v1/reports/{}",
+      "kind": "http.call",
+      "description": "Serves a customer statement through the public API.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/gateway/client/ReportingClient.kt",
+          "line": 45,
+          "snippet": "@GetMapping(\"/v1/reports/{report_id}\")"
+        }
+      ]
+    }
+  ],
+  "unresolved": []
+}
