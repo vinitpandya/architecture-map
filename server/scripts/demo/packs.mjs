@@ -136,7 +136,10 @@ export const SKELETONS = [
       url: 'https://meridian.atlassian.net/wiki/spaces/DATA/pages/311/Reporting',
       title: 'Reporting — how the warehouse is built',
       owner: 'data',
-      asOf: '2025-11-03',
+      // Over a year old on purpose: this is the pack that describes a topic
+      // which no longer exists and a call nobody makes, and a document in that
+      // state should look like one nobody has checked.
+      asOf: '2025-06-19',
     },
     processes: [
       { code: '3', name: 'Reporting' },

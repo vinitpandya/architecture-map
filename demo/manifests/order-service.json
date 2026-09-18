@@ -1,0 +1,383 @@
+{
+  "schemaVersion": 1,
+  "promptVersion": "2026-09-18a",
+  "repo": "order-service",
+  "commit": "19f5b80",
+  "branch": "main",
+  "scannedAt": "2026-09-18T08:21:00Z",
+  "producer": {
+    "kind": "parser",
+    "tool": "seed-demo/1"
+  },
+  "service": {
+    "id": "svc:order-service",
+    "name": "Order Service",
+    "language": "kotlin",
+    "team": "trading",
+    "description": "Accepts and validates customer orders, checks balance and price before admitting one, then hands it to the matching engine."
+  },
+  "nodes": [
+    {
+      "id": "topic:orders.placed.v1",
+      "kind": "kafka.topic",
+      "name": "orders.placed.v1",
+      "description": "An order that passed validation and is admitted to the book.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/kafka/Topics.kt",
+          "line": 29,
+          "snippet": "const val ORDERS_PLACED = \"orders.placed.v1\""
+        }
+      ]
+    },
+    {
+      "id": "topic:notifications.requested.v1",
+      "kind": "kafka.topic",
+      "name": "notifications.requested.v1",
+      "description": "An explicit request to notify a customer, for the cases no domain event covers.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/kafka/Topics.kt",
+          "line": 32,
+          "snippet": "const val NOTIFICATIONS_REQUESTED = \"notifications.requested.v1\""
+        }
+      ]
+    },
+    {
+      "id": "topic:kyc.approved.v1",
+      "kind": "kafka.topic",
+      "name": "kyc.approved.v1",
+      "description": "A customer has passed identity verification and may now trade and withdraw.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/kafka/Topics.kt",
+          "line": 51,
+          "snippet": "const val KYC_APPROVED = \"kyc.approved.v1\""
+        }
+      ]
+    },
+    {
+      "id": "db:postgres/orders",
+      "kind": "database",
+      "name": "orders",
+      "engine": "postgres",
+      "description": "Submitted orders and their lifecycle.",
+      "evidence": [
+        {
+          "file": "src/main/resources/db/migration/V1__init.sql",
+          "line": 1,
+          "snippet": "CREATE TABLE customer_order ("
+        }
+      ]
+    },
+    {
+      "id": "cache:redis/pricing-quotes",
+      "kind": "cache",
+      "name": "pricing-quotes",
+      "engine": "redis",
+      "description": "Last quote per trading pair, 30 second TTL.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/cache/OrderCache.kt",
+          "line": 11,
+          "snippet": "redis.opsForValue().get(\"pricing-quotes:$key\")"
+        }
+      ]
+    },
+    {
+      "id": "api:order-service/POST /v1/orders",
+      "kind": "endpoint",
+      "name": "POST /v1/orders",
+      "method": "POST",
+      "path": "/v1/orders",
+      "description": "Submit an order.",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/api/OrderController.kt",
+          "line": 39,
+          "snippet": "@PostMapping(\"/v1/orders\")"
+        }
+      ]
+    },
+    {
+      "id": "api:identity-service/GET /v1/users/{}",
+      "kind": "endpoint",
+      "name": "GET /v1/users/{}",
+      "method": "GET",
+      "path": "/v1/users/{}",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/client/IdentityClient.kt",
+          "line": 37,
+          "snippet": "@GetMapping(\"/v1/users/{userId}\")"
+        }
+      ]
+    },
+    {
+      "id": "svc:identity-service",
+      "kind": "service",
+      "name": "Identity Service",
+      "evidence": [
+        {
+          "file": "src/main/resources/application.yml",
+          "line": 42,
+          "snippet": "identity.base-url: http://identity-service:8080"
+        }
+      ]
+    },
+    {
+      "id": "api:wallet-service/GET /v1/wallets/{}/balance",
+      "kind": "endpoint",
+      "name": "GET /v1/wallets/{}/balance",
+      "method": "GET",
+      "path": "/v1/wallets/{}/balance",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/client/WalletClient.kt",
+          "line": 24,
+          "snippet": "@GetMapping(\"/v1/wallets/{walletId}/balance\")"
+        }
+      ]
+    },
+    {
+      "id": "svc:wallet-service",
+      "kind": "service",
+      "name": "Wallet Service",
+      "evidence": [
+        {
+          "file": "src/main/resources/application.yml",
+          "line": 51,
+          "snippet": "wallet.base-url: http://wallet-service:8080"
+        }
+      ]
+    },
+    {
+      "id": "api:pricing-service/GET /v1/rates/{}",
+      "kind": "endpoint",
+      "name": "GET /v1/rates/{}",
+      "method": "GET",
+      "path": "/v1/rates/{}",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/client/PricingClient.kt",
+          "line": 35,
+          "snippet": "@GetMapping(\"/v1/rates/{symbol}\")"
+        }
+      ]
+    },
+    {
+      "id": "svc:pricing-service",
+      "kind": "service",
+      "name": "Pricing Service",
+      "evidence": [
+        {
+          "file": "src/main/resources/application.yml",
+          "line": 54,
+          "snippet": "pricing.base-url: http://pricing-service:8080"
+        }
+      ]
+    },
+    {
+      "id": "contract:com.meridian.events.OrderPlaced",
+      "kind": "contract",
+      "name": "OrderPlaced",
+      "contractType": "class",
+      "version": "3.2.0",
+      "description": "Event payload for an order admitted to the book.",
+      "evidence": [
+        {
+          "file": "build.gradle.kts",
+          "line": 16,
+          "snippet": "implementation(\"com.meridian:platform-events:3.2.0\")"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "svc:order-service",
+      "to": "topic:orders.placed.v1",
+      "kind": "kafka.produce",
+      "contract": "contract:com.meridian.events.OrderPlaced",
+      "description": "Hands a validated order to the matching engine.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/kafka/OrderPublisher.kt",
+          "line": 29,
+          "snippet": "kafka.send(Topics.ORDERS_PLACED, event.key(), event)"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "topic:orders.placed.v1",
+      "kind": "topic.schema",
+      "contract": "contract:com.meridian.events.OrderPlaced",
+      "description": "OrderPlaced is the payload on orders.placed.v1.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/kafka/OrderPublisher.kt",
+          "line": 39,
+          "snippet": "val event: OrderPlaced = OrderPlaced.from(state)"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "topic:notifications.requested.v1",
+      "kind": "kafka.produce",
+      "description": "Asks for a customer notification that no domain event from order service covers.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/kafka/OrderPublisher.kt",
+          "line": 47,
+          "snippet": "kafka.send(Topics.NOTIFICATIONS_REQUESTED, event.key(), event)"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "topic:kyc.approved.v1",
+      "kind": "kafka.consume",
+      "description": "Allows the customer to place orders once verified.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/kafka/OrderListener.kt",
+          "line": 13,
+          "snippet": "@KafkaListener(topics = [Topics.KYC_APPROVED], groupId = \"order-service\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "db:postgres/orders",
+      "kind": "db.owns",
+      "description": "Holds the migrations for orders.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/resources/db/migration/V1__init.sql",
+          "line": 1,
+          "snippet": "CREATE TABLE customer_order ("
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "db:postgres/orders",
+      "kind": "db.write",
+      "description": "Writes customer_order as the owning service.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/store/OrderRepository.kt",
+          "line": 44,
+          "snippet": "jdbc.update(\"INSERT INTO customer_order (id, updated_at) VALUES (?, ?)\", id, now)"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "db:postgres/orders",
+      "kind": "db.read",
+      "description": "Reads customer_order to serve its own API.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/store/OrderRepository.kt",
+          "line": 50,
+          "snippet": "jdbc.query(\"SELECT * FROM customer_order WHERE id = ?\", rowMapper, id)"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "cache:redis/pricing-quotes",
+      "kind": "cache.read",
+      "description": "Reads the last quote to price an order without a round trip.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/cache/OrderCache.kt",
+          "line": 11,
+          "snippet": "redis.opsForValue().get(\"pricing-quotes:$key\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "api:order-service/POST /v1/orders",
+      "kind": "http.expose",
+      "description": "Submit an order.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/api/OrderController.kt",
+          "line": 39,
+          "snippet": "@PostMapping(\"/v1/orders\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "api:identity-service/GET /v1/users/{}",
+      "kind": "http.call",
+      "description": "Looks the customer up to check their trading status.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/client/IdentityClient.kt",
+          "line": 37,
+          "snippet": "@GetMapping(\"/v1/users/{userId}\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "api:wallet-service/GET /v1/wallets/{}/balance",
+      "kind": "http.call",
+      "description": "Checks the customer can cover the order before admitting it.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/client/WalletClient.kt",
+          "line": 24,
+          "snippet": "@GetMapping(\"/v1/wallets/{walletId}/balance\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "api:pricing-service/GET /v1/rates/{}",
+      "kind": "http.call",
+      "description": "Fetches the rate used to value the request in the account currency.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/main/kotlin/com/meridian/order/client/PricingClient.kt",
+          "line": 35,
+          "snippet": "@GetMapping(\"/v1/rates/{symbol}\")"
+        }
+      ]
+    },
+    {
+      "from": "svc:order-service",
+      "to": "contract:com.meridian.events.OrderPlaced",
+      "kind": "depends.on",
+      "description": "Binds OrderPlaced at 3.2.0.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "build.gradle.kts",
+          "line": 16,
+          "snippet": "implementation(\"com.meridian:platform-events:3.2.0\")"
+        }
+      ]
+    }
+  ],
+  "unresolved": []
+}
