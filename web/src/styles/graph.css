@@ -563,7 +563,6 @@ a.proc-code:hover {
   margin: 0;
   padding-left: 0;
   list-style: none;
-  counter-reset: step;
   display: flex;
   flex-direction: column;
   gap: 2px;

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Process } from '../lib/api'
 import { useThemeVersion } from '../components/ui'
-import { EDGE_LABEL, flowDirection, idValue } from '../lib/nodes'
+import { flowDirection, flowVerb, idValue } from '../lib/nodes'
 
 /**
  * A process drawn as a sequence diagram, generated from its children in order.
@@ -24,8 +24,12 @@ import { EDGE_LABEL, flowDirection, idValue } from '../lib/nodes'
 const participantFor = (id: string) =>
   id.startsWith('api:') ? `svc:${idValue(id).split('/')[0]}` : id
 
-/** Mermaid takes the label after `as`; strip what would end the statement. */
-const clean = (s: string) => s.replace(/["\n;]/g, ' ').replace(/\s+/g, ' ').trim()
+/**
+ * Mermaid takes everything after `as` as the label and everything after `:` as
+ * a message, so anything that would end either statement has to go. Quoting
+ * the label is not the answer — mermaid renders the quotes.
+ */
+const clean = (s: string) => s.replace(/["'`;:#<>\n]/g, ' ').replace(/\s+/g, ' ').trim()
 
 export function processDiagram(children: Process[], nameOf: (id: string) => string): string {
   const lines = ['sequenceDiagram', '  autonumber']
@@ -34,7 +38,7 @@ export function processDiagram(children: Process[], nameOf: (id: string) => stri
     if (alias.has(id)) return alias.get(id)!
     const key = `P${alias.size}`
     alias.set(id, key)
-    lines.push(`  participant ${key} as "${clean(nameOf(id))}"`)
+    lines.push(`  participant ${key} as ${clean(nameOf(id)) || key}`)
     return key
   }
 
@@ -58,12 +62,11 @@ export function processDiagram(children: Process[], nameOf: (id: string) => stri
     const { source, target } = flowDirection(child.edge)
     const from = declare(participantFor(source))
     const to = declare(participantFor(target))
-    const verb = EDGE_LABEL[child.edge.kind] ?? child.edge.kind
+    const verb = flowVerb(child.edge.kind)
     // A dashed arrow for an interaction the code does not have, so an
     // unresolved step is visibly different rather than quietly the same.
     const arrow = child.edge.id ? '->>' : '-->>'
-    if (from === to) lines.push(`  ${from}${arrow}${to}: ${label}`)
-    else lines.push(`  ${from}${arrow}${to}: ${label}`)
+    lines.push(`  ${from}${arrow}${to}: ${label}`)
     if (!child.edge.id) lines.push(`  Note right of ${to}: ${clean(verb)} — not in the map`)
   }
 

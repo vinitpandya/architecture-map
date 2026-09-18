@@ -6,11 +6,11 @@ import { DataGrid } from '../components/DataGrid'
 import { relative } from '../lib/format'
 import { ProcessFlow } from '../graph/ProcessFlow'
 import {
-  EDGE_LABEL,
   KIND_PLURAL,
   VIA_LABEL,
   displayCode,
   flowDirection,
+  flowVerb,
   idValue,
   nodeHref,
   processHref,
@@ -118,18 +118,6 @@ export function ProcessPage() {
         </div>
       )}
 
-      {drift.length > 0 && (
-        <Card title={`Findings (${drift.length})`} sub="Where this document and the code disagree">
-          <ul className="stack" style={{ gap: 6, margin: 0, paddingLeft: 18 }}>
-            {drift.map((f) => (
-              <li key={f.id}>
-                <strong>{f.kind}</strong> — {f.detail}
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
-
       {children.length > 0 ? (
         <Flow process={process} children={children} components={components} />
       ) : (
@@ -143,6 +131,31 @@ export function ProcessPage() {
           <Binding process={process} />
         </Card>
       )}
+
+      <Card
+        title={`Components used (${components.length})`}
+        sub="Rolled up from everything underneath this process"
+      >
+        {components.length ? (
+          <div className="stack" style={{ gap: 12 }}>
+            {[...byKind].map(([kind, list]) => (
+              <div key={kind}>
+                <span className="nav-group-label">{KIND_PLURAL[kind as NodeKind] ?? kind}</span>
+                <ul className="proc-components">
+                  {list.map((c) => (
+                    <li key={c.id}>
+                      <Link to={nodeHref(c.id)}>{c.name}</Link>
+                      <span className="muted"> · {VIA_LABEL[c.via] ?? c.via}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Empty title="Nothing in the map is bound to this process yet" />
+        )}
+      </Card>
 
       <Card
         title={`Services involved (${services.length})`}
@@ -176,30 +189,17 @@ export function ProcessPage() {
         )}
       </Card>
 
-      <Card
-        title={`Components used (${components.length})`}
-        sub="Rolled up from everything underneath this process"
-      >
-        {components.length ? (
-          <div className="stack" style={{ gap: 12 }}>
-            {[...byKind].map(([kind, list]) => (
-              <div key={kind}>
-                <span className="nav-group-label">{KIND_PLURAL[kind as NodeKind] ?? kind}</span>
-                <ul className="proc-components">
-                  {list.map((c) => (
-                    <li key={c.id}>
-                      <Link to={nodeHref(c.id)}>{c.name}</Link>
-                      <span className="muted"> · {VIA_LABEL[c.via] ?? c.via}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+      {drift.length > 0 && (
+        <Card title={`Findings (${drift.length})`} sub="Where this document and the code disagree">
+          <ul className="stack" style={{ gap: 6, margin: 0, paddingLeft: 18 }}>
+            {drift.map((f) => (
+              <li key={f.id}>
+                <strong>{f.kind}</strong> — {f.detail}
+              </li>
             ))}
-          </div>
-        ) : (
-          <Empty title="Nothing in the map is bound to this process yet" />
-        )}
-      </Card>
+          </ul>
+        </Card>
+      )}
 
       {(pack?.source || process.source) && <Source source={process.source ?? pack?.source ?? null} pack={pack} />}
     </div>
@@ -321,13 +321,13 @@ function Interaction({
   unresolved: boolean
 }) {
   const { source, target } = flowDirection(edge as Parameters<typeof flowDirection>[0])
-  const verb = EDGE_LABEL[edge.kind as keyof typeof EDGE_LABEL] ?? edge.kind
+  const verb = flowVerb(edge.kind as Parameters<typeof flowVerb>[0])
   return (
     <span className="proc-bind-part">
       {unresolved ? <Unresolved id={source} /> : <Link to={nodeHref(source)}>{idValue(source)}</Link>}
       <span className="proc-arrow" aria-label={verb}>
         {' '}
-        — {verb.toLowerCase()} →{' '}
+        — {verb} →{' '}
       </span>
       {unresolved ? <Unresolved id={target} /> : <Link to={nodeHref(target)}>{idValue(target)}</Link>}
       {unresolved && (

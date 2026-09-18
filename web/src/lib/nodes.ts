@@ -89,10 +89,25 @@ export const processHref = (code: string) => `/process?code=${encodeURIComponent
 /** People write and say the prefix; only the storage drops it. */
 export const displayCode = (code: string) => `L${code}`
 
+/**
+ * EDGE_LABEL is written from the service's side — "Consumes", "Reads cache" —
+ * which reads backwards once flowDirection() has put the topic or the store
+ * first. These are the same relationships said the other way round.
+ */
+const FLOW_LABEL: Partial<Record<EdgeKind, string>> = {
+  'kafka.consume': 'is consumed by',
+  'db.read': 'is read by',
+  'cache.read': 'is read by',
+}
+
+/** The verb for an edge drawn source → target in the direction data flows. */
+export const flowVerb = (kind: EdgeKind) =>
+  FLOW_LABEL[kind] ?? (EDGE_LABEL[kind] ?? kind).toLowerCase()
+
 /** How a process's interaction reads left to right, in the flow direction. */
 export function interactionLabel(edge: { from: string; kind: EdgeKind; to: string }) {
   const { source, target } = flowDirection(edge)
-  return { source, target, verb: EDGE_LABEL[edge.kind] ?? edge.kind }
+  return { source, target, verb: flowVerb(edge.kind) }
 }
 
 /** Provenance of a component on a process, most direct first. */

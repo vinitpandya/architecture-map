@@ -43,10 +43,18 @@ export function ProcessesPage() {
         </p>
       </div>
       {rows.length > 0 && (
-        <div className="segmented" role="group" aria-label="Expand to level">
-          {[1, 2, 3].map((l) => (
-            <button key={l} type="button" aria-pressed={openToLevel === l} onClick={() => setOpenToLevel(l)}>
-              {l === 3 ? 'All' : `L${l + 1}`}
+        <div className="segmented" role="group" aria-label="How much to show">
+          {[
+            [1, 'Stages'],
+            [2, 'Actions'],
+          ].map(([level, label]) => (
+            <button
+              key={level as number}
+              type="button"
+              aria-pressed={openToLevel === level}
+              onClick={() => setOpenToLevel(level as number)}
+            >
+              {label}
             </button>
           ))}
         </div>

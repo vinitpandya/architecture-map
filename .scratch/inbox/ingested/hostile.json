@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "pack": "hostile-test",
+  "name": "Hostile test pack",
+  "authoredAt": "2026-09-18T00:00:00Z",
+  "producer": { "kind": "human", "author": "reviewer" },
+  "processes": [
+    { "code": "7", "name": "Root of the hostile pack" },
+    { "code": "7.1", "name": "A stage" },
+    { "code": "7.1.1", "name": "Names a component nobody has seen",
+      "node": "svc:ghost-service",
+      "interaction": { "from": "svc:ghost-service", "kind": "http.call", "to": "api:ghost-service/GET /v1/nothing" },
+      "touches": ["topic:ghost.topic.v1", "db:postgres/ghost"] },
+    { "code": "7.1.2", "name": "A call that is not in the code",
+      "node": "svc:order-service",
+      "interaction": { "from": "svc:order-service", "kind": "http.call", "to": "api:wallet-service/GET /v1/wallets/{}/balance" } },
+    { "code": "9.4.1", "name": "An orphan code whose parents do not exist" }
+  ]
+}
