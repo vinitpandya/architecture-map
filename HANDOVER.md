@@ -2,8 +2,9 @@
 
 Two sessions. The first took the repository from "the shell works, nothing under
 it does" to Layer A complete — SPEC.md phases 1–6. The second added Layer B, the
-business processes — SPEC-PROCESSES.md phases 7–11. Both are complete and
-verified.
+business processes — SPEC-PROCESSES.md phases 7–11 — and then spent a polish
+pass reading the result back against the spec, which found seven more defects on
+paths the demo data never reaches. All of it is complete and verified.
 
 Read [DECISIONS.md](DECISIONS.md) alongside this. It has the working for every
 judgement call, including three places where a spec contradicts itself and how
@@ -18,15 +19,17 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 103 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 45 more
-npm run seed:demo -- --remove        # clear the demo estate and its packs
+npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 126 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 48 more
+npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run build && npm start           # production build, UI and API on one port
 ```
 
 Both verify scripts run against throwaway databases under `data/`. Neither
-touches your own.
+touches your own, and neither modifies the working tree — `--remove` clears the
+database and leaves the committed fixtures under `demo/` alone unless you add
+`--files`.
 
 ## Phases
 
@@ -43,6 +46,7 @@ touches your own.
 | 9 · demo process packs | Complete, verified |
 | 10 · read API and the core pages | Complete, verified |
 | 11 · the map overlay, the flow view, the widgets | Complete, verified in a browser |
+| polish · seven defects from an adversarial read | Complete, verified |
 
 Beyond §13 and §9's lists, two things the shells had not met: node detail renders
 per kind (the topic page — producers against consumers with the version skew
@@ -51,7 +55,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 103 assertions across three stages, all passing.**
+**`npm run verify` — 126 assertions across four stages, all passing.**
 
 *Ingest (17, in-process against a fresh database).* `validate.mjs` exits 0 on the
 example and 1 on a `kind` typo naming `/edges/0/kind`. A quarantined manifest
@@ -87,7 +91,19 @@ without a process. `code=L2` reads the same process as `code=2`. Searching
 `2.3.3`, `L2.3.3` and `orders.matched.v1` all work. `--remove` clears packs,
 processes, the join tables and every process finding.
 
-**`npm run verify:ui` — 45 checks in Chromium at 1280×900, all passing.**
+*Packs (23, in-process).* The situations the demo estate cannot contain, because
+its packs are well-formed on purpose. A pack whose `pack` field is not a string
+quarantines instead of throwing, and a malformed file in the inbox does not stop
+the good file behind it from landing. A typo in `touches` raises
+`process-missing-component` **and does not hide the missing interaction beside
+it**. Two packs declaring one code raise `process-duplicate-code`, and
+re-ingesting the second one keeps the first one's processes — the bug this stage
+exists for. An orphan code raises its finding, keeps its own process, invents no
+parent and rolls into nothing; no row in `process_components` belongs to a
+process that does not exist. A leaf binding nothing raises `process-no-detail`.
+The demo estate is unharmed by all of it.
+
+**`npm run verify:ui` — 48 checks in Chromium at 1280×900, all passing.**
 
 Two fresh loads of the map put all 35 nodes at byte-identical transforms. A
 `kafka.consume` edge's arrow head lands 72px from the service and 275px from the
@@ -97,7 +113,8 @@ for 2.1 draws four steps in code order in both themes. Every new screen —
 the tree, a process at each level, a node with processes, the Process map page,
 Health, Scan, Search — renders in dark mode with no horizontal scroll and no
 console errors. A component that is not in the map renders as unresolved rather
-than vanishing.
+than vanishing — and a missing *interaction* leaves its two real ends as
+working links, saying only that the relationship is not in the map.
 
 **By hand.** The inbox round trip: a manifest, a pack and a broken pack swept
 together, each routed by shape, the broken one quarantined with its ajv path and
@@ -105,8 +122,9 @@ importing nothing. Every new screen looked at in both themes.
 
 ## Nothing is failing
 
-No verification step is left failing and nothing was weakened to pass. Five
-defects were found and fixed rather than worked around:
+No verification step is left failing and nothing was weakened to pass. Twelve
+defects were found and fixed rather than worked around. Five came out of
+running the thing:
 
 - **`/api/graph` ignored `depth`.** The BFS grew its frontier while iterating the
   edge list, so one pass walked the whole connected component and `depth=1`
@@ -121,6 +139,26 @@ defects were found and fixed rather than worked around:
   from the service's side, so once `flowDirection()` puts the cache first,
   "pricing-quotes — reads cache → order-service" is nonsense. There is a flow
   verb now.
+
+Seven more came out of reading the code against the spec rather than running it,
+and none of them was failing — the demo packs are well-formed on purpose and
+reach none of these paths. DECISIONS.md has the working for each; the short
+version:
+
+- **`npm run verify` deleted the thirteen committed fixtures under `demo/`**
+  every time it ran, because it ends by running `seed:demo --remove` and that
+  unlinked the files as well as clearing the database. The worst of the seven by
+  some distance: a verification run is the last thing that should modify the
+  working tree.
+- **A typo in `touches` hid a missing interaction** on the same process.
+- **Re-ingesting a pack deleted another pack's process** when the two had ever
+  shared a code.
+- **The process page struck through both ends of a missing interaction**, on a
+  screen where both of them are real and one click away.
+- **An orphan code seeded phantom parents** in the component join.
+- **A pack whose `pack` field was not a string took the whole inbox sweep down**
+  as a bind parameter SQLite refuses.
+- **A widget was labelled "Process steps"**, which §12.3 says there are none of.
 
 ## Things worth knowing before you touch it
 
@@ -139,10 +177,14 @@ defects were found and fixed rather than worked around:
   default, accepting that the estate then no longer fits on one screen.
 - **Four findings are implemented but produce nothing on the demo data** —
   `near-miss`, `no-consumer`, `orphan-endpoint` and `multiple-owners`, because
-  the estate does not contain those situations, plus `process-orphan-code`,
-  `process-duplicate-code` and `process-no-detail` for the same reason on the
-  packs. They are exercised by construction, not by the verification run. The
-  cheapest way to check one is to hand-edit a file into `inbox/` and sweep.
+  the estate does not contain those situations. The cheapest way to check one is
+  to hand-edit a file into `inbox/` and sweep. The three process findings that
+  used to be in this list — `process-orphan-code`, `process-duplicate-code` and
+  `process-no-detail` — now have synthetic packs in the `packs` verification
+  stage, which is where four of the seven polish defects were caught. **That
+  asymmetry is the lesson of this build: every defect found by reading rather
+  than running lived on a path the demo data does not reach.** The four Layer A
+  findings above are the remaining ones, and they are where to look next.
 - **`stale-evidence` is not produced**, per SPEC §6 — it is reserved, and nothing
   re-reads the cited lines.
 - **A pack ingested before any manifest resolves nothing**, and that is correct:

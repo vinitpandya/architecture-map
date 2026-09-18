@@ -198,6 +198,49 @@ services produce.
   is what the screens are designed against, and mixing them makes it easy to
   break the first while editing the second.
 
+### The polish pass
+
+Seven defects found by reading the code against the spec rather than by running
+it. None was failing, because the demo packs are deliberately well-formed and
+reach none of these paths; there is a fourth verification stage now (`packs`)
+that does reach every one of them.
+
+- **`seed:demo --remove` clears the database and leaves the files alone.** It
+  used to unlink the thirteen committed fixtures under `demo/`, and
+  `npm run verify` ends by running it — so verifying the build deleted tracked
+  files out of the working tree. The paths are under `ROOT`, so `DATA_DIR`
+  never protected them. Deleting the files is opt-in behind `--files`.
+- **`process-missing-interaction` is suppressed only by its own ends.** §5
+  suppresses it when a component underneath the process is missing, because
+  there the missing component is the root cause. Read as "any missing
+  component", a typo in an unrelated `touches` entry silently hid the more
+  interesting finding. It is now suppressed only when one of the interaction's
+  own two ends is the thing that is missing.
+- **Every process is rebuilt from every active pack on ingest.** `processes.code`
+  is unique, so when two packs declare one code the single row can only hold one
+  writer — and the upsert transferred the row's `pack_id` to the newer pack.
+  Re-ingesting that pack then deleted "its" rows, taking away a process the
+  other pack still declared, with nothing to bring it back until that pack
+  happened to be re-ingested. Replaying every active pack oldest-first is cheap
+  at estate scale and cannot drift. `first_seen` is snapshotted across all
+  processes rather than one pack's, and `last_seen` comes from each pack's own
+  `ingested_at`, so replaying a pack nobody touched does not move it.
+- **An unresolved interaction no longer defames its two ends.** The process page
+  took one boolean and struck through both components. On 3.2.3 both ends are
+  real and one click away — the *relationship* is what the code does not have,
+  which is the whole point of the finding. `/api/process` reports `node`,
+  `edge`, `edgeFrom` and `edgeTo` separately now.
+- **The rollup does not seed phantom parents.** An orphan code (3.4.1 with no
+  3.4) rolled its components into `proc:3.4`, a row in the join for a process
+  no page can open. The orphan code is the finding; the phantom was not.
+- **A quarantine label is coerced to a string.** `pack` and `repo` are read off
+  a body that has just failed validation, so they can hold anything; an object
+  reached SQLite as a bind parameter it refuses and threw out of the ingest,
+  taking the whole inbox sweep with it — one malformed file stopping every good
+  one behind it.
+- **The `process-children` widget is "Process parts", not "Process steps".**
+  §12.3 is explicit that there are none.
+
 ## Working
 
 - **`npm run verify` was added** — SPEC.md §14 as a runnable check, over HTTP,
@@ -209,3 +252,12 @@ services produce.
   which is a worse trade than one more devDependency. The script finds whatever
   Chromium build is on disk rather than the one its library expects, because in
   a container those are routinely out of step.
+- **There is a fourth verification stage for what the demo estate cannot
+  contain.** The demo packs are well-formed on purpose — §10 asserts exactly one
+  missing component and exactly one missing interaction — so the paths for a
+  duplicate code, an orphan code, a bare leaf, a malformed document and a
+  re-ingest across packs were exercised by construction and by hand, never by
+  the suite. Every one of them was a place a defect was found. They are
+  asserted now, against synthetic packs at codes the demo does not use, in the
+  same database as the demo estate so that the last two checks can prove the
+  estate is unharmed by any of it.
