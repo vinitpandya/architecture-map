@@ -1098,7 +1098,7 @@ if (stage === 'org') {
       }
     )
     const out = JSON.parse(probe.stdout.trim().split('\n').pop() || '{}')
-    is('with no registry the teams are still all there', out.teams, 8)
+    is('with no registry the teams are still all there', out.teams, 9)
     is('  …all of them unregistered', out.registered, 0)
     is('  …with no departments', out.departments, 0)
     is('  …and unknown-team does not fire against the whole organisation', out.unknown, 0)
@@ -1109,6 +1109,125 @@ if (stage === 'org') {
   linkPass()
   is('putting the registry back re-registers them', n('SELECT COUNT(*) n FROM teams WHERE registered = 1'), 8)
   is('  …and the departments with them', n('SELECT COUNT(*) n FROM departments'), 2)
+
+  /* ──────────────── §10 Phase 13: handoffs, derived and declared
+
+     Counted over the direct rows. The rolled-up ones are the same facts
+     restated a level up, and counting them would mean nothing. */
+  const direct = `via = 'interaction'`
+  is('derived handoffs', n(`SELECT COUNT(*) n FROM process_links WHERE derived = 1 AND ${direct}`), 6)
+  is('  …of them crossing a team', n(`SELECT COUNT(*) n FROM process_links WHERE derived = 1 AND cross_team = 1 AND ${direct}`), 5)
+  is('declared handoffs that became a row', n(`SELECT COUNT(*) n FROM process_links WHERE declared = 1 AND ${direct}`), 5)
+  is('  …agreed with the topology', n(`SELECT COUNT(*) n FROM process_links WHERE declared = 1 AND derived = 1 AND ${direct}`), 4)
+  is('direct handoffs crossing a team', n(`SELECT COUNT(*) n FROM process_links WHERE cross_team = 1 AND ${direct}`), 6)
+  // 6 derived + 19 of their rollups, plus the declared-only link and the 8
+  // ancestor pairs it rolls into (3 froms x 3 tos, less the direct one).
+  is('rows after rollup', n('SELECT COUNT(*) n FROM process_links'), 34)
+
+  /* the handoff the whole feature exists to produce */
+  const fill = db
+    .prepare(
+      `SELECT * FROM process_links WHERE from_id = 'proc:2.3.2' AND to_id = 'proc:3.1.2' AND ${direct}`
+    )
+    .get()
+  ok('trading hands the fill to reporting', !!fill, 'no proc:2.3.2 → proc:3.1.2 row')
+  is('  …over orders.matched.v1', fill?.via_node, 'topic:orders.matched.v1')
+  is('  …derived from the topology', fill?.derived, 1)
+  is('  …and the pack says so too', fill?.declared, 1)
+  is('  …so it needs no finding', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-undocumented' AND subject_id = 'proc:2.3.2'`), 0)
+
+  /* rolled up to the level a director reads */
+  ok(
+    'rolled up, L2 hands off to L3',
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:2' AND to_id = 'proc:3'`) > 0,
+    'no proc:2 → proc:3 row'
+  )
+  is('  …and nothing hands off to itself', n('SELECT COUNT(*) n FROM process_links WHERE from_id = to_id'), 0)
+  is(
+    '  …not even the internal handoff inside L2',
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:2' AND to_id = 'proc:2'`),
+    0
+  )
+  ok(
+    '  …while the internal leaf handoff is still there',
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:2.2.3' AND to_id = 'proc:2.2.4' AND cross_team = 0`) === 1,
+    'the trading-to-trading handoff went missing'
+  )
+
+  /* §12.1 again: the thing most likely to have broken it is handsOffTo */
+  const before = {
+    nodes: n('SELECT COUNT(*) n FROM nodes'),
+    edges: n('SELECT COUNT(*) n FROM edges'),
+  }
+  linkPass()
+  is('a link pass creates no nodes', n('SELECT COUNT(*) n FROM nodes'), before.nodes)
+  is('  …and no edges', n('SELECT COUNT(*) n FROM edges'), before.edges)
+  is(
+    'a declared handoff to a process nobody wrote creates no process',
+    n(`SELECT COUNT(*) n FROM processes WHERE code = '4.1'`),
+    0
+  )
+
+  /* ──────────── §5: which teams a process reaches, which is the HTTP case */
+  const reach = db
+    .prepare(`SELECT team_id, via, via_node FROM process_teams WHERE process_id = 'proc:2.1.3' ORDER BY via, via_node`)
+    .all()
+  is('a process reaches its own team as its owner', reach.filter((r) => r.via === 'owner')[0]?.team_id, 'trading')
+  ok(
+    '  …and identity through the endpoint it calls, not through a handoff',
+    reach.some((r) => r.via === 'component' && r.team_id === 'identity' && r.via_node === 'api:identity-service/GET /v1/users/{}'),
+    JSON.stringify(reach)
+  )
+  is(
+    '  …with no handoff to any identity process, because a call is not a handoff',
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:2.1.3'`),
+    0
+  )
+  is(
+    'distinct team pairs at leaf level',
+    n(`SELECT COUNT(*) n FROM (SELECT DISTINCT p.team_id, t.team_id FROM process_teams t
+        JOIN processes p ON p.id = t.process_id
+        WHERE t.via = 'component' AND p.level = 3 AND p.team_id IS NOT NULL)`),
+    13
+  )
+  is(
+    '  …and across all levels, where the rollup widens them',
+    n(`SELECT COUNT(*) n FROM (SELECT DISTINCT p.team_id, t.team_id FROM process_teams t
+        JOIN processes p ON p.id = t.process_id
+        WHERE t.via = 'component' AND p.team_id IS NOT NULL)`),
+    22
+  )
+
+  /* ────────────────────── §10 Phase 14: the three deliberate defects */
+  is('exactly one unknown-team', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'unknown-team'`), 1)
+  is('  …and it is risk-ops', db.prepare(`SELECT subject_id FROM drift WHERE kind = 'unknown-team'`).get()?.subject_id, 'team:risk-ops')
+  is('zero component-no-team', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'component-no-team'`), 0)
+  is('zero process-no-owner', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-owner'`), 0)
+  is('exactly one process-link-unknown-target', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-unknown-target'`), 1)
+  is('  …from 1.2.3, naming L4.1', db.prepare(`SELECT subject_id FROM drift WHERE kind = 'process-link-unknown-target'`).get()?.subject_id, 'proc:1.2.3')
+  is('exactly one process-link-unsupported', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-unsupported'`), 1)
+  is('  …from 1.3.2, which shares nothing with 2.4.2', db.prepare(`SELECT subject_id FROM drift WHERE kind = 'process-link-unsupported'`).get()?.subject_id, 'proc:1.3.2')
+  is('exactly one process-link-undocumented', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-undocumented'`), 1)
+  is('  …the wallet-to-data one nobody declared', db.prepare(`SELECT subject_id FROM drift WHERE kind = 'process-link-undocumented'`).get()?.subject_id, 'proc:2.3.5')
+  is(
+    '  …and a declared HTTP handoff is never reported as unsupported for being HTTP',
+    n(`SELECT COUNT(*) n FROM process_links WHERE declared = 1 AND support = 'component'`),
+    0
+  )
+
+  /* ---- removal takes Layer C with it */
+  const removed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs'), '--remove'], {
+    encoding: 'utf8',
+    env: process.env,
+  })
+  is('seed:demo --remove exits 0', removed.status, 0)
+  is('  …clearing the handoffs', n('SELECT COUNT(*) n FROM process_links'), 0)
+  is('  …and the team reach', n('SELECT COUNT(*) n FROM process_teams'), 0)
+  is(
+    '  …and every Layer C finding',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind LIKE 'process-link-%' OR kind IN ('unknown-team', 'component-no-team', 'process-no-owner')`),
+    0
+  )
 
   done()
 }

@@ -5,8 +5,14 @@
   "description": "A set of business processes — the L1/L2/L3 hierarchy — and the components each one uses. The levels are DECOMPOSITION, not sequence: each level says the same thing in more detail, so L1.1.1 is a more granular description of part of L1.1, not a hop within it. A level 3 is therefore already the atomic unit of work ('Get prices from the pricing service'), and there is no step list beneath it — if something needs breaking down further, it is a sibling at the same level. Order comes from the numbering: 1.1 happens before 1.2. Unlike a scan manifest, which is derived from code and covers one repository, a pack is authored by people and spans every repository its processes run through. A pack NEVER creates a component: it only references components a scan already established, and a reference that does not resolve is reported as a finding, because it means either the scan missed something or this document is stale.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "pack", "name", "authoredAt", "producer", "processes"],
-
+  "required": [
+    "schemaVersion",
+    "pack",
+    "name",
+    "authoredAt",
+    "producer",
+    "processes"
+  ],
   "properties": {
     "schemaVersion": {
       "const": 1,
@@ -41,15 +47,30 @@
       "type": "object",
       "description": "Who or what wrote this pack. Ingest uses it to decide trust and precedence.",
       "additionalProperties": false,
-      "required": ["kind"],
+      "required": [
+        "kind"
+      ],
       "properties": {
         "kind": {
-          "enum": ["human", "claude", "import"],
+          "enum": [
+            "human",
+            "claude",
+            "import"
+          ],
           "description": "'human' for hand-authored, 'claude' for an LLM draft, 'import' for a conversion from an existing document such as a Confluence page or a mermaid diagram."
         },
-        "model": { "type": "string", "description": "Model id, when kind is 'claude'." },
-        "author": { "type": "string", "description": "Who wrote or approved it." },
-        "tool": { "type": "string", "description": "Converter and version, when kind is 'import'." }
+        "model": {
+          "type": "string",
+          "description": "Model id, when kind is 'claude'."
+        },
+        "author": {
+          "type": "string",
+          "description": "Who wrote or approved it."
+        },
+        "tool": {
+          "type": "string",
+          "description": "Converter and version, when kind is 'import'."
+        }
       }
     },
     "source": {
@@ -60,10 +81,11 @@
       "type": "array",
       "description": "Every process in the pack, as a FLAT list. The hierarchy is carried by `code`, not by nesting — do not nest children inside parents. Order within the list does not matter; the numbering decides it.",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/process" }
+      "items": {
+        "$ref": "#/$defs/process"
+      }
     }
   },
-
   "$defs": {
     "code": {
       "type": "string",
@@ -71,37 +93,59 @@
       "pattern": "^[Ll]?[1-9][0-9]*(\\.[1-9][0-9]*){0,2}$",
       "maxLength": 40
     },
-
     "nodeId": {
       "type": "string",
       "description": "A component id exactly as the topology holds it: 'svc:order-service', 'topic:orders.placed.v1', 'db:postgres/orders', 'cache:redis/session', 'api:pricing-service/GET /v1/rates/{}', 'contract:com.meridian.events.OrderPlaced', 'ext:stripe'. Never invent one — if the component you mean is not in the map, reference it anyway and let the finding surface; do not guess at a different id that happens to exist.",
       "pattern": "^(svc|topic|db|cache|api|contract|ext):\\S.*$",
       "maxLength": 300
     },
-
     "source": {
       "type": "object",
       "description": "Where this knowledge came from. Process facts are asserted by people, not derived from code, so they carry attribution rather than the file-and-line evidence a scan manifest carries. Do not fabricate a code citation for a process.",
       "additionalProperties": false,
       "properties": {
         "kind": {
-          "enum": ["confluence", "diagram", "interview", "code", "runbook", "ticket", "other"],
+          "enum": [
+            "confluence",
+            "diagram",
+            "interview",
+            "code",
+            "runbook",
+            "ticket",
+            "other"
+          ],
           "description": "What sort of source this is."
         },
-        "url": { "type": "string", "description": "Link to the document, diagram or ticket." },
-        "title": { "type": "string", "description": "Its title, so the reference survives a dead link." },
-        "owner": { "type": "string", "description": "The person or team who confirmed this is accurate." },
-        "asOf": { "type": "string", "description": "When it was last confirmed accurate, YYYY-MM-DD. A process nobody has confirmed in a year is worth knowing about." }
+        "url": {
+          "type": "string",
+          "description": "Link to the document, diagram or ticket."
+        },
+        "title": {
+          "type": "string",
+          "description": "Its title, so the reference survives a dead link."
+        },
+        "owner": {
+          "type": "string",
+          "description": "The person or team who confirmed this is accurate."
+        },
+        "asOf": {
+          "type": "string",
+          "description": "When it was last confirmed accurate, YYYY-MM-DD. A process nobody has confirmed in a year is worth knowing about."
+        }
       }
     },
-
     "process": {
       "type": "object",
       "description": "One process at any level. The same shape serves all three: a level 1 is broad and usually names no component of its own, a level 3 is a single granular action and usually names exactly one. Nothing about a level 3 is special in the schema — it is simply a process that nothing decomposes further.",
       "additionalProperties": false,
-      "required": ["code", "name"],
+      "required": [
+        "code",
+        "name"
+      ],
       "properties": {
-        "code": { "$ref": "#/$defs/code" },
+        "code": {
+          "$ref": "#/$defs/code"
+        },
         "name": {
           "type": "string",
           "description": "The process title, as a thing that is done: 'Get prices from the pricing service', not 'Pricing service call'. Short enough to read in a tree.",
@@ -141,7 +185,16 @@
         "touches": {
           "type": "array",
           "description": "Any further components this process uses beyond `node` and `interaction` — for a level 3 that genuinely reads two stores, or for a higher level whose children are not written yet. A parent's component list is DERIVED by rolling up its children, so never restate a child's components here.",
-          "items": { "$ref": "#/$defs/nodeId" }
+          "items": {
+            "$ref": "#/$defs/nodeId"
+          }
+        },
+        "handsOffTo": {
+          "type": "array",
+          "description": "Where this process hands over to another team. Normally written on a level 3, where the handoff actually happens; it rolls up to the levels above automatically, so never restate a child's handoff on its parent.",
+          "items": {
+            "$ref": "#/$defs/handoff"
+          }
         },
         "optional": {
           "type": "boolean",
@@ -150,22 +203,29 @@
         "tags": {
           "type": "array",
           "description": "Free-form labels, e.g. 'regulated', 'customer-facing'.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "notes": {
           "type": "string",
           "description": "Anything that does not fit elsewhere: known issues, planned changes, why it is done this odd way.",
           "maxLength": 600
         },
-        "source": { "$ref": "#/$defs/source" }
+        "source": {
+          "$ref": "#/$defs/source"
+        }
       }
     },
-
     "interaction": {
       "type": "object",
       "description": "A relationship in the topology, described the way a person can write it. Ingest resolves it to the edge the scan found, by the same from|kind|to key the scan used — you never write an edge id by hand. `from` is ALWAYS the service, exactly as in a scan manifest; `kind` carries the direction, so a process where a service consumes an event is still from the service to the topic.",
       "additionalProperties": false,
-      "required": ["from", "kind", "to"],
+      "required": [
+        "from",
+        "kind",
+        "to"
+      ],
       "properties": {
         "from": {
           "$ref": "#/$defs/nodeId",
@@ -173,17 +233,42 @@
         },
         "kind": {
           "enum": [
-            "kafka.produce", "kafka.consume",
-            "db.read", "db.write", "db.owns",
-            "cache.read", "cache.write",
-            "http.call", "http.expose",
-            "depends.on", "topic.schema"
+            "kafka.produce",
+            "kafka.consume",
+            "db.read",
+            "db.write",
+            "db.owns",
+            "cache.read",
+            "cache.write",
+            "http.call",
+            "http.expose",
+            "depends.on",
+            "topic.schema"
           ],
           "description": "Same set a scan manifest uses; the two must match exactly or the interaction will not resolve."
         },
         "to": {
           "$ref": "#/$defs/nodeId",
           "description": "The other end: the topic, database, cache, endpoint, contract or external system."
+        }
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "description": "A handoff to another team's process: the point where this process ends and theirs begins. Declare one ONLY where the code cannot show it — a nightly batch, a file drop, a person, a ticket, or an HTTP call whose receiving process you happen to know. A Kafka publish that another process consumes is DERIVED automatically from the topic and needs no declaration, though declaring it anyway is harmless and reads as agreement. Do not declare an ordinary synchronous call: calling an endpoint is a dependency on that team, not a handoff to one of their processes, and the map already shows it through the component you both touch.",
+      "additionalProperties": false,
+      "required": [
+        "process"
+      ],
+      "properties": {
+        "process": {
+          "$ref": "#/$defs/code",
+          "description": "The code of the process this one hands off to, with or without its 'L'. It may belong to a pack nobody has written yet — that is reported, not rejected, because 'we hand off to a team that is not on the map' is worth knowing."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why, in one sentence, and especially HOW when the code cannot show it: 'a nightly export the risk team picks up', 'the operator emails the signed form'. This is the part a derived handoff does not have, and the reason a declaration is worth writing at all.",
+          "maxLength": 400
         }
       }
     }

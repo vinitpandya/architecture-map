@@ -1,10 +1,10 @@
-import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import Ajv from 'ajv/dist/2020.js'
 import addFormats from 'ajv-formats'
 import { SCHEMA_FILE } from './config.js'
 import { db } from './db.js'
+import { edgeId } from './ids.js'
 import { linkPass } from './link.js'
 // Cyclic with processes.js, which imports this module for edgeId() and the
 // shared ajv. Safe because every reference on both sides is inside a function
@@ -59,8 +59,10 @@ export function validateManifest(json) {
    matters because overrides and process steps point at these ids.
 */
 
-export const edgeId = (from, kind, to) =>
-  crypto.createHash('sha1').update(`${from}|${kind}|${to}`).digest('hex')
+// Imported AND re-exported: a bare `export … from` re-exports without binding
+// it locally, and this module is itself the biggest caller. The rule lives in
+// ids.js so link.js can reach it too.
+export { edgeId }
 
 /* ────────────────────────────────────────────────────── statements
 

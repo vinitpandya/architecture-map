@@ -1,4 +1,5 @@
 import { db } from './db.js'
+import { linkId } from './ids.js'
 import { rebuildTeams, registryConfigured, teamId } from './teams.js'
 
 /**
@@ -77,6 +78,11 @@ const run = db.transaction((now) => {
   // process that did not resolve yesterday, and the findings have to see that.
   resolveInteractions()
   rebuildProcessRollup()
+  // After the rollup: a handoff's support is decided by whether the two
+  // processes share a component, and that is what the rollup has just
+  // established.
+  rebuildProcessLinks(now)
+  rebuildProcessTeams()
   rebuildDrift(now)
 })
 
@@ -208,6 +214,7 @@ function resolveInteractions() {
 function fromActivePacks() {
   const touches = new Map()
   const owners = new Map()
+  const declared = new Map()
   for (const row of db.prepare(`SELECT pack, raw FROM process_packs WHERE status = 'active'`).all()) {
     let parsed = null
     try {
@@ -224,12 +231,22 @@ function fromActivePacks() {
       if (!owners.has(code)) owners.set(code, new Map())
       const claims = owners.get(code)
       claims.set(row.pack, (claims.get(row.pack) ?? 0) + 1)
+      // Declared handoffs, read back off the raw body for the same reason
+      // `touches` is: only the link pass consumes them, and a column nothing
+      // else would ever read is not worth the schema.
+      for (const h of p.handsOffTo ?? []) {
+        const to = String(h?.process ?? '').trim().replace(/^[Ll]/, '')
+        if (!to) continue
+        if (!declared.has(id)) declared.set(id, new Map())
+        declared.get(id).set(`proc:${to}`, h?.note ?? null)
+      }
+
       if (!p.touches?.length) continue
       if (!touches.has(id)) touches.set(id, new Set())
       for (const nodeId of p.touches) touches.get(id).add(nodeId)
     }
   }
-  return { touches, owners }
+  return { touches, owners, declared }
 }
 
 function rebuildProcessRollup() {
@@ -312,6 +329,254 @@ function rebuildProcessRollup() {
   const insEdge = db.prepare('INSERT INTO process_edges (process_id, edge_id, via) VALUES (?, ?, ?)')
   for (const [pid, b] of comps) for (const [nodeId, via] of b) insComp.run(pid, nodeId, via)
   for (const [pid, b] of edges) for (const [edgeId, via] of b) insEdge.run(pid, edgeId, via)
+}
+
+/* ──────────────────────────────────────── layer C: handoffs between processes
+
+   A handoff is the point where one team's work ends and another's begins. The
+   whole design turns on one distinction, and it is easy to get backwards:
+
+   **A synchronous call is not a handoff.** When trading calls the user lookup,
+   trading's process does not end and identity's does not begin — trading's
+   process continues, holding a response. Deriving a handoff from an http.call
+   produces twenty-five links on the demo estate and every one is nonsense,
+   because nothing in the data says which process, if any, serves a lookup:
+   across all 46 demo processes not one names an endpoint as its node and not
+   one has an http.expose interaction. Packs document the calling side.
+
+   **An event is.** A publish and a consume are two halves of exactly the thing
+   this layer names, written by two teams who did not coordinate. That is the
+   only relation derived here. Everything else is a dependency on a team rather
+   than a handoff to a process, and `process_teams` is where it lives.
+*/
+
+/** kafka beats component beats none, when two links roll into one. */
+const SUPPORT_RANK = { kafka: 0, component: 1, none: 2 }
+
+/** Every strict ancestor of a code, deepest last: 2.3.1 → [proc:2, proc:2.3]. */
+function ancestorsOf(code) {
+  const parts = String(code).split('.')
+  return parts.slice(0, -1).map((_, i) => `proc:${parts.slice(0, i + 1).join('.')}`)
+}
+
+function rebuildProcessLinks(now) {
+  // first_seen survives the rebuild, so "since when have we handed off to
+  // them" stays true — the same promise edges.first_seen makes.
+  const wasSeen = new Map(
+    db.prepare('SELECT id, first_seen FROM process_links').all().map((r) => [r.id, r.first_seen])
+  )
+  db.prepare('DELETE FROM process_links').run()
+
+  const procs = db.prepare('SELECT * FROM processes').all()
+  if (!procs.length) return
+  const byId = new Map(procs.map((p) => [p.id, p]))
+
+  const { declared } = fromActivePacks()
+
+  /* ---- 1 · derived, Kafka only.
+
+     Both interactions are stored service-centric, so the topic is in `to` for
+     a produce AND for a consume. flowDirection() exists because of this; do
+     not reach for `from` on a consume. */
+  const producedBy = new Map()
+  const consumedBy = new Map()
+  for (const p of procs) {
+    if (p.edge_kind === 'kafka.produce' && p.edge_to) {
+      if (!producedBy.has(p.edge_to)) producedBy.set(p.edge_to, [])
+      producedBy.get(p.edge_to).push(p)
+    }
+    if (p.edge_kind === 'kafka.consume' && p.edge_to) {
+      if (!consumedBy.has(p.edge_to)) consumedBy.set(p.edge_to, [])
+      consumedBy.get(p.edge_to).push(p)
+    }
+  }
+
+  // Keyed by row id, so a pair reached twice merges rather than duplicating.
+  const rows = new Map()
+  const put = (from, to, kind, viaNode, via, patch) => {
+    // Four parts, not three: one pair can hand off over two topics.
+    const id = linkId(from, kind, to, viaNode)
+    const prior = rows.get(id)
+    if (!prior) {
+      rows.set(id, {
+        id,
+        from_id: from,
+        to_id: to,
+        kind,
+        via_node: viaNode ?? null,
+        via,
+        declared: 0,
+        derived: 0,
+        support: 'none',
+        note: null,
+        ...patch,
+      })
+      return rows.get(id)
+    }
+    prior.declared = prior.declared || patch.declared || 0
+    prior.derived = prior.derived || patch.derived || 0
+    if (SUPPORT_RANK[patch.support ?? 'none'] < SUPPORT_RANK[prior.support]) prior.support = patch.support
+    // 'interaction' outranks 'rollup': a direct handoff is not a rolled-up one.
+    if (patch.via === 'interaction') prior.via = 'interaction'
+    if (!prior.note && patch.note) prior.note = patch.note
+    return prior
+  }
+
+  for (const [topic, producers] of producedBy) {
+    for (const a of producers) {
+      for (const b of consumedBy.get(topic) ?? []) {
+        if (a.id === b.id) continue
+        put(a.id, b.id, 'kafka', topic, 'interaction', { derived: 1, support: 'kafka' })
+      }
+    }
+  }
+
+  /* ---- 2 · declared.
+
+     When a derived row already exists for the pair, the declaration lands on
+     THAT row: the two agree, and agreement is one fact rather than two. */
+  const derivedPairs = new Map()
+  for (const r of rows.values()) {
+    if (!r.derived) continue
+    const key = `${r.from_id}|${r.to_id}`
+    if (!derivedPairs.has(key)) derivedPairs.set(key, [])
+    derivedPairs.get(key).push(r)
+  }
+
+  const componentsOf = new Map()
+  for (const r of db.prepare('SELECT process_id, node_id FROM process_components').all()) {
+    if (!componentsOf.has(r.process_id)) componentsOf.set(r.process_id, new Set())
+    componentsOf.get(r.process_id).add(r.node_id)
+  }
+  const share = (a, b) => {
+    const x = componentsOf.get(a)
+    const y = componentsOf.get(b)
+    if (!x || !y) return false
+    for (const id of x) if (y.has(id)) return true
+    return false
+  }
+
+  const unknownTargets = []
+  for (const [from, targets] of declared) {
+    if (!byId.has(from)) continue
+    for (const [to, note] of targets) {
+      if (from === to) continue
+      if (!byId.has(to)) {
+        unknownTargets.push({ from, to, note })
+        continue
+      }
+      const agreed = derivedPairs.get(`${from}|${to}`)
+      if (agreed?.length) {
+        for (const r of agreed) {
+          r.declared = 1
+          if (!r.note && note) r.note = note
+        }
+        continue
+      }
+      /* ---- 3 · support.
+
+         A declared handoff over HTTP is never derived and must not therefore
+         be reported. When the two processes demonstrably touch the same thing
+         the claim is corroborated; only a claim with nothing at all behind it
+         is worth a finding. */
+      put(from, to, 'declared', null, 'interaction', {
+        declared: 1,
+        support: share(from, to) ? 'component' : 'none',
+        note,
+      })
+    }
+  }
+
+  /* ---- 4 · rollup.
+
+     A handoff between two leaves is one between their ancestors too — except
+     where the two ends are the same process or one contains the other, or an
+     internal handoff inside L2 would roll up into "L2 hands off to L2". */
+  for (const r of [...rows.values()]) {
+    if (r.via === 'rollup') continue
+    const froms = [r.from_id, ...ancestorsOf(byId.get(r.from_id).code)]
+    const tos = [r.to_id, ...ancestorsOf(byId.get(r.to_id).code)]
+    for (const f of froms) {
+      for (const t of tos) {
+        if (f === r.from_id && t === r.to_id) continue
+        if (f === t) continue
+        if (!byId.has(f) || !byId.has(t)) continue
+        const fc = byId.get(f).code
+        const tc = byId.get(t).code
+        if (fc.startsWith(`${tc}.`) || tc.startsWith(`${fc}.`)) continue
+        put(f, t, r.kind, r.via_node, 'rollup', {
+          declared: r.declared,
+          derived: r.derived,
+          support: r.support,
+          note: null,
+        })
+      }
+    }
+  }
+
+  /* ---- 5 · cross_team.
+
+     Both ends must have a team. A link with a teamless end is not cross-team,
+     it is unknown, and calling it a boundary would let a missing owner
+     masquerade as one. */
+  const ins = db.prepare(
+    `INSERT INTO process_links
+       (id, from_id, to_id, kind, via_node, via, declared, derived, support, cross_team, note, first_seen, last_seen)
+     VALUES (@id, @from_id, @to_id, @kind, @via_node, @via, @declared, @derived, @support, @cross_team, @note, @first_seen, @last_seen)`
+  )
+  for (const r of rows.values()) {
+    const ta = byId.get(r.from_id)?.team_id ?? null
+    const tb = byId.get(r.to_id)?.team_id ?? null
+    ins.run({
+      ...r,
+      cross_team: ta && tb && ta !== tb ? 1 : 0,
+      first_seen: wasSeen.get(r.id) ?? now,
+      last_seen: now,
+    })
+  }
+
+  return unknownTargets
+}
+
+/* ───────────────────────────── layer C: which teams a process reaches
+
+   Beyond its own. A process's own team's components are in
+   `process_components` already and are not a crossing; what this table holds
+   is where the process leaves the team, and what carries it there. It is the
+   whole of the HTTP case — `L2.1.3 Check the customer may trade` reaches
+   identity through the endpoint it calls, which is true where "hands off to
+   L1.1.1" was false.
+*/
+
+function rebuildProcessTeams() {
+  db.prepare('DELETE FROM process_teams').run()
+  const procs = db.prepare('SELECT id, team_id FROM processes').all()
+  if (!procs.length) return
+  const teamOfProc = new Map(procs.map((p) => [p.id, p.team_id]))
+
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO process_teams (process_id, team_id, via, via_node) VALUES (?, ?, ?, ?)`
+  )
+
+  for (const p of procs) if (p.team_id) ins.run(p.id, p.team_id, 'owner', '')
+
+  for (const r of db
+    .prepare(
+      `SELECT c.process_id, n.team_id, n.id AS node_id
+       FROM process_components c JOIN nodes n ON n.id = c.node_id
+       WHERE n.team_id IS NOT NULL`
+    )
+    .all()) {
+    if (r.team_id === teamOfProc.get(r.process_id)) continue
+    ins.run(r.process_id, r.team_id, 'component', r.node_id)
+  }
+
+  for (const r of db.prepare('SELECT from_id, to_id FROM process_links').all()) {
+    const a = teamOfProc.get(r.from_id)
+    const b = teamOfProc.get(r.to_id)
+    if (b && b !== a) ins.run(r.from_id, b, 'handoff', '')
+    if (a && a !== b) ins.run(r.to_id, a, 'handoff', '')
+  }
 }
 
 /* ─────────────────────────────────────────────────────── orphan creation */
@@ -510,6 +775,102 @@ function rebuildDrift(now) {
 
   processFindings(write, { nodes, nameOf, label })
   teamFindings(write, { nodes })
+  handoffFindings(write)
+}
+
+/* ────────────────────── layer C: where the documents and the topology disagree
+                                   about who hands off to whom */
+
+function handoffFindings(write) {
+  const procs = db.prepare('SELECT id, code, name, team_id FROM processes').all()
+  if (!procs.length) return
+  const byId = new Map(procs.map((p) => [p.id, p]))
+  const teams = new Map(db.prepare('SELECT id, name FROM teams').all().map((t) => [t.id, t.name]))
+  const teamName = (id) => teams.get(id) ?? id ?? 'nobody'
+  const label = (p) => `L${p.code} ${p.name}`
+
+  /* a declaration naming a process nobody has written.
+
+     Recomputed here rather than threaded out of the link builder, because it
+     is a fact about the packs rather than about the rows — and the common real
+     case is a good one: the team you hand off to has not started using the map
+     yet. */
+  const { declared } = fromActivePacks()
+  for (const [from, targets] of declared) {
+    const a = byId.get(from)
+    if (!a) continue
+    for (const [to, note] of targets) {
+      if (byId.has(to)) continue
+      write(
+        'process-link-unknown-target',
+        from,
+        'warn',
+        `${label(a)} says it hands off to ${to.replace(/^proc:/, 'L')}, and no pack declares that ` +
+          `process. Either the team at the other end has not written theirs yet, or the code has changed.`,
+        { code: a.code, name: a.name, target: to.replace(/^proc:/, ''), note: note ?? null }
+      )
+    }
+  }
+
+  /* a declared handoff with nothing at all behind it.
+
+     `support = 'none'` rather than `derived = 0`: a declared HTTP handoff is
+     never derived, and reporting every one of those would make the finding
+     cry wolf on exactly the declarations worth writing. Only a claim whose two
+     processes do not even touch the same component is reported. */
+  for (const r of db
+    .prepare(
+      `SELECT * FROM process_links WHERE declared = 1 AND support = 'none' AND via = 'interaction'`
+    )
+    .all()) {
+    const a = byId.get(r.from_id)
+    const b = byId.get(r.to_id)
+    if (!a || !b) continue
+    write(
+      'process-link-unsupported',
+      r.from_id,
+      'warn',
+      `${label(a)} says it hands off to ${label(b)}, and the two do not touch a single component ` +
+        `between them. No message, no call, no shared store — either the handoff is not built yet, ` +
+        `or it stopped being true and the document did not follow.`,
+      {
+        code: a.code, name: a.name,
+        target: b.code, targetName: b.name,
+        fromTeam: a.team_id ?? null, toTeam: b.team_id ?? null,
+        note: r.note ?? null,
+      }
+    )
+  }
+
+  /* a handoff that leaves the team and is in nobody's document.
+
+     Info, and cross-team only. An internal handoff between two of a team's own
+     processes does not need writing down — the team knows. One that crosses a
+     boundary and appears in no pack is the one worth a line. */
+  for (const r of db
+    .prepare(
+      `SELECT * FROM process_links
+       WHERE derived = 1 AND declared = 0 AND cross_team = 1 AND via = 'interaction'`
+    )
+    .all()) {
+    const a = byId.get(r.from_id)
+    const b = byId.get(r.to_id)
+    if (!a || !b) continue
+    write(
+      'process-link-undocumented',
+      r.from_id,
+      'info',
+      `${label(a)} hands off to ${label(b)} over ${idValue(r.via_node ?? '')}, crossing from ` +
+        `${teamName(a.team_id)} to ${teamName(b.team_id)}, and neither pack says so. The code does ` +
+        `this; the documents do not mention it.`,
+      {
+        code: a.code, name: a.name,
+        target: b.code, targetName: b.name,
+        fromTeam: a.team_id ?? null, toTeam: b.team_id ?? null,
+        via: r.via_node ?? null,
+      }
+    )
+  }
 }
 
 /* ─────────────────────────────────── layer C: who is responsible, and who is not

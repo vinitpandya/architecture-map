@@ -77,6 +77,9 @@ export const SKELETONS = [
       {
         code: '1.2.1',
         name: 'Record the verification result',
+        // Deliberate: KYC decisioning moved to Risk and Controls and nobody
+        // added them to teams.json, so this is the one `unknown-team`.
+        owner: 'risk-ops',
         node: 'svc:identity-service',
         interaction: on('svc:identity-service', 'db.write', 'db:postgres/identity'),
       },
@@ -85,6 +88,9 @@ export const SKELETONS = [
         name: 'Announce approval',
         node: 'svc:identity-service',
         interaction: on('svc:identity-service', 'kafka.produce', 'topic:kyc.approved.v1'),
+        handsOffTo: [
+          { process: 'L1.2.3', note: 'Wallet picks the approval off the topic and lifts the trading block.' },
+        ],
       },
       {
         code: '1.2.3',
@@ -92,6 +98,12 @@ export const SKELETONS = [
         owner: 'wallet',
         node: 'svc:wallet-service',
         interaction: on('svc:wallet-service', 'kafka.consume', 'topic:kyc.approved.v1'),
+        // Deliberate: L4.1 is the risk team's monitoring process and no pack
+        // declares it, so this is the one `process-link-unknown-target`. The
+        // common real case — the team at the other end is not on the map yet.
+        handsOffTo: [
+          { process: 'L4.1', note: 'Risk starts monitoring the account once it can trade.' },
+        ],
       },
       { code: '1.3', name: 'Funding the account', owner: 'payments' },
       {
@@ -107,6 +119,13 @@ export const SKELETONS = [
         name: 'Record the payment',
         node: 'svc:payments-service',
         interaction: on('svc:payments-service', 'db.write', 'db:postgres/payments'),
+        // Deliberate: payments used to notify the customer itself, before the
+        // balance-change event existed. The two processes now share no
+        // component at all, so this is the one `process-link-unsupported` — a
+        // handoff that was real and was replaced, with the document left behind.
+        handsOffTo: [
+          { process: 'L2.4.2', note: 'Payments asks notification-service to confirm the deposit.' },
+        ],
       },
       {
         code: '1.3.3',
@@ -114,6 +133,9 @@ export const SKELETONS = [
         name: 'Announce the settled payment',
         node: 'svc:payments-service',
         interaction: on('svc:payments-service', 'kafka.produce', 'topic:payments.settled.v1'),
+        handsOffTo: [
+          { process: 'L1.3.4', note: 'The ledger posts the deposit from the settled-payment event.' },
+        ],
       },
       {
         code: '1.3.4',
@@ -357,6 +379,7 @@ export function buildPacks() {
         node: p.node,
         interaction: p.interaction,
         touches: p.touches,
+        handsOffTo: p.handsOffTo,
         optional: prose.optional,
         tags: prose.tags,
         notes: prose.notes,

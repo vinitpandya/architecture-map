@@ -532,8 +532,9 @@ Extend `server/scripts/verify.mjs` in the same style. Every assertion is
 checkable without the real repositories.
 
 **Phase 12**
-- With no `teams.json`, `/api/teams` answers `configured: false`, lists the eight
-  teams the data contains, and `unknown-team` does not fire.
+- With no `teams.json`, `/api/teams` answers `configured: false`, lists the nine
+  teams the data contains — the eight real ones and `risk-ops` — and
+  `unknown-team` does not fire.
 - With the demo `teams.json`, all eight are `registered=1` and sit in two
   departments.
 - `teamId()` maps `Trading`, ` trading ` and `TRADING` to `trading`, and
@@ -550,7 +551,8 @@ checkable without the real repositories.
 - Every demo service has a team, so `component-no-team` is 0.
 
 **Phase 13**
-- Exactly **6** derived handoffs, **5** of them `cross_team`.
+- Exactly **6** derived handoffs, **5** of them `cross_team`. Count `via =
+  'interaction'`; the rollup rows are the same facts one level up.
 - `proc:2.3.2 → proc:3.1.2` exists, `kind='kafka'`,
   `via_node='topic:orders.matched.v1'`, `derived=1`.
 - Rolled up, `proc:2 → proc:3` exists and `proc:2 → proc:2` does **not** — the
@@ -564,21 +566,31 @@ checkable without the real repositories.
 
 **Phase 14** — after `npm run seed:demo`:
 
+Counted over the **direct** handoffs — `via='interaction'` — because the
+rolled-up rows are the same facts restated at a higher level and counting them
+would mean nothing.
+
 | | expected |
 |---|---|
 | departments | 2 |
 | teams, registered | 8 |
 | teams, unregistered | 1 — `risk-ops`, §11 |
+| `handsOffTo` declarations in the packs | 6 |
 | derived handoffs | 6 |
-| cross-team handoffs | 5 |
-| declared handoffs | 6 |
+| …of them crossing a team | 5 |
+| declared handoffs that became a row | 5 — the sixth names a process that does not exist |
+| …agreed, `declared=1 derived=1` | 4 |
+| direct handoffs crossing a team | 6 — the five derived, plus the declared payments → growth |
+| rows after rollup | 34 — 6 derived plus 19 of their rollups, and the declared-only link plus the 8 ancestor pairs it rolls into |
+| `support='none'` | exactly 1 |
 | `unknown-team` | exactly 1 |
 | `component-no-team` | 0 |
 | `process-no-owner` | 0 |
 | `process-link-unsupported` | exactly 1 |
 | `process-link-unknown-target` | exactly 1 |
 | `process-link-undocumented` | exactly 1 |
-| distinct team pairs in `process_teams` | 12 |
+| distinct team pairs in `process_teams`, at leaf level | 13 |
+| …across all levels, where the rollup widens them | 22 |
 
 - `GET /api/process?code=2` reports more than one team, from `process_teams`
   rather than by eye.
@@ -628,20 +640,30 @@ agreed. The sixth — `2.3.5 → 3.1.3`, wallet to data over
 
 ### The three deliberate defects
 
-Each is one line of pack, each demonstrates one finding, and none of them stacks
-on top of an existing Layer B defect:
+Each is one line of pack and each demonstrates one finding. None stacks on top of
+an existing Layer B defect, and — per SPEC-PROCESSES §11 — **none of them is in
+`schema/example.order-and-execution.json`**, which stays the clean fixture. That
+pack gains only the two exemplary declarations, which is where the field should
+be shown off.
 
-1. **A handoff to a process nobody has written.** `1.2.3` declares it hands off
-   to `L4.1`, a risk-team process whose pack does not exist →
-   `process-link-unknown-target`. This is the common real case: the team you hand
-   off to has not started using the map yet.
-2. **A handoff with nothing behind it.** `2.4.2 Send the message` declares it
-   hands off to `1.1.1`, with which it shares no component at all →
-   `process-link-unsupported`. A document that has gone stale, or a handoff that
-   was planned and never built.
-3. **A team nobody registered.** One process is owned by `risk-ops`, which is not
-   in `teams.json` → exactly one `unknown-team`. A team that was renamed, merged,
-   or never added.
+1. **A handoff to a process nobody has written.** `1.2.3 Enable trading on the
+   wallet` declares it hands off to `L4.1`, the risk team's monitoring process,
+   whose pack does not exist → `process-link-unknown-target`. The common real
+   case: the team at the other end is not on the map yet.
+2. **A handoff with nothing behind it.** `1.3.2 Record the payment` declares it
+   hands off to `2.4.2 Send the message`, and the two share no component at all
+   → `process-link-unsupported`. Payments used to notify the customer itself,
+   before the balance-change event existed; the handoff was real, was replaced,
+   and the document was left behind. That is what this finding is for, and it is
+   why the rule is `support='none'` rather than `derived=0` — a handoff that is
+   merely not Kafka is not a defect.
+3. **A team nobody registered.** `1.2.1 Record the verification result` is owned
+   by `risk-ops`, which is not in `teams.json` → exactly one `unknown-team`. KYC
+   decisioning moved to Risk and Controls and nobody updated the registry.
+
+That third one is why the leaf-level team-pair count is 13 rather than 12: a
+process owned by a team that owns no components reaches its own former team
+through every component it touches.
 
 ---
 

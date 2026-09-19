@@ -174,7 +174,13 @@
         "from": "svc:matching-engine",
         "kind": "kafka.produce",
         "to": "topic:orders.matched.v1"
-      }
+      },
+      "handsOffTo": [
+        {
+          "process": "L3.1.2",
+          "note": "Reporting ingests the fill off the topic to build the trade warehouse."
+        }
+      ]
     },
     {
       "code": "2.3.3",
@@ -216,7 +222,13 @@
         "from": "svc:wallet-service",
         "kind": "kafka.produce",
         "to": "topic:wallet.balance.changed.v1"
-      }
+      },
+      "handsOffTo": [
+        {
+          "process": "L2.4.1",
+          "note": "Growth picks the balance change up and decides whether to tell the customer."
+        }
+      ]
     },
     {
       "code": "2.4",

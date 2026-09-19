@@ -98,7 +98,7 @@
       "code": "1.2.1",
       "name": "Record the verification result",
       "description": "Updates the KYC state on the record 1.1.1 created — the same table, minutes or days later, on a callback from a third-party verification provider the platform does not operate. Last write wins on the row, so a later decision can take an approved customer back to rejected, and every approval publishes 1.2.2 again, which is why 1.2.3 has to be safe to apply twice. Nothing orders the callbacks, and the row keeps only the current decision, so the history an audit of why a customer was approved would want is not in identity.",
-      "owner": "identity",
+      "owner": "risk-ops",
       "node": "svc:identity-service",
       "interaction": {
         "from": "svc:identity-service",
@@ -117,6 +117,12 @@
         "kind": "kafka.produce",
         "to": "topic:kyc.approved.v1"
       },
+      "handsOffTo": [
+        {
+          "process": "L1.2.3",
+          "note": "Wallet picks the approval off the topic and lifts the trading block."
+        }
+      ],
       "optional": true
     },
     {
@@ -129,7 +135,13 @@
         "from": "svc:wallet-service",
         "kind": "kafka.consume",
         "to": "topic:kyc.approved.v1"
-      }
+      },
+      "handsOffTo": [
+        {
+          "process": "L4.1",
+          "note": "Risk starts monitoring the account once it can trade."
+        }
+      ]
     },
     {
       "code": "1.3",
@@ -161,7 +173,13 @@
         "from": "svc:payments-service",
         "kind": "db.write",
         "to": "db:postgres/payments"
-      }
+      },
+      "handsOffTo": [
+        {
+          "process": "L2.4.2",
+          "note": "Payments asks notification-service to confirm the deposit."
+        }
+      ]
     },
     {
       "code": "1.3.3",
@@ -173,7 +191,13 @@
         "from": "svc:payments-service",
         "kind": "kafka.produce",
         "to": "topic:payments.settled.v1"
-      }
+      },
+      "handsOffTo": [
+        {
+          "process": "L1.3.4",
+          "note": "The ledger posts the deposit from the settled-payment event."
+        }
+      ]
     },
     {
       "code": "1.3.4",
