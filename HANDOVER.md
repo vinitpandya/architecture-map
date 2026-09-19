@@ -31,7 +31,7 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 307 assertions
+npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 312 assertions
 npm run build && npm run verify:ui   # the checks that need a browser — 93 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
@@ -72,7 +72,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 307 assertions across four stages, all passing.**
+**`npm run verify` — 312 assertions across four stages, all passing.**
 
 *Ingest (20, in-process against a fresh database).* A fresh install answers
 `coverage` as two numbers rather than `{total: 0, covered: null}`, which is what
@@ -118,7 +118,7 @@ every placeholder in its body filled — the pack id, the components and the cod
 already taken. `--remove` clears packs,
 processes, the join tables and every process finding.
 
-*Org (114, in-process and over HTTP).* `teamId()` fixes case and separators and
+*Org (119, in-process and over HTTP).* `teamId()` fixes case and separators and
 deliberately does not merge `Trading Team` into `trading`. A service takes its
 own team, a database its owner's, an endpoint its exposer's, a cache its single
 writing team's; an external, a contract, an unproduced topic, a two-writer cache
@@ -133,7 +133,9 @@ rolled-up handoff keeps the leaf pair's team rather than the ancestor's. `L2`
 hands off to `L3` over two topics, one agreed and one nobody declared. The three
 demo defects fire exactly once each. `/api/team`, `/api/teams` and
 `/api/handoffs` answer with both ends resolved, `graph?teams=` narrows, and
-searching a team's name finds the team and its processes.
+searching a team's name finds the team and its processes. A registry with two
+entries meaning one team, a department nothing declares and an entry with no
+usable id reports exactly those three.
 
 *Packs (50, in-process).* The situations the demo estate cannot contain, because
 its packs are well-formed on purpose. A pack whose `pack` field is not a string

@@ -111,6 +111,14 @@ a manifest, because it describes the organisation rather than the code.
 optional and references a `departments[].id`. `description` and `contact` are for
 the team page.
 
+**The registry checks itself.** `teamId()` collapsing two spellings into one
+team is the point of it, but two *entries* meaning one team is a mistake in the
+file rather than a merge the author asked for — and it used to happen silently,
+last writer winning. Same for a `department` no department entry declares. These
+are problems with a file, not the estate disagreeing with itself, so they are
+not `drift`: `/api/teams` carries a `problems` array and the Teams page renders
+it, which is the page somebody would be on when they fixed it.
+
 **Absence is graceful.** With no `teams.json`, teams are whatever the ingested
 data says — ids normalised out of the raw strings, display names taken from the
 raw strings — and `unknown-team` never fires. This is the same shape as
@@ -633,8 +641,10 @@ checkable without the real repositories.
 - With no `teams.json`, `/api/teams` answers `configured: false`, lists the nine
   teams the data contains — the eight real ones and `risk-ops` — and
   `unknown-team` does not fire.
-- With the demo `teams.json`, all eight are `registered=1` and sit in two
-  departments.
+- With the demo `teams.json`, all eight are `registered=1`, they sit in two
+  departments, and `/api/teams` reports no problems with the file.
+- A registry with two entries meaning one team, a `department` nothing declares,
+  and an entry with no usable id reports exactly those three and nothing else.
 - `teamId()` maps `Trading`, ` trading ` and `TRADING` to `trading`, and
   `Trading Team` to `trading-team` — it fixes case and separators and does not
   guess.

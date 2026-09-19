@@ -1408,6 +1408,7 @@ if (stage === 'org') {
 
     const { body: all } = await get('/teams')
     is('/api/teams says the registry is configured', all.configured, true)
+    is('  …and the demo registry has nothing wrong with it', all.problems.length, 0)
     is('  …and lists both departments', all.departments.length, 2)
     is('  …and every team, registered or not', all.teams.length, 9)
     const riskOps = all.teams.find((t) => t.id === 'risk-ops')
@@ -1517,6 +1518,47 @@ if (stage === 'org') {
     is('  …and the handoff count', relinked.handoffs, 9)
 
     server.close()
+  }
+
+  /* ──── the registry checks itself.
+
+     teamId() is what collapses two spellings into one team — which is the
+     point of it — but two entries meaning one team is a mistake in the file,
+     not a merge the author asked for. It used to happen silently, last writer
+     winning, and a misspelt `department` quietly became no department at all.
+     These are problems with a file rather than the estate disagreeing with
+     itself, so they are served beside the teams and not as drift. */
+  {
+    const broken = path.join(process.env.DATA_DIR, 'broken-teams.json')
+    const good = JSON.parse(fs.readFileSync(path.join(ROOT, 'demo', 'teams.json'), 'utf8'))
+    fs.writeFileSync(
+      broken,
+      JSON.stringify({
+        departments: good.departments,
+        teams: [
+          ...good.teams,
+          { id: 'Trading', name: 'Trading Renamed', department: 'trading-platfrom' },
+          { name: 'No id at all' },
+        ],
+      })
+    )
+    const probe = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `const { rebuildTeams, registryProblems } = await import('${path.join(ROOT, 'server', 'src', 'teams.js')}')
+         rebuildTeams()
+         console.log(JSON.stringify(registryProblems()))`,
+      ],
+      { encoding: 'utf8', env: { ...process.env, TEAMS_FILE: broken } }
+    )
+    const found = JSON.parse(probe.stdout.trim().split('\n').pop() || '[]')
+    const kinds = found.map((p) => p.kind).sort()
+    is('two entries meaning one team is reported', kinds.filter((k) => k === 'duplicate-team').length, 1)
+    is('  …a department nothing declares is reported', kinds.filter((k) => k === 'unknown-department').length, 1)
+    is('  …and an entry with no usable id is reported', kinds.filter((k) => k === 'no-id').length, 1)
+    is('  …and nothing else is', found.length, 3)
   }
 
   /* ---- removal takes Layer C with it */

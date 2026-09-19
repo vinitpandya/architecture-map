@@ -13,7 +13,12 @@ import { full } from '../lib/format'
  * it is a typo" is the most useful thing this page can tell them.
  */
 export function TeamsPage() {
-  const { data } = useQuery<{ configured: boolean; departments: Department[]; teams: Team[] }>('/teams')
+  const { data } = useQuery<{
+    configured: boolean
+    problems: { kind: string; id?: string; detail: string }[]
+    departments: Department[]
+    teams: Team[]
+  }>('/teams')
   const { status } = useScope()
   if (!data) return null
 
@@ -50,6 +55,19 @@ export function TeamsPage() {
             canonical id, a display name and a department. Until then nothing can tell a new team
             from a misspelt one, which is why none of them is reported below.
           </p>
+        </Card>
+      )}
+
+      {(data.problems ?? []).length > 0 && (
+        <Card
+          title={`${data.problems.length} ${data.problems.length === 1 ? 'problem' : 'problems'} in teams.json`}
+          sub="The registry exists to catch naming drift, and it cannot catch it in its own contents"
+        >
+          <ul className="stack" style={{ gap: 6, margin: 0, paddingLeft: 18, fontSize: 13 }}>
+            {data.problems.map((p, i) => (
+              <li key={`${i}:${p.kind}`}>{p.detail}</li>
+            ))}
+          </ul>
         </Card>
       )}
 

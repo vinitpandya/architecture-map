@@ -52,8 +52,29 @@ export const registryConfigured = () => fs.existsSync(TEAMS_FILE)
  * unknown-team finding reports. Dropping it instead would leave the component
  * showing a bare id with nowhere to click.
  */
+/**
+ * What is wrong with the registry file itself.
+ *
+ * The registry exists to catch naming drift, and it could not catch it in its
+ * own contents: two entries normalising to one id collapsed silently, last
+ * writer winning, and a misspelt `department` quietly became no department at
+ * all. These are operator problems with a file rather than the estate
+ * disagreeing with itself, so they are not `drift` — they are served beside the
+ * teams, on the page where somebody would fix them.
+ */
+const problems = []
+
+export const registryProblems = () => [...problems]
+
 export const rebuildTeams = db.transaction(() => {
   const reg = readRegistry() ?? {}
+  problems.length = 0
+  if (registryConfigured() && !readRegistry()) {
+    problems.push({
+      kind: 'unreadable',
+      detail: 'teams.json is not readable JSON, so no team is registered. The map works without it.',
+    })
+  }
 
   db.prepare('DELETE FROM teams').run()
   db.prepare('DELETE FROM departments').run()
@@ -61,9 +82,21 @@ export const rebuildTeams = db.transaction(() => {
   const dept = db.prepare(
     'INSERT OR REPLACE INTO departments (id, name, description) VALUES (?, ?, ?)'
   )
+  const seenDept = new Set()
   for (const d of Array.isArray(reg.departments) ? reg.departments : []) {
     const id = teamId(d?.id)
-    if (!id) continue
+    if (!id) {
+      problems.push({ kind: 'no-id', detail: `A department entry has no usable id: ${JSON.stringify(d)}` })
+      continue
+    }
+    if (seenDept.has(id)) {
+      problems.push({
+        kind: 'duplicate-department',
+        id,
+        detail: `Two department entries both mean "${id}". The later one wins and the earlier is lost.`,
+      })
+    }
+    seenDept.add(id)
     dept.run(id, String(d.name ?? d.id), d.description ?? null)
   }
 
@@ -72,10 +105,35 @@ export const rebuildTeams = db.transaction(() => {
     `INSERT OR REPLACE INTO teams (id, name, department_id, description, contact, registered, source)
      VALUES (?, ?, ?, ?, ?, ?, ?)`
   )
+  const seenTeam = new Set()
   for (const t of Array.isArray(reg.teams) ? reg.teams : []) {
     const id = teamId(t?.id)
-    if (!id) continue
+    if (!id) {
+      problems.push({ kind: 'no-id', detail: `A team entry has no usable id: ${JSON.stringify(t)}` })
+      continue
+    }
+    // `teamId()` is what collapses them, which is the whole point of it — but
+    // two entries meaning one team is a mistake in the file, not a merge the
+    // author asked for.
+    if (seenTeam.has(id)) {
+      problems.push({
+        kind: 'duplicate-team',
+        id,
+        detail: `Two team entries both mean "${id}". The later one wins and the earlier is lost, ` +
+          `so whichever name, department and contact you are reading may not be the one you edited.`,
+      })
+    }
+    seenTeam.add(id)
+
     const dep = teamId(t.department)
+    if (dep && !known.has(dep)) {
+      problems.push({
+        kind: 'unknown-department',
+        id,
+        detail: `${String(t.name ?? id)} names the department "${t.department}", and no department ` +
+          `entry declares it. The team is listed under no department instead.`,
+      })
+    }
     team.run(id, String(t.name ?? t.id), dep && known.has(dep) ? dep : null, t.description ?? null, t.contact ?? null, 1, 'registry')
   }
 

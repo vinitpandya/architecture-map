@@ -3,7 +3,7 @@ import path from 'node:path'
 import express from 'express'
 import { ROOT, INBOX_DIR } from './config.js'
 import { db, getConfig, setConfig, hasData } from './db.js'
-import { registryConfigured, teamId } from './teams.js'
+import { registryConfigured, registryProblems, teamId } from './teams.js'
 import { defaultPageLayout, instantiateLayout, templateFor } from './pageTemplates.js'
 
 export const router = express.Router()
@@ -1093,6 +1093,9 @@ router.get('/teams', wrap(async (req, res) => {
     // Same shape as /api/repos: the app works without a registry and says so,
     // rather than pretending an empty org chart.
     configured: registryConfigured(),
+    // What is wrong with the file itself. The registry exists to catch naming
+    // drift and could not catch it in its own contents.
+    problems: registryProblems(),
     departments: db.prepare('SELECT id, name, description FROM departments ORDER BY name').all(),
     teams: db
       .prepare(`${TEAM_SELECT} ORDER BY t.registered DESC, t.name`)
