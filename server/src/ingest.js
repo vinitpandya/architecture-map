@@ -345,6 +345,7 @@ export function rebuildSearch() {
 
   const nodes = db.prepare('SELECT * FROM nodes').all()
   const named = new Map(nodes.map((n) => [n.id, n.name]))
+  const teamNames = new Map(db.prepare('SELECT id, name FROM teams').all().map((t) => [t.id, t.name]))
   const label = (id) => named.get(id) ?? id.slice(id.indexOf(':') + 1)
 
   const write = db.transaction(() => {
@@ -400,6 +401,10 @@ export function rebuildSearch() {
         p.trigger,
         p.outcome,
         p.owner,
+        // The resolved team as well as the raw owner, so searching a team's
+        // display name finds its processes even when the pack wrote the id.
+        p.team_id,
+        teamNames.get(p.team_id),
         p.actor,
         p.notes,
         ...(parseList(p.tags)),
@@ -410,6 +415,27 @@ export function rebuildSearch() {
         ...components.map((id) => named.get(id)).filter(Boolean),
       ]
       add.run('process', p.id, `L${p.code} · ${p.name}`, body.filter(Boolean).join('\n'), p.owner ?? '')
+    }
+
+    /* Teams. A subject kind of its own, because "who owns this" is a thing
+       people search for by name, and the answer is a page. */
+    for (const t of db
+      .prepare(
+        `SELECT t.*, d.name AS department FROM teams t LEFT JOIN departments d ON d.id = t.department_id`
+      )
+      .all()) {
+      const owns = db.prepare('SELECT id, name FROM nodes WHERE team_id = ?').all(t.id)
+      const runs = db.prepare('SELECT code, name FROM processes WHERE team_id = ?').all(t.id)
+      const body = [
+        t.id,
+        t.name,
+        t.department,
+        t.description,
+        t.contact,
+        ...owns.flatMap((n) => [n.id, n.name]),
+        ...runs.flatMap((r) => [`L${r.code}`, r.name]),
+      ]
+      add.run('team', `team:${t.id}`, t.name, body.filter(Boolean).join('\n'), t.id)
     }
   })
   write()

@@ -74,6 +74,10 @@ export type GraphNode = {
   team: string | null
   ownerRepo: string | null
   orphan: boolean
+  /** The resolved team — a topic's from its producer, an endpoint's from its
+   *  exposer. `team` is what the scan wrote; this is what joins. */
+  teamId?: string | null
+  teamName?: string | null
   degree?: number
   hidden?: boolean
   confirmed?: boolean
@@ -129,6 +133,8 @@ export type Status = {
     processPacks: number
     quarantinedPacks: number
   }
+  teams: { total: number; registered: number; unregistered: number; departments: number }
+  handoffs: { total: number; crossTeam: number; undocumented: number }
   coverage: { covered: number; total: number }
   driftByKind: Record<string, number>
   repos: {
@@ -200,6 +206,9 @@ export type Process = {
   componentCount: number
   /** What this process names that the map does not have. Shown, never hidden. */
   unresolved: { node: boolean; edge: boolean; edgeFrom: boolean; edgeTo: boolean }
+  /** The resolved team, and whether the process named it or inherited it. */
+  teamId?: string | null
+  teamVia?: 'owner' | 'inherited' | null
 }
 
 export type ProcessTouch = {
@@ -221,6 +230,9 @@ export type ProcessDetail = {
   components: ProcessComponent[]
   edges: (GraphEdge & { via: 'interaction' | 'rollup' })[]
   services: ProcessComponent[]
+  /** Handoffs out of, into, and entirely inside this process. */
+  links: { out: Handoff[]; in: Handoff[]; inside: Handoff[] }
+  teams: TeamReach[]
   drift: DriftFinding[]
   pack: ProcessPack | null
 }
@@ -256,6 +268,71 @@ export type IngestResult = {
   counts?: Record<string, number>
 }
 
+/* ------------------------------------------------------- layer C */
+
+export type Department = { id: string; name: string; description: string | null }
+
+export type Team = {
+  id: string
+  name: string
+  department: { id: string; name: string } | null
+  description: string | null
+  contact: string | null
+  /** In teams.json. False means the data mentions it and the registry does not. */
+  registered: boolean
+  /** The most authoritative thing that produced the id. */
+  source: 'registry' | 'component' | 'process'
+  components: number
+  processes: number
+  handoffsOut: number
+  handoffsIn: number
+}
+
+/** One end of a handoff, resolved so a table needs no second round trip. */
+export type HandoffEnd = {
+  id: string
+  code: string
+  name: string
+  teamId: string | null
+  teamName: string | null
+}
+
+export type Handoff = {
+  id: string
+  from: HandoffEnd
+  to: HandoffEnd
+  kind: 'kafka' | 'declared'
+  /** The topic that carries it. Null on a declared handoff. */
+  viaNode: string | null
+  via: 'interaction' | 'rollup'
+  declared: boolean
+  derived: boolean
+  /** How much the topology corroborates a declared claim. */
+  support: 'kafka' | 'component' | 'none'
+  crossTeam: boolean
+  fromEdgeId: string | null
+  toEdgeId: string | null
+  note: string | null
+  firstSeen: string
+}
+
+/** Which team a process reaches, and what reaches them. */
+export type TeamReach = {
+  id: string
+  name: string | null
+  via: 'owner' | 'component' | 'handoff'
+  viaNode: string
+  registered: boolean
+}
+
+export type TeamDetail = {
+  team: Team
+  components: GraphNode[]
+  processes: Process[]
+  handoffs: { out: Handoff[]; in: Handoff[] }
+  reaches: { team_id: string; name: string | null; n: number }[]
+}
+
 export type CoverageRow = {
   node: GraphNode
   processes: { code: string; name: string; level: number; via: ProcessTouch['via'] }[]
@@ -289,14 +366,14 @@ export type ContractVersions = {
 }
 
 export type SearchHit = {
-  subject_kind: 'node' | 'edge' | 'unresolved' | 'process'
+  subject_kind: 'node' | 'edge' | 'unresolved' | 'process' | 'team'
   subject_id: string
   title: string
   repo: string
   /** The FTS5 highlight of the matching text, with <mark> already in it. */
   snippet: string
   /** Node kind for a node hit, otherwise the subject kind. */
-  kind: NodeKind | 'edge' | 'unresolved' | 'process'
+  kind: NodeKind | 'edge' | 'unresolved' | 'process' | 'team'
   /** Both ends of an edge hit; null on anything else. */
   from: string | null
   to: string | null

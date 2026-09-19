@@ -9,10 +9,12 @@ repos.json
 .DS_Store
 tsconfig.tsbuildinfo
 
-# Scratch probes written into the repo root while working — browser walkthroughs,
-# throwaway packs. Never part of the build, and six of them reached a commit
-# through `git add -A` before this rule existed.
-/.*.mjs
+# Scratch probes written into the repo root while working — browser
+# walkthroughs, throwaway packs, one-off queries. Never part of the build; the
+# real scripts live in server/scripts/. Six of them reached a commit through
+# `git add -A` before this rule existed, and two more when it only covered the
+# dot-prefixed ones.
+/*.mjs
 /.probe-*.json
 
 # The live team registry is per deployment; the template is teams.example.json

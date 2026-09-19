@@ -1391,6 +1391,134 @@ if (stage === 'org') {
     0
   )
 
+  /* ──────────────────────── §10 Phase 15: the read API, over HTTP */
+  {
+    const express = (await import('express')).default
+    const { router } = await import('../src/routes.js')
+    const app = express()
+    app.use(express.json({ limit: '16mb' }))
+    app.use('/api', router)
+    const server = app.listen(0)
+    await new Promise((r) => server.once('listening', r))
+    const base = `http://127.0.0.1:${server.address().port}/api`
+    const get = async (p) => {
+      const res = await fetch(`${base}${p}`)
+      return { status: res.status, body: await res.json() }
+    }
+
+    const { body: all } = await get('/teams')
+    is('/api/teams says the registry is configured', all.configured, true)
+    is('  …and lists both departments', all.departments.length, 2)
+    is('  …and every team, registered or not', all.teams.length, 9)
+    const riskOps = all.teams.find((t) => t.id === 'risk-ops')
+    is('  …marking the unregistered one', riskOps?.registered, false)
+    is('  …and saying a pack is all that names it', riskOps?.source, 'process')
+    is('  …which owns nothing in the estate', riskOps?.components, 0)
+
+    const { body: wallet } = await get('/team?id=wallet')
+    is('/api/team lists what it owns', wallet.components.length > 0, true)
+    is('  …what it runs', wallet.processes.length, 4)
+    is('  …who it hands off to', wallet.handoffs.out.length, 2)
+    is('  …and who hands off to it', wallet.handoffs.in.length, 2)
+    ok(
+      '  …with both ends resolved, so a table needs no second call',
+      wallet.handoffs.out.every((h) => h.to.name && h.to.teamName),
+      JSON.stringify(wallet.handoffs.out[0])
+    )
+    is('an unknown team is a 404', (await get('/team?id=nobody')).status, 404)
+    is('  …and an L-prefixed id still normalises', (await get('/team?id=Trading')).status, 200)
+
+    const { body: hand } = await get('/handoffs?crossTeam=true')
+    is('/api/handoffs returns the direct cross-team rows', hand.handoffs.length, 8)
+    is(
+      '  …and filters to one team',
+      (await get('/handoffs?team=wallet')).body.handoffs.length,
+      4
+    )
+    is(
+      '  …and to the unsupported ones',
+      (await get('/handoffs?support=none')).body.handoffs.length,
+      1
+    )
+
+    /* the sentence the whole feature exists to produce */
+    const { body: two } = await get('/process?code=2')
+    const toReporting = two.links.out.filter((h) => h.to.code === '3')
+    // Two rows, not one: the pair hands off over two topics, and the id carries
+    // `via_node` precisely so those stay two facts.
+    is('L2 hands off to L3', toReporting.length, 2)
+    const matched = toReporting.find((h) => h.viaNode === 'topic:orders.matched.v1')
+    ok('  …over orders.matched.v1', !!matched, JSON.stringify(toReporting.map((h) => h.viaNode)))
+    is('  …which the pack agrees with', matched?.declared && matched?.derived, true)
+    const balance = toReporting.find((h) => h.viaNode === 'topic:wallet.balance.changed.v1')
+    is('  …and over wallet.balance.changed.v1, which nobody declared', balance?.declared, false)
+
+    /* the list a level 1 would otherwise show nothing in */
+    const { body: one1 } = await get('/process?code=1')
+    is('a level 1 sees the handoffs inside it', one1.links.inside.length, 3)
+    ok(
+      '  …every one of them crossing a team',
+      one1.links.inside.every((h) => h.crossTeam),
+      JSON.stringify(one1.links.inside.map((h) => [h.from.code, h.to.code]))
+    )
+    is('  …and reaches five other teams', one1.teams.filter((t) => t.via !== 'owner').map((t) => t.id).filter((v, i, a) => a.indexOf(v) === i).length, 5)
+
+    /* the HTTP case, on the page */
+    const { body: check } = await get('/process?code=2.1.3')
+    const identity = check.teams.filter((t) => t.id === 'identity')
+    ok(
+      'a process that calls an endpoint reaches that team through it',
+      identity.some((t) => t.via === 'component' && t.viaNode.startsWith('api:identity-service/')),
+      JSON.stringify(check.teams)
+    )
+    is('  …and hands off to nobody, because a call is not a handoff', check.links.out.length, 0)
+
+    /* the map, filtered by team */
+    const { body: g } = await get('/graph?teams=trading')
+    ok(
+      'graph?teams= narrows to that team',
+      g.nodes.length > 0 && g.nodes.every((x) => x.teamId === 'trading'),
+      `${g.nodes.length} nodes`
+    )
+    ok('  …and every node carries its team name', g.nodes.every((x) => x.teamName === 'Trading'), '')
+
+    /* search finds a team by name, and its processes */
+    const { body: q } = await get('/search?q=Wallet')
+    ok(
+      'searching a team name finds the team',
+      q.hits.some((h) => h.subject_kind === 'team' && h.subject_id === 'team:wallet'),
+      q.hits.map((h) => h.subject_id).slice(0, 6).join(', ')
+    )
+    is(
+      '  …and kind:team narrows to teams',
+      (await get(`/search?q=${encodeURIComponent('kind:team wallet')}`)).body.hits.every((h) => h.subject_kind === 'team'),
+      true
+    )
+
+    /* an override re-links, rather than leaving every derived column stale */
+    await fetch(`${base}/override`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subjectKind: 'node', subjectId: 'svc:order-service', field: 'team', value: 'risk-ops' }),
+    })
+    is(
+      'an override re-runs the link pass rather than leaving team_id stale',
+      db.prepare(`SELECT team_id FROM nodes WHERE id = 'db:postgres/orders'`).get()?.team_id,
+      'risk-ops'
+    )
+    await fetch(`${base}/override?subjectKind=node&subjectId=svc:order-service&field=team`, { method: 'DELETE' })
+    is('  …and deleting it re-runs the pass too', teamOf('db:postgres/orders'), 'trading')
+
+    const { body: relinked } = await (async () => {
+      const res = await fetch(`${base}/relink`, { method: 'POST' })
+      return { body: await res.json() }
+    })()
+    is('POST /api/relink answers with what it rebuilt', relinked.teams, 8)
+    is('  …and the handoff count', relinked.handoffs, 9)
+
+    server.close()
+  }
+
   /* ---- removal takes Layer C with it */
   const removed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs'), '--remove'], {
     encoding: 'utf8',

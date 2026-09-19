@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, type Process, type ProcessComponent, type ProcessDetail, type ProcessSource } from '../lib/api'
+import { api, type Process, type ProcessComponent, type ProcessDetail, type ProcessSource, type TeamReach, type Handoff } from '../lib/api'
 import { Card, Empty } from '../components/ui'
 import { DataGrid } from '../components/DataGrid'
 import { relative } from '../lib/format'
 import { driftTitle } from '../lib/drift'
+import { HandoffList } from '../components/HandoffList'
 import { ProcessFlow } from '../graph/ProcessFlow'
 import {
   KIND_PLURAL,
@@ -15,6 +16,7 @@ import {
   idValue,
   nodeHref,
   processHref,
+  teamHref,
 } from '../lib/nodes'
 import type { NodeKind } from '../lib/api'
 
@@ -60,7 +62,7 @@ export function ProcessPage() {
     )
   if (!data) return null
 
-  const { process, ancestors, children, components, services, drift, pack } = data
+  const { process, ancestors, children, components, services, links, teams, drift, pack } = data
   const byKind = new Map<string, ProcessComponent[]>()
   for (const c of components) {
     if (!byKind.has(c.kind)) byKind.set(c.kind, [])
@@ -167,6 +169,10 @@ export function ProcessPage() {
         )}
       </Card>
 
+      <TeamsCard process={process} teams={teams} />
+
+      <HandoffsCard process={process} links={links} />
+
       <Card
         title={`Services involved (${services.length})`}
         sub={
@@ -189,7 +195,20 @@ export function ProcessPage() {
                 value: (s) => s.name,
                 render: (s) => <Link to={nodeHref(s.id)}>{s.name}</Link>,
               },
-              { key: 'team', label: 'Team', value: (s) => s.team ?? '' },
+              {
+                key: 'team',
+                label: 'Team',
+                // The resolved team, not the raw string: an endpoint's comes
+                // from its exposer and a topic's from its producer, and the
+                // raw column is empty for everything but a service.
+                value: (s) => s.teamName ?? s.teamId ?? s.team ?? '',
+                render: (s) =>
+                  s.teamId ? (
+                    <Link to={teamHref(s.teamId)}>{s.teamName ?? s.teamId}</Link>
+                  ) : (
+                    <span className="muted">—</span>
+                  ),
+              },
               { key: 'repo', label: 'Repository', value: (s) => s.ownerRepo ?? '' },
               { key: 'via', label: 'Reached', value: (s) => VIA_LABEL[s.via] ?? s.via },
             ]}
@@ -294,6 +313,137 @@ function Step({ process }: { process: Process }) {
       )}
       <Binding process={process} compact />
     </li>
+  )
+}
+
+/**
+ * Who is accountable, and which other teams this process reaches. At level 1
+ * this is the answer to "how many teams does this cross", which used to have to
+ * be counted by eye off the services list.
+ */
+function TeamsCard({ process, teams }: { process: Process; teams: TeamReach[] }) {
+  const owner = teams.find((t) => t.via === 'owner')
+  const others = new Map<string, TeamReach[]>()
+  for (const t of teams) {
+    if (t.via === 'owner') continue
+    if (!others.has(t.id)) others.set(t.id, [])
+    others.get(t.id)!.push(t)
+  }
+
+  return (
+    <Card
+      title="Teams"
+      sub={
+        others.size
+          ? `Owned by one team and reaching ${others.size} other${others.size === 1 ? '' : 's'}`
+          : 'Everything this process touches belongs to its own team'
+      }
+    >
+      <ul className="team-reach">
+        <li>
+          {owner ? (
+            <>
+              <Link to={teamHref(owner.id)} className="pill good">
+                {owner.name ?? owner.id}
+              </Link>
+              <span className="via">
+                accountable{process.teamVia === 'inherited' ? ', inherited from the process above' : ''}
+              </span>
+            </>
+          ) : (
+            <span className="muted" style={{ fontSize: 13 }}>
+              Nobody is named as the owner of this process.
+            </span>
+          )}
+        </li>
+        {[...others].map(([id, rows]) => {
+          const viaComponent = rows.filter((r) => r.via === 'component')
+          const viaHandoff = rows.some((r) => r.via === 'handoff')
+          return (
+            <li key={id}>
+              <Link to={teamHref(id)} className="pill">
+                {rows[0].name ?? id}
+              </Link>
+              <span className="via">
+                {viaHandoff && 'hands off'}
+                {viaHandoff && viaComponent.length > 0 && ', and '}
+                {viaComponent.length > 0 && (
+                  <>
+                    through{' '}
+                    {viaComponent.slice(0, 3).map((r, i) => (
+                      <span key={r.viaNode}>
+                        {i > 0 && ', '}
+                        <Link to={nodeHref(r.viaNode)}>{idValue(r.viaNode)}</Link>
+                      </span>
+                    ))}
+                    {viaComponent.length > 3 && ` and ${viaComponent.length - 3} more`}
+                  </>
+                )}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+    </Card>
+  )
+}
+
+/**
+ * One handoff exists at every level of both its ends, because the rollup says
+ * so — `1.3.2 → 2.4.2` is also `1 → 2.4` and `1 → 2`. Showing all of them
+ * restates one fact three times, which on a level 1 read as three separate
+ * broken handoffs.
+ *
+ * So: one row per counterpart, at the altitude the reader is at. A level 1
+ * hands off to `L2 Order and execution`; a leaf hands off to the leaf that
+ * picks it up. Ties go to the more specific, because that is the one that
+ * names what actually happens.
+ */
+function atMyLevel(handoffs: Handoff[], level: number, far: 'to' | 'from'): Handoff[] {
+  const best = new Map<string, Handoff>()
+  for (const h of handoffs) {
+    const code = h[far].code
+    // Keyed on the carrier as well as the counterpart: one pair genuinely
+    // handing off over two topics is two facts, and collapsing them would hide
+    // one. It is only the SAME handoff restated at three levels that folds.
+    const root = `${code.split('.')[0]}|${h.viaNode ?? ''}`
+    const mine = best.get(root)
+    if (!mine) {
+      best.set(root, h)
+      continue
+    }
+    const score = (c: string) => {
+      const l = c.split('.').length
+      return [Math.abs(l - level), -l]
+    }
+    const a = score(code)
+    const b = score(mine[far].code)
+    if (a[0] < b[0] || (a[0] === b[0] && a[1] < b[1])) best.set(root, h)
+  }
+  return [...best.values()]
+}
+
+/**
+ * Three lists, not two. `inside` is the handoffs whose BOTH ends are beneath
+ * this process: the rollup deliberately skips a pair where one end contains the
+ * other, so without it a level 1 that crosses four teams shows none of them.
+ */
+function HandoffsCard({ process, links }: { process: Process; links: ProcessDetail['links'] }) {
+  const out = atMyLevel(links.out, process.level, 'to')
+  const into = atMyLevel(links.in, process.level, 'from')
+  const total = out.length + into.length + links.inside.length
+  if (!total) return null
+  return (
+    <Card
+      title={`Handoffs (${total})`}
+      sub="Where this process ends and another begins. Derived from the events the code publishes; declared where the code cannot show it"
+    >
+      <div className="stack" style={{ gap: 14 }}>
+        <HandoffList title="Hands off to" handoffs={out} side="to" />
+        <HandoffList title="Picked up from" handoffs={into} side="from" />
+        <HandoffList title="Inside this process" handoffs={links.inside} side="both" />
+      </div>
+    </Card>
   )
 }
 

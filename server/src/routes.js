@@ -3,6 +3,7 @@ import path from 'node:path'
 import express from 'express'
 import { ROOT, INBOX_DIR } from './config.js'
 import { db, getConfig, setConfig, hasData } from './db.js'
+import { registryConfigured, teamId } from './teams.js'
 import { defaultPageLayout, instantiateLayout, templateFor } from './pageTemplates.js'
 
 export const router = express.Router()
@@ -68,7 +69,12 @@ const nodeRow = (r) => ({
   path: r.path,
   contractType: r.contract_type,
   language: r.language,
+  // `team` is what the scan wrote; `teamId` is what everything joins on, and
+  // it is resolved — a topic's comes from its producer, an endpoint's from its
+  // exposer. `teamName` saves every caller a lookup.
   team: r.team,
+  teamId: r.team_id ?? null,
+  teamName: r.team_name ?? null,
   ownerRepo: r.owner_repo,
   orphan: !!r.orphan,
   degree: r.degree ?? undefined,
@@ -132,6 +138,25 @@ router.get('/status', wrap(async (req, res) => {
         `SELECT COUNT(*) AS total,
                 COALESCE(SUM(CASE WHEN id IN (SELECT node_id FROM process_components) THEN 1 ELSE 0 END), 0) AS covered
          FROM nodes WHERE kind IN ('service', 'kafka.topic')`
+      )
+      .get(),
+    teams: db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                COALESCE(SUM(registered), 0) AS registered,
+                COALESCE(SUM(1 - registered), 0) AS unregistered,
+                (SELECT COUNT(*) FROM departments) AS departments
+         FROM teams`
+      )
+      .get(),
+    // Over the direct rows: a rolled-up handoff is the same fact one level up,
+    // and counting them would treble a single crossing.
+    handoffs: db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                COALESCE(SUM(cross_team), 0) AS crossTeam,
+                COALESCE(SUM(CASE WHEN derived = 1 AND declared = 0 AND cross_team = 1 THEN 1 ELSE 0 END), 0) AS undocumented
+         FROM process_links WHERE via = 'interaction'`
       )
       .get(),
     driftByKind,
@@ -199,7 +224,9 @@ router.get('/nodes', wrap(async (req, res) => {
 
 router.get('/node', wrap(async (req, res) => {
   const id = String(req.query.id || '')
-  const row = db.prepare('SELECT * FROM nodes WHERE id = ?').get(id)
+  const row = db
+    .prepare('SELECT n.*, t.name AS team_name FROM nodes n LEFT JOIN teams t ON t.id = n.team_id WHERE n.id = ?')
+    .get(id)
   if (!row) return res.status(404).json({ error: 'No such node' })
 
   const ov = overrideMap('node')
@@ -430,6 +457,7 @@ const SUBJECT_KIND = {
   node: 'node',
   process: 'process',
   proc: 'process',
+  team: 'team',
 }
 
 /** `kind:topic settled` — the filter comes off the front, the rest is the query. */
@@ -538,6 +566,7 @@ router.get('/graph', wrap(async (req, res) => {
     req.query.depth === 'all' || asked === 0 ? Infinity : Number.isFinite(asked) && asked > 0 ? asked : 1
   const kinds = list(req.query.kinds)
   const repos = list(req.query.repos)
+  const teams = list(req.query.teams)
   const includeExternal = req.query.includeExternal !== 'false'
   // §8: "Default: all but `contract`" — contracts clutter the default view and
   // are opt-in. An explicit `kinds` says exactly what it wants; an absent one
@@ -599,9 +628,9 @@ router.get('/graph', wrap(async (req, res) => {
       // `degree` per §8's node shape. It is the count over the whole estate,
       // not within the returned subgraph: it answers "how connected is this
       // thing", which does not change with what you are currently looking at.
-      `SELECT n.*,
+      `SELECT n.*, t.name AS team_name,
               (SELECT COUNT(*) FROM edges e WHERE e.from_id = n.id OR e.to_id = n.id) AS degree
-       FROM nodes n`
+       FROM nodes n LEFT JOIN teams t ON t.id = n.team_id`
     )
     .all()
     .filter((n) => {
@@ -612,6 +641,9 @@ router.get('/graph', wrap(async (req, res) => {
       if (kinds.length && !kinds.includes(n.kind) && n.id !== focus) return false
       if (hideContracts && n.kind === 'contract' && n.id !== focus) return false
       if (repos.length && !repos.includes(n.owner_repo) && n.id !== focus) return false
+      // A teamless node is dropped by a team filter rather than kept: "show me
+      // trading's estate" should not include everything nobody owns.
+      if (teams.length && !teams.includes(n.team_id) && n.id !== focus) return false
       if (!includeExternal && (n.orphan || n.kind === 'external') && n.id !== focus) return false
       return true
     })
@@ -832,6 +864,8 @@ const processRow = (r) => ({
   tags: parse(r.tags, []),
   source: parse(r.source, null),
   packId: r.pack_id,
+  teamId: r.team_id ?? null,
+  teamVia: r.team_via ?? null,
   node: r.node_id,
   // Kept verbatim whether or not it resolved: an interaction the code does not
   // have still says what the author meant, and hiding it hides the finding.
@@ -928,7 +962,10 @@ router.get('/process', wrap(async (req, res) => {
   const ov = overrideMap('node')
   const components = db
     .prepare(
-      `SELECT n.*, c.via FROM process_components c JOIN nodes n ON n.id = c.node_id
+      `SELECT n.*, c.via, t.name AS team_name
+       FROM process_components c
+       JOIN nodes n ON n.id = c.node_id
+       LEFT JOIN teams t ON t.id = n.team_id
        WHERE c.process_id = ? ORDER BY n.kind, n.name`
     )
     .all(row.id)
@@ -952,6 +989,35 @@ router.get('/process', wrap(async (req, res) => {
     // The distinct services across the whole subtree: at level 1 this is the
     // answer to "how many teams does this process cross".
     services: components.filter((c) => c.kind === 'service'),
+    // Three lists, not two. `inside` is the handoffs whose BOTH ends are
+    // beneath this process — the rollup deliberately skips a pair where one end
+    // contains the other, so without it a level 1 that crosses four teams shows
+    // no handoffs at all.
+    links: {
+      out: db
+        .prepare(`${HANDOFF_SELECT} WHERE l.from_id = ? ORDER BY b.sort_key`)
+        .all(row.id)
+        .map(handoffRow),
+      in: db
+        .prepare(`${HANDOFF_SELECT} WHERE l.to_id = ? ORDER BY a.sort_key`)
+        .all(row.id)
+        .map(handoffRow),
+      inside: db
+        .prepare(
+          `${HANDOFF_SELECT} WHERE l.via = 'interaction'
+             AND a.code LIKE ? AND b.code LIKE ? ORDER BY a.sort_key, b.sort_key`
+        )
+        .all(`${code}.%`, `${code}.%`)
+        .map(handoffRow),
+    },
+    teams: db
+      .prepare(
+        `SELECT pt.team_id AS id, t.name, pt.via, pt.via_node AS viaNode, t.registered
+         FROM process_teams pt LEFT JOIN teams t ON t.id = pt.team_id
+         WHERE pt.process_id = ? ORDER BY pt.via, t.name, pt.via_node`
+      )
+      .all(row.id)
+      .map((r) => ({ ...r, registered: !!r.registered })),
     drift: db.prepare('SELECT * FROM drift WHERE subject_id = ?').all(row.id).map((r) => ({ ...r, data: parse(r.data, null) })),
     // `source` is JSON in the column and an object everywhere else it is
     // returned — /api/process-packs parses it, processRow parses it, and the
@@ -962,6 +1028,152 @@ router.get('/process', wrap(async (req, res) => {
         .get(row.pack_id)
       return r ? { ...r, source: parse(r.source, null) } : null
     })(),
+  })
+}))
+
+/* ───────────────────────────────────────────────── teams and handoffs */
+
+/** A handoff with both ends resolved, so a table needs no second round trip. */
+const HANDOFF_SELECT = `
+  SELECT l.*,
+         a.code AS from_code, a.name AS from_name,
+         b.code AS to_code,   b.name AS to_name,
+         ta.name AS from_team_name, tb.name AS to_team_name
+  FROM process_links l
+  JOIN processes a ON a.id = l.from_id
+  JOIN processes b ON b.id = l.to_id
+  LEFT JOIN teams ta ON ta.id = l.from_team_id
+  LEFT JOIN teams tb ON tb.id = l.to_team_id`
+
+const handoffRow = (r) => ({
+  id: r.id,
+  from: { id: r.from_id, code: r.from_code, name: r.from_name, teamId: r.from_team_id, teamName: r.from_team_name },
+  to: { id: r.to_id, code: r.to_code, name: r.to_name, teamId: r.to_team_id, teamName: r.to_team_name },
+  kind: r.kind,
+  viaNode: r.via_node,
+  via: r.via,
+  declared: !!r.declared,
+  derived: !!r.derived,
+  support: r.support,
+  crossTeam: !!r.cross_team,
+  fromEdgeId: r.from_edge_id,
+  toEdgeId: r.to_edge_id,
+  note: r.note,
+  firstSeen: r.first_seen,
+})
+
+const teamRow = (r) => ({
+  id: r.id,
+  name: r.name,
+  department: r.department_id ? { id: r.department_id, name: r.departmentName } : null,
+  description: r.description,
+  contact: r.contact,
+  registered: !!r.registered,
+  // Which of the three things produced the id. A team whose only source is a
+  // pack is named in a document and owns nothing in the estate.
+  source: r.source,
+  components: r.components ?? 0,
+  processes: r.processes ?? 0,
+  handoffsOut: r.handoffs_out ?? 0,
+  handoffsIn: r.handoffs_in ?? 0,
+})
+
+const TEAM_SELECT = `
+  SELECT t.*, d.name AS departmentName,
+         (SELECT COUNT(*) FROM nodes n WHERE n.team_id = t.id) AS components,
+         (SELECT COUNT(*) FROM processes p WHERE p.team_id = t.id) AS processes,
+         (SELECT COUNT(*) FROM process_links l
+           WHERE l.via = 'interaction' AND l.cross_team = 1 AND l.from_team_id = t.id) AS handoffs_out,
+         (SELECT COUNT(*) FROM process_links l
+           WHERE l.via = 'interaction' AND l.cross_team = 1 AND l.to_team_id = t.id) AS handoffs_in
+  FROM teams t LEFT JOIN departments d ON d.id = t.department_id`
+
+router.get('/teams', wrap(async (req, res) => {
+  res.json({
+    // Same shape as /api/repos: the app works without a registry and says so,
+    // rather than pretending an empty org chart.
+    configured: registryConfigured(),
+    departments: db.prepare('SELECT id, name, description FROM departments ORDER BY name').all(),
+    teams: db
+      .prepare(`${TEAM_SELECT} ORDER BY t.registered DESC, t.name`)
+      .all()
+      .map(teamRow),
+  })
+}))
+
+router.get('/team', wrap(async (req, res) => {
+  const id = teamId(one(req.query.id))
+  const row = db.prepare(`${TEAM_SELECT} WHERE t.id = ?`).get(id)
+  if (!row) return res.status(404).json({ error: 'No such team' })
+
+  const ov = overrideMap('node')
+  res.json({
+    team: teamRow(row),
+    components: db
+      .prepare(
+        `SELECT n.*, t.name AS team_name FROM nodes n LEFT JOIN teams t ON t.id = n.team_id
+         WHERE n.team_id = ? ORDER BY n.kind, n.name`
+      )
+      .all(id)
+      .map((r) => applyNodeOverrides(nodeRow(r), ov)),
+    processes: db
+      .prepare(`${PROCESS_SELECT} WHERE p.team_id = ? ORDER BY p.sort_key`)
+      .all(id)
+      .map(processRow),
+    handoffs: {
+      out: db
+        .prepare(`${HANDOFF_SELECT} WHERE l.via = 'interaction' AND l.cross_team = 1 AND l.from_team_id = ? ORDER BY a.sort_key`)
+        .all(id)
+        .map(handoffRow),
+      in: db
+        .prepare(`${HANDOFF_SELECT} WHERE l.via = 'interaction' AND l.cross_team = 1 AND l.to_team_id = ? ORDER BY a.sort_key`)
+        .all(id)
+        .map(handoffRow),
+    },
+    // Which teams this one's processes reach, and what reaches them.
+    reaches: db
+      .prepare(
+        `SELECT pt.team_id, t.name, COUNT(*) AS n
+         FROM process_teams pt
+         JOIN processes p ON p.id = pt.process_id
+         LEFT JOIN teams t ON t.id = pt.team_id
+         WHERE p.team_id = ? AND pt.via = 'component'
+         GROUP BY pt.team_id ORDER BY n DESC`
+      )
+      .all(id),
+  })
+}))
+
+/**
+ * Every handoff, filterable. Direct rows by default: a rolled-up one is the
+ * same fact a level up, and a caller counting rows would treble a crossing.
+ */
+router.get('/handoffs', wrap(async (req, res) => {
+  const where = [`l.via = ?`]
+  const args = [one(req.query.via) === 'rollup' ? 'rollup' : 'interaction']
+  if (req.query.crossTeam === 'true') where.push('l.cross_team = 1')
+  if (req.query.crossTeam === 'false') where.push('l.cross_team = 0')
+  const teams = list(req.query.team)
+  if (teams.length) {
+    const marks = teams.map(() => '?').join(',')
+    where.push(`(l.from_team_id IN (${marks}) OR l.to_team_id IN (${marks}))`)
+    args.push(...teams, ...teams)
+  }
+  const supports = list(req.query.support)
+  if (supports.length) {
+    where.push(`l.support IN (${supports.map(() => '?').join(',')})`)
+    args.push(...supports)
+  }
+  if (req.query.code) {
+    const code = normaliseCode(one(req.query.code))
+    where.push('(a.code = ? OR b.code = ?)')
+    args.push(code, code)
+  }
+  res.json({
+    handoffs: db
+      .prepare(`${HANDOFF_SELECT} WHERE ${where.join(' AND ')} ORDER BY a.sort_key, b.sort_key LIMIT ?`)
+      .all(...args, Number(one(req.query.limit)) || 500)
+      .map(handoffRow),
   })
 }))
 

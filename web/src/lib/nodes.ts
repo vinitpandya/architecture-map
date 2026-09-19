@@ -94,6 +94,16 @@ export const processHref = (code: string) => `/process?code=${encodeURIComponent
  */
 export const displayCode = (code: string) => (/^[Ll]/.test(code) ? `L${code.slice(1)}` : `L${code}`)
 
+/** `/team?id=trading`. A team id is a query parameter, like every other id. */
+export const teamHref = (id: string) => `/team?id=${encodeURIComponent(id)}`
+
+/** How a process reached a team, in the reader's terms. */
+export const REACH_LABEL: Record<string, string> = {
+  owner: 'owns it',
+  component: 'uses a component of theirs',
+  handoff: 'hands off to or from them',
+}
+
 /**
  * EDGE_LABEL is written from the service's side — "Consumes", "Reads cache" —
  * which reads backwards once flowDirection() has put the topic or the store

@@ -10,6 +10,8 @@ import { SearchPage } from './pages/Search'
 import { ScanPage } from './pages/Scan'
 import { ManifestsPage } from './pages/Manifests'
 import { ProcessesPage } from './pages/Processes'
+import { TeamsPage } from './pages/Teams'
+import { TeamPage } from './pages/Team'
 import { ProcessPage } from './pages/Process'
 
 /** Fixed order and icons for the seeded built-in pages. */
@@ -41,6 +43,10 @@ function Shell() {
           <NavLink to="/processes" className={({ isActive }) => (isActive ? 'active' : '')}>
             <IconTree />
             Processes
+          </NavLink>
+          <NavLink to="/teams" className={({ isActive }) => (isActive ? 'active' : '')}>
+            <IconPeople />
+            Teams
           </NavLink>
           <NavLink to="/search" className={({ isActive }) => (isActive ? 'active' : '')}>
             <IconList />
@@ -74,6 +80,8 @@ function Shell() {
           <Route path="/node" element={<NodePage />} />
           <Route path="/processes" element={<ProcessesPage />} />
           <Route path="/process" element={<ProcessPage />} />
+          <Route path="/teams" element={<TeamsPage />} />
+          <Route path="/team" element={<TeamPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/scan" element={<ScanPage />} />
           <Route path="/manifests" element={<ManifestsPage />} />
@@ -425,6 +433,18 @@ function IconTree() {
     </svg>
   )
 }
+/** Teams: two people, because a team is the smallest unit that is not one. */
+function IconPeople() {
+  return (
+    <svg {...S}>
+      <circle cx="5.8" cy="5" r="2.3" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M1.8 13.4c0-2.3 1.8-3.8 4-3.8s4 1.5 4 3.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <circle cx="11.4" cy="5.8" r="1.8" stroke="currentColor" strokeWidth="1.3" opacity="0.55" />
+      <path d="M10.2 10c2.1-.5 4 .9 4 3.1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" opacity="0.55" />
+    </svg>
+  )
+}
+
 /** The seeded Process map page: stages of a thing, in order. */
 function IconSteps() {
   return (

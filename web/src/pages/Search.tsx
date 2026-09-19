@@ -3,13 +3,14 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api, type SearchHit } from '../lib/api'
 import { useScope } from '../lib/scope'
 import { Card, Empty } from '../components/ui'
-import { KIND_PLURAL, idValue, nodeHref, processHref } from '../lib/nodes'
+import { KIND_PLURAL, idValue, nodeHref, processHref, teamHref } from '../lib/nodes'
 import type { NodeKind } from '../lib/api'
 
 const GROUP_LABEL: Record<string, string> = {
   edge: 'Relationships',
   unresolved: 'Unresolved references',
   process: 'Business processes',
+  team: 'Teams',
 }
 
 const groupLabel = (kind: string) => GROUP_LABEL[kind] ?? KIND_PLURAL[kind as NodeKind] ?? kind
@@ -21,7 +22,9 @@ const hitHref = (h: SearchHit) =>
     ? nodeHref(h.subject_id)
     : h.subject_kind === 'process'
       ? processHref(h.subject_id.slice(5))
-      : h.to
+      : h.subject_kind === 'team'
+        ? teamHref(h.subject_id.slice(5))
+        : h.to
         ? nodeHref(h.to)
         : null
 
