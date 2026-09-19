@@ -577,9 +577,9 @@ if (stage === 'processes') {
   is('  …and the pack is in the log', n(`SELECT COUNT(*) n FROM process_packs WHERE pack = 'freshness-probe'`), 1)
   db.prepare(`DELETE FROM process_packs WHERE pack = 'freshness-probe'`).run()
   const { rebuildProcesses } = await import('../src/processes.js')
-  const { linkPass: relink } = await import('../src/link.js')
+  const { linkPass } = await import('../src/link.js')
   rebuildProcesses()
-  relink()
+  linkPass()
 
   /* ---- kind: narrows to a heading the search page actually shows */
   const { body: anyOrder } = await get('/search?q=order')
@@ -994,6 +994,135 @@ if (stage === 'packs') {
     'probe-keeper'
   )
 
+  /* ─── layer C: the team and handoff paths the demo estate cannot reach.
+
+     Every one of these is a rule the demo data is too well-formed to exercise,
+     which the polish pass showed is exactly where defects live. */
+
+  /* a leaf with no owner takes its nearest ancestor's, not nothing */
+  ingestProcessPack(
+    envelope('probe-inherit', [
+      { code: '7', name: 'Owned at the top', owner: 'trading' },
+      { code: '7.1', name: 'Owned in the middle', owner: 'wallet' },
+      { code: '7.1.1', name: 'Owned by nobody', node: 'svc:wallet-service' },
+      { code: '7.2', name: 'Owned by nobody either' },
+      { code: '7.2.1', name: 'Two levels from an owner' },
+    ]),
+    'probe-inherit.json'
+  )
+  const teamOf = (id) => db.prepare('SELECT team_id, team_via FROM processes WHERE id = ?').get(id)
+  is('a process with an owner uses it', teamOf('proc:7.1')?.team_id, 'wallet')
+  is('  …and says so', teamOf('proc:7.1')?.team_via, 'owner')
+  is('a leaf with no owner inherits the nearest ancestor\'s', teamOf('proc:7.1.1')?.team_id, 'wallet')
+  is('  …and says it was inherited', teamOf('proc:7.1.1')?.team_via, 'inherited')
+  is('  …nearest, not the top', teamOf('proc:7.1.1')?.team_id === 'trading', false)
+  is('two levels up still resolves', teamOf('proc:7.2.1')?.team_id, 'trading')
+  is('  …also as inherited', teamOf('proc:7.2.1')?.team_via, 'inherited')
+  is(
+    'a level 2 with no owner is still a finding',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-owner' AND subject_id = 'proc:7.2'`),
+    1
+  )
+  is(
+    '  …but a leaf with no owner is not',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-owner' AND subject_id = 'proc:7.2.1'`),
+    0
+  )
+
+  /* a declared handoff between two level 1s, which is where `support` used to
+     be vacuous: process_components rolls up, so almost any two L1s intersect */
+  ingestProcessPack(
+    envelope('probe-support', [
+      { code: '8', name: 'Claims a handoff to a whole other process', owner: 'trading', handsOffTo: [{ process: 'L9' }] },
+      { code: '8.1', name: 'Does something', node: 'svc:order-service' },
+      { code: '9', name: 'The other one', owner: 'data' },
+      { code: '9.1', name: 'Does something else', node: 'svc:reporting-service' },
+    ]),
+    'probe-support.json'
+  )
+  is(
+    'a declared L1 → L1 handoff with nothing direct in common is unsupported',
+    db.prepare(`SELECT support FROM process_links WHERE from_id = 'proc:8' AND to_id = 'proc:9'`).get()?.support,
+    'none'
+  )
+  is(
+    '  …and is reported, which a rolled-up component set would have hidden',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-unsupported' AND subject_id = 'proc:8'`),
+    1
+  )
+
+  /* a declaration written one level ABOVE the derived leaf handoff.
+
+     Agreement is a property of the pair, not of whichever row happened to
+     exist when the declaration was read — which is why the rollup runs before
+     the declarations are matched. */
+  ingestProcessPack(
+    envelope('probe-agree', [
+      { code: '11', name: 'Upstream', owner: 'trading', handsOffTo: [{ process: 'L12' }] },
+      {
+        code: '11.1',
+        name: 'Publishes',
+        owner: 'trading',
+        node: 'svc:order-service',
+        interaction: { from: 'svc:order-service', kind: 'kafka.produce', to: 'topic:orders.placed.v1' },
+      },
+      { code: '12', name: 'Downstream', owner: 'data' },
+      {
+        code: '12.1',
+        name: 'Consumes',
+        owner: 'data',
+        node: 'svc:matching-engine',
+        interaction: { from: 'svc:matching-engine', kind: 'kafka.consume', to: 'topic:orders.placed.v1' },
+      },
+    ]),
+    'probe-agree.json'
+  )
+  ok(
+    'the leaf handoff is derived',
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:11.1' AND to_id = 'proc:12.1' AND derived = 1`) === 1,
+    'no derived leaf link'
+  )
+  is(
+    'a declaration written a level up marks the rolled-up row as agreed',
+    db.prepare(`SELECT declared FROM process_links WHERE from_id = 'proc:11' AND to_id = 'proc:12' AND kind = 'kafka'`).get()?.declared,
+    1
+  )
+  is(
+    '  …rather than adding a second row beside it',
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:11' AND to_id = 'proc:12' AND kind = 'declared'`),
+    0
+  )
+  is(
+    '  …and raises nothing, because the topology agrees',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-unsupported' AND subject_id = 'proc:11'`),
+    0
+  )
+
+  /* an orphan service has no team and no remedy, so it is not a finding */
+  {
+    const orphans = db.prepare(`SELECT id FROM nodes WHERE kind = 'service' AND orphan = 1`).all()
+    ok('the demo estate has no orphan services to confuse this', orphans.length === 0, orphans.map((o) => o.id).join(', '))
+    db.prepare(
+      `INSERT OR REPLACE INTO nodes (id, kind, name, orphan, first_seen, last_seen)
+       VALUES ('svc:somebody-elses-service', 'service', 'Somebody Elses Service', 1, '2026-01-01', '2026-01-01')`
+    ).run()
+    linkPass()
+    is(
+      'an orphan service with no team raises nothing',
+      n(`SELECT COUNT(*) n FROM drift WHERE kind = 'component-no-team' AND subject_id = 'svc:somebody-elses-service'`),
+      0
+    )
+    db.prepare(`UPDATE nodes SET orphan = 0 WHERE id = 'svc:somebody-elses-service'`).run()
+    linkPass()
+    is(
+      '  …while a scanned service with no team does',
+      n(`SELECT COUNT(*) n FROM drift WHERE kind = 'component-no-team' AND subject_id = 'svc:somebody-elses-service'`),
+      1
+    )
+    db.prepare(`DELETE FROM nodes WHERE id = 'svc:somebody-elses-service'`).run()
+    linkPass()
+  }
+
   /* ---- and the demo estate is untouched by all of it */
   is('the ten demo services are still there', n(`SELECT COUNT(*) n FROM nodes WHERE kind = 'service'`), 10)
   is('the demo processes are still there', n(`SELECT COUNT(*) n FROM processes WHERE code = '2' OR code LIKE '2.%'`), 20)
@@ -1040,13 +1169,21 @@ if (stage === 'org') {
   is('a database takes its owner\'s', teamOf('db:postgres/orders'), 'trading')
   is('an endpoint takes its exposer\'s', teamOf('api:pricing-service/GET /v1/rates/{}'), 'trading')
   is('a topic takes its producer\'s', teamOf('topic:orders.matched.v1'), 'trading')
-  is('a cache with one writer takes that writer\'s', teamOf('cache:redis/pricing-quotes'), 'trading')
-  is('a cache with two writers stays teamless', teamOf('cache:redis/session'), null)
+  is('a cache with one writing team takes it', teamOf('cache:redis/pricing-quotes'), 'trading')
+  is('a cache two teams write stays teamless', teamOf('cache:redis/session'), null)
+  /* Fan-in onto a topic is deliberately not a defect in Layer A, so its
+     `owner_repo` tiebreak was never meant to mean anything. Reading it as
+     ownership would promote ingest order into an org fact. */
+  is('a topic two teams publish has no team', teamOf('topic:notifications.requested.v1'), null)
+  is('  …and says why', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'multi-team-topic' AND subject_id = 'topic:notifications.requested.v1'`), 1)
+  is('  …exactly once', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'multi-team-topic'`), 1)
+  is('topics with a team', n(`SELECT COUNT(*) n FROM nodes WHERE kind = 'kafka.topic' AND team_id IS NOT NULL`), 7)
   is('an external is nobody\'s', teamOf('ext:stripe'), null)
   is('a contract is nobody\'s', teamOf('contract:com.meridian.events.OrderMatched'), null)
   is('a topic nobody produces has nothing to inherit', teamOf('topic:risk.flagged.v1'), null)
   is('every service has a team', n(`SELECT COUNT(*) n FROM nodes WHERE kind = 'service' AND team_id IS NULL`), 0)
   is('every process has a team', n('SELECT COUNT(*) n FROM processes WHERE team_id IS NULL'), 0)
+  is('  …every one of them from its own owner', n(`SELECT COUNT(*) n FROM processes WHERE team_via <> 'owner'`), 0)
 
   /* ---- an override outranks the scan, per SPEC.md §15.4 */
   db.prepare(
@@ -1115,14 +1252,52 @@ if (stage === 'org') {
      Counted over the direct rows. The rolled-up ones are the same facts
      restated a level up, and counting them would mean nothing. */
   const direct = `via = 'interaction'`
-  is('derived handoffs', n(`SELECT COUNT(*) n FROM process_links WHERE derived = 1 AND ${direct}`), 6)
-  is('  …of them crossing a team', n(`SELECT COUNT(*) n FROM process_links WHERE derived = 1 AND cross_team = 1 AND ${direct}`), 5)
-  is('declared handoffs that became a row', n(`SELECT COUNT(*) n FROM process_links WHERE declared = 1 AND ${direct}`), 5)
-  is('  …agreed with the topology', n(`SELECT COUNT(*) n FROM process_links WHERE declared = 1 AND derived = 1 AND ${direct}`), 4)
-  is('direct handoffs crossing a team', n(`SELECT COUNT(*) n FROM process_links WHERE cross_team = 1 AND ${direct}`), 6)
+  is('direct handoffs', n(`SELECT COUNT(*) n FROM process_links WHERE ${direct}`), 9)
+  is('  …derived from the topology', n(`SELECT COUNT(*) n FROM process_links WHERE derived = 1 AND ${direct}`), 8)
+  is('  …of them crossing a team', n(`SELECT COUNT(*) n FROM process_links WHERE derived = 1 AND cross_team = 1 AND ${direct}`), 7)
+  is('declared handoffs that became a row', n(`SELECT COUNT(*) n FROM process_links WHERE declared = 1 AND ${direct}`), 7)
+  is('  …agreed with the topology', n(`SELECT COUNT(*) n FROM process_links WHERE declared = 1 AND derived = 1 AND ${direct}`), 6)
+  is('direct handoffs crossing a team', n(`SELECT COUNT(*) n FROM process_links WHERE cross_team = 1 AND ${direct}`), 8)
+
+  /* ---- the `touches` clause, and the topology check that keeps it a fact.
+     A leaf may spend its one interaction slot on what it DOES with the message
+     and name the topic in `touches` — SPEC-PROCESSES §3 blesses that shape — so
+     reading only the interaction made the answer depend on which of two equally
+     true facts the author wrote where. */
+  ok(
+    'a consumer that names the topic in touches is still a handoff',
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:2.3.2' AND to_id = 'proc:2.3.3' AND derived = 1`) === 1,
+    'trading → ledger over orders.matched.v1 is missing'
+  )
+  ok(
+    '  …and so is identity → wallet over users.created.v2',
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:1.1.2' AND to_id = 'proc:1.1.3' AND derived = 1`) === 1,
+    'identity → wallet is missing'
+  )
+  is(
+    '  …while a touches entry with no consuming edge derives nothing',
+    n(`SELECT COUNT(*) n FROM process_links WHERE to_id = 'proc:2.3.4'`),
+    0
+  )
+  ok(
+    'a derived handoff cites the two edges it matched',
+    n(`SELECT COUNT(*) n FROM process_links WHERE derived = 1 AND ${direct} AND (from_edge_id IS NULL OR to_edge_id IS NULL)`) === 0,
+    'a derived handoff came back with no citation'
+  )
+
+  /* ---- a rolled-up row carries the LEAF pair's teams, not its own ends'.
+     2.3.5 → 2.4.1 is wallet → growth; rolled up to 2.3 → 2.4 the row's own ends
+     say trading → growth, and wallet → growth is the truth. */
+  {
+    const rolled = db
+      .prepare(`SELECT from_team_id, to_team_id FROM process_links WHERE from_id = 'proc:2.3' AND to_id = 'proc:2.4'`)
+      .get()
+    is('a rolled-up handoff keeps the leaf pair\'s team', rolled?.from_team_id, 'wallet')
+    is('  …not the ancestor\'s own owner, which is trading', db.prepare(`SELECT team_id FROM processes WHERE id = 'proc:2.3'`).get()?.team_id, 'trading')
+  }
   // 6 derived + 19 of their rollups, plus the declared-only link and the 8
   // ancestor pairs it rolls into (3 froms x 3 tos, less the direct one).
-  is('rows after rollup', n('SELECT COUNT(*) n FROM process_links'), 34)
+  is('rows after rollup', n('SELECT COUNT(*) n FROM process_links'), 36)
 
   /* the handoff the whole feature exists to produce */
   const fill = db
@@ -1134,6 +1309,7 @@ if (stage === 'org') {
   is('  …over orders.matched.v1', fill?.via_node, 'topic:orders.matched.v1')
   is('  …derived from the topology', fill?.derived, 1)
   is('  …and the pack says so too', fill?.declared, 1)
+  ok('  …citing the publish and the consume', !!fill?.from_edge_id && !!fill?.to_edge_id, JSON.stringify(fill))
   is('  …so it needs no finding', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-undocumented' AND subject_id = 'proc:2.3.2'`), 0)
 
   /* rolled up to the level a director reads */

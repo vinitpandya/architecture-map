@@ -69,33 +69,40 @@ export const rebuildTeams = db.transaction(() => {
 
   const known = new Set(db.prepare('SELECT id FROM departments').all().map((r) => r.id))
   const team = db.prepare(
-    `INSERT OR REPLACE INTO teams (id, name, department_id, description, contact, registered)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT OR REPLACE INTO teams (id, name, department_id, description, contact, registered, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   )
   for (const t of Array.isArray(reg.teams) ? reg.teams : []) {
     const id = teamId(t?.id)
     if (!id) continue
     const dep = teamId(t.department)
-    team.run(id, String(t.name ?? t.id), dep && known.has(dep) ? dep : null, t.description ?? null, t.contact ?? null, 1)
+    team.run(id, String(t.name ?? t.id), dep && known.has(dep) ? dep : null, t.description ?? null, t.contact ?? null, 1, 'registry')
   }
 
   // Everything the data mentions, whether or not the registry knows it. The
   // raw string is kept as the display name, because "Risk Ops" reads better
   // than "risk-ops" and it is what somebody actually wrote.
-  const seen = db
-    .prepare(
-      `SELECT team AS raw FROM nodes WHERE team IS NOT NULL AND TRIM(team) <> ''
-       UNION ALL
-       SELECT owner AS raw FROM processes WHERE owner IS NOT NULL AND TRIM(owner) <> ''`
-    )
-    .all()
+  //
+  // `source` records the most authoritative thing that produced the id, so
+  // /teams can distinguish a team that owns services from one that is named in
+  // a document and owns nothing. A pack bringing a team into existence is the
+  // same shape as a pack bringing a component into existence, which
+  // SPEC-PROCESSES §12.1 forbids — it is allowed here because a team is an
+  // attribute rather than a member of the estate, but it should say so.
   const add = db.prepare(
-    `INSERT INTO teams (id, name, registered) VALUES (?, ?, 0)
-     ON CONFLICT(id) DO NOTHING`
+    `INSERT INTO teams (id, name, registered, source) VALUES (?, ?, 0, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       source = CASE WHEN teams.source = 'process' AND excluded.source = 'component'
+                     THEN 'component' ELSE teams.source END`
   )
-  for (const { raw } of seen) {
-    const id = teamId(raw)
-    if (id) add.run(id, String(raw).trim())
+  for (const [sql, source] of [
+    [`SELECT team AS raw FROM nodes WHERE team IS NOT NULL AND TRIM(team) <> ''`, 'component'],
+    [`SELECT owner AS raw FROM processes WHERE owner IS NOT NULL AND TRIM(owner) <> ''`, 'process'],
+  ]) {
+    for (const { raw } of db.prepare(sql).all()) {
+      const id = teamId(raw)
+      if (id) add.run(id, String(raw).trim(), source)
+    }
   }
 })
 
@@ -104,7 +111,7 @@ export const teamMap = () =>
   new Map(
     db
       .prepare(
-        `SELECT t.id, t.name, t.description, t.contact, t.registered,
+        `SELECT t.id, t.name, t.description, t.contact, t.registered, t.source,
                 t.department_id AS departmentId, d.name AS departmentName
          FROM teams t LEFT JOIN departments d ON d.id = t.department_id
          ORDER BY t.id`

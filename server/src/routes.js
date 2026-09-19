@@ -655,6 +655,7 @@ router.put('/override', wrap(async (req, res) => {
      ON CONFLICT(subject_kind, subject_id, field)
      DO UPDATE SET value = excluded.value, author = excluded.author, updated_at = excluded.updated_at`
   ).run(subjectKind, subjectId, field, text, author ?? null, new Date().toISOString())
+  await relink()
   res.json({ ok: true })
 }))
 
@@ -662,7 +663,36 @@ router.delete('/override', wrap(async (req, res) => {
   db.prepare(
     'DELETE FROM overrides WHERE subject_kind = ? AND subject_id = ? AND field = ?'
   ).run(String(one(req.query.subjectKind) ?? ''), String(one(req.query.subjectId) ?? ''), String(one(req.query.field) ?? ''))
+  await relink()
   res.json({ ok: true })
+}))
+
+/**
+ * The link pass reads two things that change without an ingest: `overrides`,
+ * and `teams.json`. An override on a node's team decides `nodes.team_id`, which
+ * decides the team filter, the team lens, every `process_teams` row and
+ * `cross_team` on every handoff — so writing the row and stopping would leave
+ * `/api/node` showing the correction (overrides are applied at read time) while
+ * every derived team column still said the old thing.
+ *
+ * The pass is global, deterministic and a few hundred rows; it already runs
+ * after every ingest, and this is the same class of input change.
+ */
+async function relink() {
+  const { linkPass } = await import('./link.js')
+  const { rebuildSearch } = await import('./ingest.js')
+  linkPass()
+  rebuildSearch()
+}
+
+/** For a change the server cannot see: somebody edited `teams.json`. */
+router.post('/relink', wrap(async (req, res) => {
+  await relink()
+  res.json({
+    ok: true,
+    teams: db.prepare('SELECT COUNT(*) AS n FROM teams WHERE registered = 1').get().n,
+    handoffs: db.prepare(`SELECT COUNT(*) AS n FROM process_links WHERE via = 'interaction'`).get().n,
+  })
 }))
 
 /* ───────────────────────────────────────────────────────── repos & prompts */

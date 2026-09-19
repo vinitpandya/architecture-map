@@ -57,6 +57,9 @@ export const SKELETONS = [
         name: 'Announce the new customer',
         node: 'svc:identity-service',
         interaction: on('svc:identity-service', 'kafka.produce', 'topic:users.created.v2'),
+        handsOffTo: [
+          { process: 'L1.1.3', note: 'Wallet opens the wallets off the new-customer event.' },
+        ],
       },
       {
         code: '1.1.3',

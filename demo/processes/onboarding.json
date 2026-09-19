@@ -58,7 +58,13 @@
         "from": "svc:identity-service",
         "kind": "kafka.produce",
         "to": "topic:users.created.v2"
-      }
+      },
+      "handsOffTo": [
+        {
+          "process": "L1.1.3",
+          "note": "Wallet opens the wallets off the new-customer event."
+        }
+      ]
     },
     {
       "code": "1.1.3",

@@ -177,6 +177,10 @@
       },
       "handsOffTo": [
         {
+          "process": "L2.3.3",
+          "note": "The ledger posts the trade from the fill event."
+        },
+        {
           "process": "L3.1.2",
           "note": "Reporting ingests the fill off the topic to build the trade warehouse."
         }

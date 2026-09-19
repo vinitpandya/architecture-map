@@ -120,10 +120,29 @@ function resolveTeams() {
       .map((r) => [r.subject_id, r.value])
   )
 
+  // Off the active manifest's body, not off `nodes.team`. The node upsert is
+  // COALESCE-based, so a column never clears: a service whose next manifest
+  // drops `service.team` would keep the old one for ever, and
+  // `component-no-team` could never fire for a service that once had one. The
+  // manifest is the evidence, so the manifest is what is read — the same
+  // pattern `touches` and `handsOffTo` already use.
+  const declaredTeam = new Map()
+  for (const row of db
+    .prepare(`SELECT service_id, raw FROM manifests WHERE status = 'active' AND service_id IS NOT NULL`)
+    .all()) {
+    let parsed = null
+    try {
+      parsed = JSON.parse(row.raw)
+    } catch {
+      continue
+    }
+    const raw = parsed?.service?.team
+    if (raw) declaredTeam.set(row.service_id, raw)
+  }
+
   const teamOfService = new Map()
-  for (const n of db.prepare(`SELECT id, team FROM nodes WHERE kind = 'service'`).all()) {
-    const raw = overridden.get(n.id) ?? n.team
-    const id = teamId(raw)
+  for (const n of db.prepare(`SELECT id FROM nodes WHERE kind = 'service'`).all()) {
+    const id = teamId(overridden.get(n.id) ?? declaredTeam.get(n.id))
     if (id) teamOfService.set(n.id, id)
   }
 
@@ -137,37 +156,73 @@ function resolveTeams() {
     if (t) teamOfRepo.set(r.repo, t)
   }
 
-  // Exactly one service writing to it, for the nodes no `owns` edge covers.
-  const writers = new Map()
+  // Exactly one writing TEAM, for the nodes no `owns` edge covers — not one
+  // writing service, so two services of one team writing a cache still
+  // resolves. Two teams and it stays teamless.
+  const writerTeams = new Map()
   for (const e of db
     .prepare(`SELECT from_id, to_id FROM edges WHERE kind IN ('db.write', 'cache.write')`)
     .all()) {
-    if (!writers.has(e.to_id)) writers.set(e.to_id, new Set())
-    writers.get(e.to_id).add(e.from_id)
+    const t = teamOfService.get(e.from_id)
+    if (!t) continue
+    if (!writerTeams.has(e.to_id)) writerTeams.set(e.to_id, new Set())
+    writerTeams.get(e.to_id).add(t)
   }
 
+  /* The teams behind a node's ownership claims.
+
+     `owner_repo` is decided by first-claim-by-first_seen with the repo name as
+     a tiebreak, and DECISIONS.md adopted that rule precisely because fan-in
+     onto a topic "is not a defect" — the winner was never meant to mean
+     anything. Reading it as "this team owns this topic" would promote an
+     ingest-order tiebreak into an org fact, colour the node, and decide which
+     team's filter it appears under. So the same "exactly one" discipline rule 3
+     uses applies here: one distinct team behind the claims or none at all. */
+  const claimTeams = new Map()
+  for (const e of db
+    .prepare(`SELECT from_id, to_id FROM edges WHERE kind IN ('db.owns', 'http.expose', 'kafka.produce')`)
+    .all()) {
+    const t = teamOfService.get(e.from_id)
+    if (!t) continue
+    if (!claimTeams.has(e.to_id)) claimTeams.set(e.to_id, new Set())
+    claimTeams.get(e.to_id).add(t)
+  }
+  const only = (set) => (set && set.size === 1 ? [...set][0] : null)
+
   const set = db.prepare('UPDATE nodes SET team_id = ? WHERE id = ?')
-  for (const n of db.prepare('SELECT id, kind, team, owner_repo FROM nodes').all()) {
+  for (const n of db.prepare('SELECT id, kind FROM nodes').all()) {
     let id = null
     if (n.kind === 'service') {
       id = teamOfService.get(n.id) ?? null
     } else {
-      const over = overridden.get(n.id)
-      id = teamId(over) || null
-      if (!id && n.owner_repo) id = teamOfRepo.get(n.owner_repo) ?? null
-      if (!id) {
-        const w = writers.get(n.id)
-        if (w && w.size === 1) id = teamOfService.get([...w][0]) ?? null
-      }
+      id = teamId(overridden.get(n.id)) || only(claimTeams.get(n.id)) || only(writerTeams.get(n.id))
     }
     if (id) set.run(id, n.id)
   }
 
-  db.prepare(`UPDATE processes SET team_id = NULL`).run()
-  const setProc = db.prepare('UPDATE processes SET team_id = ? WHERE id = ?')
-  for (const p of db.prepare('SELECT id, owner FROM processes').all()) {
-    const id = teamId(p.owner)
-    if (id) setProc.run(id, p.id)
+  /* A process's team is its own owner, else the nearest ancestor's.
+
+     A leaf inside a stage owned by trading is trading unless it says
+     otherwise, which is what a reader assumes. Without the inheritance a
+     teamless leaf drops out of every team view and poisons `cross_team` on
+     every handoff it takes part in — while `process-no-owner` deliberately
+     does not fire for a leaf, so nothing would ever say why. */
+  db.prepare(`UPDATE processes SET team_id = NULL, team_via = NULL`).run()
+  const setProc = db.prepare('UPDATE processes SET team_id = ?, team_via = ? WHERE id = ?')
+  const procs = db.prepare('SELECT id, code, owner FROM processes ORDER BY sort_key').all()
+  const own = new Map(procs.map((p) => [p.id, teamId(p.owner) || null]))
+  for (const p of procs) {
+    if (own.get(p.id)) {
+      setProc.run(own.get(p.id), 'owner', p.id)
+      continue
+    }
+    // Nearest first, so a level 3 prefers its stage over its level 1.
+    for (const a of ancestorsOf(p.code).reverse()) {
+      if (own.get(a)) {
+        setProc.run(own.get(a), 'inherited', p.id)
+        break
+      }
+    }
   }
 
   // A team the data mentions and the registry does not still gets a row, so
@@ -371,30 +426,56 @@ function rebuildProcessLinks(now) {
   if (!procs.length) return
   const byId = new Map(procs.map((p) => [p.id, p]))
 
-  const { declared } = fromActivePacks()
+  const { touches, declared } = fromActivePacks()
 
-  /* ---- 1 · derived, Kafka only.
+  /* ---- 1 · derived, Kafka only, and checked against the topology.
 
-     Both interactions are stored service-centric, so the topic is in `to` for
-     a produce AND for a consume. flowDirection() exists because of this; do
-     not reach for `from` on a consume. */
-  const producedBy = new Map()
-  const consumedBy = new Map()
+     The publish side is a process whose interaction is a resolved
+     `kafka.produce`. The consume side is a process that either says so in its
+     interaction, OR names the topic in `touches` while the topology contains
+     the consuming edge.
+
+     That second clause is not a loosening: SPEC-PROCESSES §3 blesses a leaf
+     spending its one interaction slot on what it does with the message and
+     naming the topic in `touches`, and reading only the interaction made the
+     answer depend on which of two equally true facts the author wrote where.
+     On the demo estate it is the difference between six handoffs and eight —
+     the trading→ledger and identity→wallet ones were being lost. The topology
+     check is what keeps it a fact: `2.3.4` also names orders.matched.v1 in
+     `touches` and has no consuming edge, so it produces no handoff. */
+  const consumeEdge = db.prepare(
+    `SELECT id FROM edges WHERE from_id = ? AND kind = 'kafka.consume' AND to_id = ?`
+  )
+
+  const producers = new Map()
+  const consumers = new Map()
   for (const p of procs) {
-    if (p.edge_kind === 'kafka.produce' && p.edge_to) {
-      if (!producedBy.has(p.edge_to)) producedBy.set(p.edge_to, [])
-      producedBy.get(p.edge_to).push(p)
+    if (p.edge_kind === 'kafka.produce' && p.edge_to && p.edge_id) {
+      if (!producers.has(p.edge_to)) producers.set(p.edge_to, [])
+      producers.get(p.edge_to).push({ proc: p, edgeId: p.edge_id })
     }
-    if (p.edge_kind === 'kafka.consume' && p.edge_to) {
-      if (!consumedBy.has(p.edge_to)) consumedBy.set(p.edge_to, [])
-      consumedBy.get(p.edge_to).push(p)
+    if (p.edge_kind === 'kafka.consume' && p.edge_to && p.edge_id) {
+      if (!consumers.has(p.edge_to)) consumers.set(p.edge_to, [])
+      consumers.get(p.edge_to).push({ proc: p, edgeId: p.edge_id })
+    }
+    for (const t of touches.get(p.id) ?? []) {
+      if (!String(t).startsWith('topic:') || !p.node_id) continue
+      if (p.edge_kind === 'kafka.consume' && p.edge_to === t) continue
+      const e = consumeEdge.get(p.node_id, t)
+      if (!e) continue
+      if (!consumers.has(t)) consumers.set(t, [])
+      consumers.get(t).push({ proc: p, edgeId: e.id })
     }
   }
 
-  // Keyed by row id, so a pair reached twice merges rather than duplicating.
+  /* Keyed by row id so a pair reached twice merges rather than colliding on
+     the primary key. `from_team_id`/`to_team_id` are the LEAF pair's teams and
+     travel unchanged into every rollup of the row: a rolled-up row's own ends
+     are ancestors, whose owners are frequently different teams from the
+     children doing the work, and reading the row's ends would put a pair in
+     the team matrix that never happened. */
   const rows = new Map()
   const put = (from, to, kind, viaNode, via, patch) => {
-    // Four parts, not three: one pair can hand off over two topics.
     const id = linkId(from, kind, to, viaNode)
     const prior = rows.get(id)
     if (!prior) {
@@ -408,6 +489,10 @@ function rebuildProcessLinks(now) {
         declared: 0,
         derived: 0,
         support: 'none',
+        from_team_id: null,
+        to_team_id: null,
+        from_edge_id: null,
+        to_edge_id: null,
         note: null,
         ...patch,
       })
@@ -419,22 +504,70 @@ function rebuildProcessLinks(now) {
     // 'interaction' outranks 'rollup': a direct handoff is not a rolled-up one.
     if (patch.via === 'interaction') prior.via = 'interaction'
     if (!prior.note && patch.note) prior.note = patch.note
+    for (const k of ['from_team_id', 'to_team_id', 'from_edge_id', 'to_edge_id']) {
+      if (!prior[k] && patch[k]) prior[k] = patch[k]
+    }
     return prior
   }
 
-  for (const [topic, producers] of producedBy) {
-    for (const a of producers) {
-      for (const b of consumedBy.get(topic) ?? []) {
-        if (a.id === b.id) continue
-        put(a.id, b.id, 'kafka', topic, 'interaction', { derived: 1, support: 'kafka' })
+  for (const [topic, from] of producers) {
+    for (const a of from) {
+      for (const b of consumers.get(topic) ?? []) {
+        if (a.proc.id === b.proc.id) continue
+        put(a.proc.id, b.proc.id, 'kafka', topic, 'interaction', {
+          derived: 1,
+          support: 'kafka',
+          from_team_id: a.proc.team_id ?? null,
+          to_team_id: b.proc.team_id ?? null,
+          from_edge_id: a.edgeId,
+          to_edge_id: b.edgeId,
+        })
       }
     }
   }
 
-  /* ---- 2 · declared.
+  /* ---- 2 · rollup of the derived rows, before the declarations are matched.
 
-     When a derived row already exists for the pair, the declaration lands on
-     THAT row: the two agree, and agreement is one fact rather than two. */
+     A handoff between two leaves is one between their ancestors too — except
+     where the two ends are the same process or one contains the other, or an
+     internal handoff inside L2 would roll up into "L2 hands off to L2".
+
+     Rolling up first is what lets a declaration written at ANY level find its
+     derived counterpart: a pair is agreed or it is not, and agreement is a
+     property of the pair rather than of whichever row happened to exist when
+     the declaration was read. */
+  const rollUp = () => {
+    for (const r of [...rows.values()]) {
+      if (r.via === 'rollup') continue
+      const froms = [r.from_id, ...ancestorsOf(byId.get(r.from_id).code)]
+      const tos = [r.to_id, ...ancestorsOf(byId.get(r.to_id).code)]
+      for (const f of froms) {
+        for (const t of tos) {
+          if (f === r.from_id && t === r.to_id) continue
+          if (f === t) continue
+          if (!byId.has(f) || !byId.has(t)) continue
+          const fc = byId.get(f).code
+          const tc = byId.get(t).code
+          if (fc.startsWith(`${tc}.`) || tc.startsWith(`${fc}.`)) continue
+          put(f, t, r.kind, r.via_node, 'rollup', {
+            declared: r.declared,
+            derived: r.derived,
+            support: r.support,
+            from_team_id: r.from_team_id,
+            to_team_id: r.to_team_id,
+            note: null,
+          })
+        }
+      }
+    }
+  }
+  rollUp()
+
+  /* ---- 3 · declared.
+
+     Agreement is a property of the pair: every derived row for (from, to) is
+     marked, at whatever level the declaration was written. A kind='declared'
+     row is only written when the topology has nothing for that pair at all. */
   const derivedPairs = new Map()
   for (const r of rows.values()) {
     if (!r.derived) continue
@@ -443,28 +576,34 @@ function rebuildProcessLinks(now) {
     derivedPairs.get(key).push(r)
   }
 
-  const componentsOf = new Map()
-  for (const r of db.prepare('SELECT process_id, node_id FROM process_components').all()) {
-    if (!componentsOf.has(r.process_id)) componentsOf.set(r.process_id, new Set())
-    componentsOf.get(r.process_id).add(r.node_id)
+  /* ---- 4 · support.
+
+     Over DIRECT components only. `process_components` rolls up, so an L1's set
+     is its whole subtree's and almost any two of them intersect — on the demo
+     estate every ordered pair of level 1s shares something, which would make
+     `process-link-unsupported` dead above level 3, exactly where a declared
+     handoff between two big processes is most likely to be stale. */
+  const directOf = new Map()
+  for (const r of db
+    .prepare(`SELECT process_id, node_id FROM process_components WHERE via <> 'rollup'`)
+    .all()) {
+    if (!directOf.has(r.process_id)) directOf.set(r.process_id, new Set())
+    directOf.get(r.process_id).add(r.node_id)
   }
   const share = (a, b) => {
-    const x = componentsOf.get(a)
-    const y = componentsOf.get(b)
+    const x = directOf.get(a)
+    const y = directOf.get(b)
     if (!x || !y) return false
     for (const id of x) if (y.has(id)) return true
     return false
   }
 
-  const unknownTargets = []
+  const fresh = []
   for (const [from, targets] of declared) {
     if (!byId.has(from)) continue
     for (const [to, note] of targets) {
       if (from === to) continue
-      if (!byId.has(to)) {
-        unknownTargets.push({ from, to, note })
-        continue
-      }
+      if (!byId.has(to)) continue // a finding, not a row — see handoffFindings()
       const agreed = derivedPairs.get(`${from}|${to}`)
       if (agreed?.length) {
         for (const r of agreed) {
@@ -473,69 +612,42 @@ function rebuildProcessLinks(now) {
         }
         continue
       }
-      /* ---- 3 · support.
-
-         A declared handoff over HTTP is never derived and must not therefore
-         be reported. When the two processes demonstrably touch the same thing
-         the claim is corroborated; only a claim with nothing at all behind it
-         is worth a finding. */
-      put(from, to, 'declared', null, 'interaction', {
-        declared: 1,
-        support: share(from, to) ? 'component' : 'none',
-        note,
-      })
-    }
-  }
-
-  /* ---- 4 · rollup.
-
-     A handoff between two leaves is one between their ancestors too — except
-     where the two ends are the same process or one contains the other, or an
-     internal handoff inside L2 would roll up into "L2 hands off to L2". */
-  for (const r of [...rows.values()]) {
-    if (r.via === 'rollup') continue
-    const froms = [r.from_id, ...ancestorsOf(byId.get(r.from_id).code)]
-    const tos = [r.to_id, ...ancestorsOf(byId.get(r.to_id).code)]
-    for (const f of froms) {
-      for (const t of tos) {
-        if (f === r.from_id && t === r.to_id) continue
-        if (f === t) continue
-        if (!byId.has(f) || !byId.has(t)) continue
-        const fc = byId.get(f).code
-        const tc = byId.get(t).code
-        if (fc.startsWith(`${tc}.`) || tc.startsWith(`${fc}.`)) continue
-        put(f, t, r.kind, r.via_node, 'rollup', {
-          declared: r.declared,
-          derived: r.derived,
-          support: r.support,
-          note: null,
+      fresh.push(
+        put(from, to, 'declared', null, 'interaction', {
+          declared: 1,
+          support: share(from, to) ? 'component' : 'none',
+          from_team_id: byId.get(from).team_id ?? null,
+          to_team_id: byId.get(to).team_id ?? null,
+          note,
         })
-      }
+      )
     }
   }
+  // Roll the declared-only rows up too, now that they exist.
+  if (fresh.length) rollUp()
 
-  /* ---- 5 · cross_team.
+  /* ---- 5 · cross_team, off the carried leaf teams.
 
-     Both ends must have a team. A link with a teamless end is not cross-team,
+     Both ends must have a team. A link with a teamless end is not cross-team;
      it is unknown, and calling it a boundary would let a missing owner
-     masquerade as one. */
+     masquerade as one. With the inheritance in resolveTeams() that is rare,
+     and when it happens `process-no-owner` reports it at the level that
+     matters. */
   const ins = db.prepare(
     `INSERT INTO process_links
-       (id, from_id, to_id, kind, via_node, via, declared, derived, support, cross_team, note, first_seen, last_seen)
-     VALUES (@id, @from_id, @to_id, @kind, @via_node, @via, @declared, @derived, @support, @cross_team, @note, @first_seen, @last_seen)`
+       (id, from_id, to_id, kind, via_node, via, declared, derived, support,
+        from_team_id, to_team_id, cross_team, from_edge_id, to_edge_id, note, first_seen, last_seen)
+     VALUES (@id, @from_id, @to_id, @kind, @via_node, @via, @declared, @derived, @support,
+        @from_team_id, @to_team_id, @cross_team, @from_edge_id, @to_edge_id, @note, @first_seen, @last_seen)`
   )
   for (const r of rows.values()) {
-    const ta = byId.get(r.from_id)?.team_id ?? null
-    const tb = byId.get(r.to_id)?.team_id ?? null
     ins.run({
       ...r,
-      cross_team: ta && tb && ta !== tb ? 1 : 0,
+      cross_team: r.from_team_id && r.to_team_id && r.from_team_id !== r.to_team_id ? 1 : 0,
       first_seen: wasSeen.get(r.id) ?? now,
       last_seen: now,
     })
   }
-
-  return unknownTargets
 }
 
 /* ───────────────────────────── layer C: which teams a process reaches
@@ -571,11 +683,16 @@ function rebuildProcessTeams() {
     ins.run(r.process_id, r.team_id, 'component', r.node_id)
   }
 
-  for (const r of db.prepare('SELECT from_id, to_id FROM process_links').all()) {
-    const a = teamOfProc.get(r.from_id)
-    const b = teamOfProc.get(r.to_id)
-    if (b && b !== a) ins.run(r.from_id, b, 'handoff', '')
-    if (a && a !== b) ins.run(r.to_id, a, 'handoff', '')
+  // The carried leaf teams, not the row's own ends: a rolled-up row's ends are
+  // ancestors whose owners may be other teams entirely, and attributing the
+  // handoff to them would invent a crossing that never happened.
+  for (const r of db.prepare('SELECT from_id, to_id, from_team_id, to_team_id FROM process_links').all()) {
+    const a = r.from_team_id
+    const b = r.to_team_id
+    if (a && b && a !== b) {
+      ins.run(r.from_id, b, 'handoff', '')
+      ins.run(r.to_id, a, 'handoff', '')
+    }
   }
 }
 
@@ -882,6 +999,7 @@ function handoffFindings(write) {
 
 function teamFindings(write, { nodes }) {
   const teams = db.prepare('SELECT id, name, registered FROM teams').all()
+  const teamName = (id) => teams.find((t) => t.id === id)?.name ?? id
 
   /* a team the data uses that the registry has never heard of.
 
@@ -910,7 +1028,11 @@ function teamFindings(write, { nodes }) {
      Services only. A contract, an external, an unproduced topic and a cache
      with two writers are all legitimately teamless, and firing on them would
      bury the one case that is a real gap. */
-  for (const n of nodes.filter((x) => x.kind === 'service' && !x.team_id)) {
+  // Not an orphan: createOrphans() invents a service node for one referenced by
+  // an edge and never scanned, which by construction has no manifest, no team
+  // and no remedy short of scanning a repository the reader does not have. An
+  // orphan service is somebody else's, exactly as an external is.
+  for (const n of nodes.filter((x) => x.kind === 'service' && !x.team_id && !x.orphan)) {
     write(
       'component-no-team',
       n.id,
@@ -921,19 +1043,53 @@ function teamFindings(write, { nodes }) {
     )
   }
 
+  /* two teams publishing to one topic.
+
+     Layer A deliberately raises no finding for fan-in onto a topic, because
+     several producers is not a defect (DECISIONS.md). But it means the topic
+     has no single owning team, so it is grey on the team lens and absent from
+     every team's filter, and nothing would otherwise say why. Two teams
+     sharing a publish is also a real coordination fact worth one line. */
+  for (const t of db
+    .prepare(
+      `SELECT e.to_id AS topic, COUNT(DISTINCT n.team_id) AS teams,
+              GROUP_CONCAT(DISTINCT n.team_id) AS list
+       FROM edges e JOIN nodes n ON n.id = e.from_id
+       WHERE e.kind = 'kafka.produce' AND n.team_id IS NOT NULL
+       GROUP BY e.to_id HAVING teams > 1`
+    )
+    .all()) {
+    const names = String(t.list).split(',').map(teamName)
+    write(
+      'multi-team-topic',
+      t.topic,
+      'info',
+      `${idValue(t.topic)} is published by ${andList(names)}. No one team owns it, so a change to ` +
+        `what goes on it is a conversation rather than a decision — and it has no team on the map.`,
+      { topic: t.topic, teams: String(t.list).split(',') }
+    )
+  }
+
   /* a process nobody owns, at the levels where it matters.
 
      Level 1 and 2 only: an atomic action inherits its accountability from the
      stage above it, and flagging all 34 leaves would train people to ignore
      the group. */
+  /* Asked of the DOCUMENT, not of the resolved team: with inheritance in place
+     `team_id IS NULL` is nearly unfireable, and the question is whether anybody
+     wrote down who is accountable. Inheriting is a convenience for leaves; at
+     level 1 or 2 — the levels a director reads — it should be said out loud. */
   for (const p of db
-    .prepare('SELECT id, code, name, level FROM processes WHERE level <= 2 AND team_id IS NULL ORDER BY sort_key')
+    .prepare(
+      `SELECT id, code, name, level FROM processes
+       WHERE level <= 2 AND (team_via IS NULL OR team_via = 'inherited') ORDER BY sort_key`
+    )
     .all()) {
     write(
       'process-no-owner',
       p.id,
       'info',
-      `L${p.code} ${p.name} has no owner. At level ${p.level} that is the question the map exists ` +
+      `L${p.code} ${p.name} names no owner. At level ${p.level} that is the question the map exists ` +
         `to answer — somebody is accountable for it, and the document does not say who.`,
       { code: p.code, name: p.name, level: p.level }
     )

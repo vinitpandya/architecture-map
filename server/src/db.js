@@ -258,7 +258,12 @@ CREATE TABLE IF NOT EXISTS teams (
   -- 1 = in teams.json. 0 = seen in the data and nowhere else, which is what
   -- the unknown-team finding reports. Either way it gets a row, so every
   -- screen can name it rather than showing a bare id.
-  registered    INTEGER NOT NULL DEFAULT 0
+  registered    INTEGER NOT NULL DEFAULT 0,
+  -- The most authoritative thing that produced this id: the registry, a
+  -- component's team, or a process pack's owner. A team whose only source is a
+  -- pack is named in a document and owns nothing in the estate, which /teams
+  -- should say rather than listing it as though it were established.
+  source        TEXT NOT NULL DEFAULT 'process'
 );
 CREATE INDEX IF NOT EXISTS teams_department ON teams (department_id);
 
@@ -278,7 +283,18 @@ CREATE TABLE IF NOT EXISTS process_links (
   -- derived), component (the two processes touch the same thing), or none —
   -- which is the only case worth a finding.
   support    TEXT NOT NULL,
+  -- The teams of the LEAF pair that produced this row, carried unchanged into
+  -- every rollup of it. A rolled-up row's own ends are ancestors, whose owners
+  -- are frequently different teams from the children that perform the handoff,
+  -- so reading the row's ends would attribute it to a team that never touched
+  -- it — and put a pair in the team matrix that never happened.
+  from_team_id TEXT,
+  to_team_id   TEXT,
   cross_team INTEGER NOT NULL DEFAULT 0,
+  -- The two edges the derivation matched: the publish and the consume. A
+  -- derived handoff is a fact from code, so it cites the code.
+  from_edge_id TEXT,
+  to_edge_id   TEXT,
   note       TEXT,               -- the author's, when declared
   first_seen TEXT NOT NULL,
   last_seen  TEXT NOT NULL
@@ -322,6 +338,12 @@ function addColumn(table, column, type) {
 // and the pack wrote, because those are the evidence; these are what joins.
 addColumn('nodes', 'team_id', 'TEXT')
 addColumn('processes', 'team_id', 'TEXT')
+// 'owner' when the process names its own, 'inherited' when it takes the nearest
+// ancestor's. A leaf inside a stage owned by trading is trading unless it says
+// otherwise, which is what a reader assumes — and a teamless leaf would
+// otherwise drop out of the team filter and poison cross_team on every handoff
+// it takes part in.
+addColumn('processes', 'team_via', 'TEXT')
 db.exec(`
   CREATE INDEX IF NOT EXISTS nodes_team     ON nodes (team_id);
   CREATE INDEX IF NOT EXISTS processes_team ON processes (team_id);
