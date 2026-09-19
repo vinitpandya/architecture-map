@@ -16,6 +16,11 @@ export const INBOX_DIR = process.env.INBOX_DIR
   ? path.resolve(ROOT, process.env.INBOX_DIR)
   : path.join(ROOT, 'inbox')
 
+/** The team registry. Absent is a supported state — see server/src/teams.js. */
+export const TEAMS_FILE = process.env.TEAMS_FILE
+  ? path.resolve(ROOT, process.env.TEAMS_FILE)
+  : path.join(ROOT, 'teams.json')
+
 export const SCHEMA_FILE = path.join(ROOT, 'schema', 'manifest.schema.json')
 export const PROCESS_SCHEMA_FILE = path.join(ROOT, 'schema', 'process-pack.schema.json')
 

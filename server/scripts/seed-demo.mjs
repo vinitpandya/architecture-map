@@ -23,9 +23,15 @@ import { linkPass } from '../src/link.js'
 import { buildManifests } from './demo/manifests.mjs'
 import { SERVICES } from './demo/estate.mjs'
 import { PACK_IDS, buildPacks } from './demo/packs.mjs'
+import { buildRegistry } from './demo/teams.mjs'
 
 const DIR = path.join(ROOT, 'demo', 'manifests')
 const PACK_DIR = path.join(ROOT, 'demo', 'processes')
+// The registry is committed as a fixture under demo/, like everything else the
+// seeder writes. The live one at the repo root is a per-deployment file the
+// seeder will create but never overwrite — see below.
+const TEAMS_FIXTURE = path.join(ROOT, 'demo', 'teams.json')
+const TEAMS_LIVE = path.join(ROOT, 'teams.json')
 const REPOS = SERVICES.map((s) => s.repo)
 const args = process.argv.slice(2)
 
@@ -55,12 +61,29 @@ function seed({ writeOnly }) {
   for (const m of manifests) write(DIR, m.repo, m, validateManifest, m.repo)
   for (const p of packs) write(PACK_DIR, p.pack, p, validateProcessPack, p.pack)
 
+  // The team registry, as a fixture. Deterministic like the rest, so a
+  // re-run leaves `git status` clean.
+  const registry = buildRegistry()
+  fs.writeFileSync(TEAMS_FIXTURE, `${JSON.stringify(registry, null, 2)}\n`)
+
+  // And copied to the live location — but only when there isn't one. A real
+  // deployment's teams.json is its own org chart, and seeding a demo is not a
+  // reason to overwrite it.
+  let liveNote = 'demo/teams.json'
+  if (fs.existsSync(TEAMS_LIVE)) {
+    liveNote += ' (teams.json already exists and was left alone)'
+  } else {
+    fs.copyFileSync(TEAMS_FIXTURE, TEAMS_LIVE)
+    liveNote += ' and teams.json'
+  }
+
   if (invalid) {
     console.error(`\n${invalid} file(s) failed validation — not ingesting.`)
     process.exit(1)
   }
   console.log(
-    `Wrote ${manifests.length} manifests to demo/manifests/ and ${packs.length} process packs to demo/processes/`
+    `Wrote ${manifests.length} manifests to demo/manifests/, ${packs.length} process packs to ` +
+      `demo/processes/ and ${registry.teams.length} teams to ${liveNote}`
   )
   if (writeOnly) return
 
@@ -131,6 +154,17 @@ function remove({ files = false } = {}) {
 
   let removed = 0
   if (files) {
+    for (const f of [TEAMS_FIXTURE, TEAMS_LIVE]) {
+      if (!fs.existsSync(f)) continue
+      // Only if it is still the demo registry. A teams.json somebody has
+      // edited is theirs, and --files is not a licence to delete it.
+      const same =
+        fs.readFileSync(f, 'utf8') === `${JSON.stringify(buildRegistry(), null, 2)}\n`
+      if (same) {
+        fs.unlinkSync(f)
+        removed++
+      }
+    }
     for (const [dir, names] of [
       [DIR, REPOS],
       [PACK_DIR, PACK_IDS],

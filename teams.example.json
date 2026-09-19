@@ -1,0 +1,31 @@
+{
+  "$comment": "Copy to teams.json and edit. The map works without this file — teams are then whatever the manifests and packs say, and nothing is reported as unregistered. What this adds is a canonical id per team, so 'Trading' and 'trading' are one team rather than two, and a department to group them by.",
+  "departments": [
+    {
+      "id": "trading-platform",
+      "name": "Trading Platform",
+      "description": "Everything a customer does with their money."
+    },
+    {
+      "id": "data-and-growth",
+      "name": "Data and Growth",
+      "description": "What the platform knows about itself, and how it talks to customers."
+    }
+  ],
+  "teams": [
+    {
+      "id": "trading",
+      "name": "Trading",
+      "department": "trading-platform",
+      "description": "Quotes, orders, matching and settlement.",
+      "contact": "#meridian-trading"
+    },
+    {
+      "id": "data",
+      "name": "Data",
+      "department": "data-and-growth",
+      "description": "The warehouse, the loaders and everything built on them.",
+      "contact": "#meridian-data"
+    }
+  ]
+}

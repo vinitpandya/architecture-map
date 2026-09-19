@@ -1,4 +1,5 @@
 import { db } from './db.js'
+import { rebuildTeams, registryConfigured, teamId } from './teams.js'
 
 /**
  * The link pass. Entirely deterministic — no LLM, no heuristic merging, no
@@ -68,12 +69,106 @@ export function linkPass(now = new Date().toISOString()) {
 const run = db.transaction((now) => {
   createOrphans(now)
   resolveOwnership()
+  // Layer C before Layer B's rollup reads it: the registry first, then the
+  // team on every component, because a process's reach is computed from it.
+  rebuildTeams()
+  resolveTeams()
   // Layer B before the findings: a manifest landing today can resolve a
   // process that did not resolve yesterday, and the findings have to see that.
   resolveInteractions()
   rebuildProcessRollup()
   rebuildDrift(now)
 })
+
+/* ──────────────────────────────────────────── layer C: whose is it
+
+   A team is an attribute of the things on the map, never a member of it: the
+   estate holds facts found in code, and who is accountable for a service is an
+   org fact. So nothing here writes to `nodes` except the one derived column,
+   and nothing here creates a node.
+*/
+
+/**
+ * `nodes.team_id`, first match wins:
+ *
+ *   1. its own, for a service whose manifest named a team — and an override
+ *      beats the manifest, because a human correction outranks a scan;
+ *   2. its owner's, which is what gives topics, stores and endpoints a team
+ *      without anybody authoring one;
+ *   3. its single writer's, which is what gives a cache one, since `db.owns`
+ *      has no cache equivalent. Exactly one writer: two and it stays teamless,
+ *      because guessing between them is worse than saying nothing.
+ *
+ * Anything else is legitimately teamless. An external is somebody else's by
+ * definition, a contract is a payload rather than a thing a team runs, and a
+ * topic nobody produces has no owner to inherit from.
+ */
+function resolveTeams() {
+  db.prepare('UPDATE nodes SET team_id = NULL').run()
+
+  // A human correction outranks the scan, per SPEC.md §15.4.
+  const overridden = new Map(
+    db
+      .prepare(`SELECT subject_id, value FROM overrides WHERE subject_kind = 'node' AND field = 'team'`)
+      .all()
+      .map((r) => [r.subject_id, r.value])
+  )
+
+  const teamOfService = new Map()
+  for (const n of db.prepare(`SELECT id, team FROM nodes WHERE kind = 'service'`).all()) {
+    const raw = overridden.get(n.id) ?? n.team
+    const id = teamId(raw)
+    if (id) teamOfService.set(n.id, id)
+  }
+
+  // A repo's team is its service's. `owner_repo` is a repo name; the service
+  // it belongs to is the one whose manifest declared it.
+  const teamOfRepo = new Map()
+  for (const r of db
+    .prepare(`SELECT m.repo, m.service_id FROM manifests m WHERE m.status = 'active' AND m.service_id IS NOT NULL`)
+    .all()) {
+    const t = teamOfService.get(r.service_id)
+    if (t) teamOfRepo.set(r.repo, t)
+  }
+
+  // Exactly one service writing to it, for the nodes no `owns` edge covers.
+  const writers = new Map()
+  for (const e of db
+    .prepare(`SELECT from_id, to_id FROM edges WHERE kind IN ('db.write', 'cache.write')`)
+    .all()) {
+    if (!writers.has(e.to_id)) writers.set(e.to_id, new Set())
+    writers.get(e.to_id).add(e.from_id)
+  }
+
+  const set = db.prepare('UPDATE nodes SET team_id = ? WHERE id = ?')
+  for (const n of db.prepare('SELECT id, kind, team, owner_repo FROM nodes').all()) {
+    let id = null
+    if (n.kind === 'service') {
+      id = teamOfService.get(n.id) ?? null
+    } else {
+      const over = overridden.get(n.id)
+      id = teamId(over) || null
+      if (!id && n.owner_repo) id = teamOfRepo.get(n.owner_repo) ?? null
+      if (!id) {
+        const w = writers.get(n.id)
+        if (w && w.size === 1) id = teamOfService.get([...w][0]) ?? null
+      }
+    }
+    if (id) set.run(id, n.id)
+  }
+
+  db.prepare(`UPDATE processes SET team_id = NULL`).run()
+  const setProc = db.prepare('UPDATE processes SET team_id = ? WHERE id = ?')
+  for (const p of db.prepare('SELECT id, owner FROM processes').all()) {
+    const id = teamId(p.owner)
+    if (id) setProc.run(id, p.id)
+  }
+
+  // A team the data mentions and the registry does not still gets a row, so
+  // every screen can name it. Run again because resolveTeams() is what first
+  // establishes which ids are actually in use.
+  rebuildTeams()
+}
 
 /* ─────────────────────────────────────────── layer B: process rollup
 
@@ -414,6 +509,74 @@ function rebuildDrift(now) {
   }
 
   processFindings(write, { nodes, nameOf, label })
+  teamFindings(write, { nodes })
+}
+
+/* ─────────────────────────────────── layer C: who is responsible, and who is not
+
+   Three hygiene findings. They are what a department rolling this out actually
+   needs: which teams are not in the registry, which services nobody owns, and
+   which process has no accountable team.
+*/
+
+function teamFindings(write, { nodes }) {
+  const teams = db.prepare('SELECT id, name, registered FROM teams').all()
+
+  /* a team the data uses that the registry has never heard of.
+
+     Only when a registry is loaded: with no teams.json every team is
+     unregistered and this would report the whole organisation, which is the
+     same argument SPEC-PROCESSES §5 makes for uncovered-component against an
+     empty Layer B. */
+  if (registryConfigured()) {
+    for (const t of teams.filter((x) => !x.registered)) {
+      const components = db.prepare('SELECT COUNT(*) AS n FROM nodes WHERE team_id = ?').get(t.id).n
+      const processes = db.prepare('SELECT COUNT(*) AS n FROM processes WHERE team_id = ?').get(t.id).n
+      write(
+        'unknown-team',
+        `team:${t.id}`,
+        'warn',
+        `${t.name} owns ${components} component${components === 1 ? '' : 's'} and ` +
+          `${processes} process${processes === 1 ? '' : 'es'}, and is not in teams.json. ` +
+          `Either it was renamed or merged and the documents have not followed, or the registry is behind.`,
+        { team: t.id, name: t.name, components, processes }
+      )
+    }
+  }
+
+  /* a service nobody owns.
+
+     Services only. A contract, an external, an unproduced topic and a cache
+     with two writers are all legitimately teamless, and firing on them would
+     bury the one case that is a real gap. */
+  for (const n of nodes.filter((x) => x.kind === 'service' && !x.team_id)) {
+    write(
+      'component-no-team',
+      n.id,
+      'info',
+      `${n.name} has no owning team. Nobody is accountable for it in the map, so nothing can say ` +
+        `which processes it puts at risk.`,
+      { kind: n.kind, repo: n.owner_repo ?? null }
+    )
+  }
+
+  /* a process nobody owns, at the levels where it matters.
+
+     Level 1 and 2 only: an atomic action inherits its accountability from the
+     stage above it, and flagging all 34 leaves would train people to ignore
+     the group. */
+  for (const p of db
+    .prepare('SELECT id, code, name, level FROM processes WHERE level <= 2 AND team_id IS NULL ORDER BY sort_key')
+    .all()) {
+    write(
+      'process-no-owner',
+      p.id,
+      'info',
+      `L${p.code} ${p.name} has no owner. At level ${p.level} that is the question the map exists ` +
+        `to answer — somebody is accountable for it, and the document does not say who.`,
+      { code: p.code, name: p.name, level: p.level }
+    )
+  }
 }
 
 /* ──────────────────────────────────── layer B: where the two layers disagree

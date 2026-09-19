@@ -44,10 +44,17 @@ if (!stage) {
   const tmp = path.join(ROOT, 'data', 'verify')
   fs.rmSync(tmp, { recursive: true, force: true })
   let bad = 0
-  for (const s of ['ingest', 'estate', 'processes', 'packs']) {
+  for (const s of ['ingest', 'estate', 'processes', 'packs', 'org']) {
     const res = spawnSync(process.execPath, [fileURLToPath(import.meta.url), `--stage=${s}`], {
       stdio: 'inherit',
-      env: { ...process.env, DATA_DIR: path.join(tmp, s), INBOX_DIR: path.join(tmp, s, 'inbox') },
+      env: {
+        ...process.env,
+        DATA_DIR: path.join(tmp, s),
+        INBOX_DIR: path.join(tmp, s, 'inbox'),
+        // The committed fixture, never whatever registry this machine happens
+        // to have at the repo root — a stage must not depend on local state.
+        TEAMS_FILE: path.join(ROOT, 'demo', 'teams.json'),
+      },
     })
     if (res.status !== 0) bad++
   }
@@ -990,6 +997,118 @@ if (stage === 'packs') {
   /* ---- and the demo estate is untouched by all of it */
   is('the ten demo services are still there', n(`SELECT COUNT(*) n FROM nodes WHERE kind = 'service'`), 10)
   is('the demo processes are still there', n(`SELECT COUNT(*) n FROM processes WHERE code = '2' OR code LIKE '2.%'`), 20)
+
+  done()
+}
+
+
+/* ─────────────────────────── stage: org (SPEC-ORG.md §10, phases 12-13)
+
+   Teams and handoffs. Runs against the committed demo registry at
+   demo/teams.json, and separately against no registry at all, because
+   "absent is a supported state" is a claim worth checking rather than
+   asserting.
+*/
+
+if (stage === 'org') {
+  console.log('\nPhases 12–13 — teams and handoffs')
+  const seed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs')], {
+    encoding: 'utf8',
+    env: process.env,
+  })
+  if (seed.status !== 0) {
+    console.log(`  ✗ seed:demo failed\n${seed.stdout}${seed.stderr}`)
+    process.exit(1)
+  }
+
+  const { db } = await import('../src/db.js')
+  const { teamId } = await import('../src/teams.js')
+  const { linkPass } = await import('../src/link.js')
+  const n = (sql, ...a) => db.prepare(sql).get(...a).n
+  const teamOf = (id) => db.prepare('SELECT team_id FROM nodes WHERE id = ?').get(id)?.team_id ?? null
+
+  /* ---- §2: one normalisation rule, and it does not guess */
+  is('teamId fixes case', teamId('Trading'), 'trading')
+  is('  …and whitespace', teamId('  trading  '), 'trading')
+  is('  …and separators', teamId('Risk_Ops'), 'risk-ops')
+  is('  …and collapses runs', teamId('risk   ops'), 'risk-ops')
+  is('  …but does not guess two strings are one team', teamId('Trading Team'), 'trading-team')
+  is('  …and an empty value is no team at all', teamId('   '), '')
+
+  /* ---- §5 team resolution, each of the three rules and the teamless cases */
+  is('a service takes its own team', teamOf('svc:order-service'), 'trading')
+  is('a database takes its owner\'s', teamOf('db:postgres/orders'), 'trading')
+  is('an endpoint takes its exposer\'s', teamOf('api:pricing-service/GET /v1/rates/{}'), 'trading')
+  is('a topic takes its producer\'s', teamOf('topic:orders.matched.v1'), 'trading')
+  is('a cache with one writer takes that writer\'s', teamOf('cache:redis/pricing-quotes'), 'trading')
+  is('a cache with two writers stays teamless', teamOf('cache:redis/session'), null)
+  is('an external is nobody\'s', teamOf('ext:stripe'), null)
+  is('a contract is nobody\'s', teamOf('contract:com.meridian.events.OrderMatched'), null)
+  is('a topic nobody produces has nothing to inherit', teamOf('topic:risk.flagged.v1'), null)
+  is('every service has a team', n(`SELECT COUNT(*) n FROM nodes WHERE kind = 'service' AND team_id IS NULL`), 0)
+  is('every process has a team', n('SELECT COUNT(*) n FROM processes WHERE team_id IS NULL'), 0)
+
+  /* ---- an override outranks the scan, per SPEC.md §15.4 */
+  db.prepare(
+    `INSERT INTO overrides (subject_kind, subject_id, field, value, updated_at)
+     VALUES ('node', 'svc:order-service', 'team', 'risk-ops', '2026-09-19T00:00:00Z')
+     ON CONFLICT(subject_kind, subject_id, field) DO UPDATE SET value = excluded.value`
+  ).run()
+  linkPass()
+  is('an override beats the manifest\'s team', teamOf('svc:order-service'), 'risk-ops')
+  is('  …and carries to everything that inherits from it', teamOf('db:postgres/orders'), 'risk-ops')
+  db.prepare(`DELETE FROM overrides WHERE subject_id = 'svc:order-service' AND field = 'team'`).run()
+  linkPass()
+  is('  …and removing it restores the scan\'s answer', teamOf('svc:order-service'), 'trading')
+
+  /* ---- §2: the registry, present and absent */
+  is('the demo registry has two departments', n('SELECT COUNT(*) n FROM departments'), 2)
+  is('  …and eight registered teams', n('SELECT COUNT(*) n FROM teams WHERE registered = 1'), 8)
+  is(
+    '  …each in a department',
+    n('SELECT COUNT(*) n FROM teams WHERE registered = 1 AND department_id IS NULL'),
+    0
+  )
+
+  /* Absence is a supported state, and a claim worth running rather than
+     asserting. TEAMS_FILE is resolved when config.js loads, so this needs a
+     process of its own — which is also the real scenario: an install that
+     never had a registry. */
+  {
+    const probe = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `const { db } = await import('${path.join(ROOT, 'server', 'src', 'db.js')}')
+         const { linkPass } = await import('${path.join(ROOT, 'server', 'src', 'link.js')}')
+         linkPass()
+         const n = (q) => db.prepare(q).get().n
+         console.log(JSON.stringify({
+           teams: n('SELECT COUNT(*) n FROM teams'),
+           registered: n('SELECT COUNT(*) n FROM teams WHERE registered = 1'),
+           departments: n('SELECT COUNT(*) n FROM departments'),
+           unknown: n("SELECT COUNT(*) n FROM drift WHERE kind = 'unknown-team'"),
+           orders: db.prepare("SELECT team_id t FROM nodes WHERE id = 'db:postgres/orders'").get().t,
+         }))`,
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, TEAMS_FILE: path.join(process.env.DATA_DIR, 'no-such-registry.json') },
+      }
+    )
+    const out = JSON.parse(probe.stdout.trim().split('\n').pop() || '{}')
+    is('with no registry the teams are still all there', out.teams, 8)
+    is('  …all of them unregistered', out.registered, 0)
+    is('  …with no departments', out.departments, 0)
+    is('  …and unknown-team does not fire against the whole organisation', out.unknown, 0)
+    is('  …while the components keep their teams', out.orders, 'trading')
+  }
+
+  // That probe left the database registry-less; put it back.
+  linkPass()
+  is('putting the registry back re-registers them', n('SELECT COUNT(*) n FROM teams WHERE registered = 1'), 8)
+  is('  …and the departments with them', n('SELECT COUNT(*) n FROM departments'), 2)
 
   done()
 }

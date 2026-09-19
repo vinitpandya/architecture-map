@@ -14,3 +14,8 @@ tsconfig.tsbuildinfo
 # through `git add -A` before this rule existed.
 /.*.mjs
 /.probe-*.json
+
+# The live team registry is per deployment; the template is teams.example.json
+# and the demo fixture is demo/teams.json. Anchored, so demo/teams.json — which
+# IS committed, and is what the verification runs against — is not swept up.
+/teams.json

@@ -239,6 +239,65 @@ CREATE TABLE IF NOT EXISTS dashboards (
 
 -- ───────────────────────────────────────────────────────────────── search
 
+-- ─────────────────────────────────────────── the org, loaded from teams.json
+-- Not ingested: there is no manifest for it, no quarantine and no
+-- supersession. It describes the organisation, not the code.
+
+CREATE TABLE IF NOT EXISTS departments (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT
+);
+
+CREATE TABLE IF NOT EXISTS teams (
+  id            TEXT PRIMARY KEY,   -- 'trading', canonical, out of teamId()
+  name          TEXT NOT NULL,      -- 'Trading', for display
+  department_id TEXT REFERENCES departments(id) ON DELETE SET NULL,
+  description   TEXT,
+  contact       TEXT,
+  -- 1 = in teams.json. 0 = seen in the data and nowhere else, which is what
+  -- the unknown-team finding reports. Either way it gets a row, so every
+  -- screen can name it rather than showing a bare id.
+  registered    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS teams_department ON teams (department_id);
+
+-- ────────────────── handoffs between processes, derived and declared alike.
+-- Rebuilt whole by the link pass, like every other join in this file.
+
+CREATE TABLE IF NOT EXISTS process_links (
+  id         TEXT PRIMARY KEY,   -- sha1(from|kind|to|via_node)
+  from_id    TEXT NOT NULL,      -- 'proc:2.3.2'
+  to_id      TEXT NOT NULL,      -- 'proc:3.1.2'
+  kind       TEXT NOT NULL,      -- kafka | declared
+  via_node   TEXT,               -- the topic that carries it; NULL when declared
+  via        TEXT NOT NULL,      -- interaction | rollup
+  declared   INTEGER NOT NULL DEFAULT 0,
+  derived    INTEGER NOT NULL DEFAULT 0,
+  -- How much the topology corroborates a declared claim: kafka (it is also
+  -- derived), component (the two processes touch the same thing), or none —
+  -- which is the only case worth a finding.
+  support    TEXT NOT NULL,
+  cross_team INTEGER NOT NULL DEFAULT 0,
+  note       TEXT,               -- the author's, when declared
+  first_seen TEXT NOT NULL,
+  last_seen  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS process_links_from ON process_links (from_id);
+CREATE INDEX IF NOT EXISTS process_links_to   ON process_links (to_id);
+
+-- ─────────────── which teams a process reaches, and what reaches them.
+-- Derived, never authored. One query per screen rather than a join per row.
+
+CREATE TABLE IF NOT EXISTS process_teams (
+  process_id TEXT NOT NULL,
+  team_id    TEXT NOT NULL,
+  via        TEXT NOT NULL,   -- owner | component | handoff
+  via_node   TEXT NOT NULL DEFAULT '',  -- the component that reaches it
+  PRIMARY KEY (process_id, team_id, via, via_node)
+);
+CREATE INDEX IF NOT EXISTS process_teams_team ON process_teams (team_id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
   subject_kind UNINDEXED,
   subject_id   UNINDEXED,
@@ -247,6 +306,25 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
   repo         UNINDEXED,
   tokenize = 'porter unicode61'
 );
+`)
+
+/**
+ * A derived column added to a table that already exists in the field. SQLite
+ * has no `ADD COLUMN IF NOT EXISTS`, and this runs on every boot against
+ * databases of every vintage, so the check is the migration.
+ */
+function addColumn(table, column, type) {
+  const has = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)
+  if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+}
+
+// The resolved team. `nodes.team` and `processes.owner` keep whatever the scan
+// and the pack wrote, because those are the evidence; these are what joins.
+addColumn('nodes', 'team_id', 'TEXT')
+addColumn('processes', 'team_id', 'TEXT')
+db.exec(`
+  CREATE INDEX IF NOT EXISTS nodes_team     ON nodes (team_id);
+  CREATE INDEX IF NOT EXISTS processes_team ON processes (team_id);
 `)
 
 export function getConfig(key, fallback = null) {
