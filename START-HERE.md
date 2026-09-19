@@ -33,7 +33,8 @@ that already exists.
 | File | Why |
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | How to work here. Short. Read it fully. |
-| [`SPEC-PROCESSES.md`](SPEC-PROCESSES.md) | **The current work — phases 7–11.** Business processes: the L1/L2/L3 hierarchy and the components each one uses. This is your task list. |
+| [`SPEC-ORG.md`](SPEC-ORG.md) | **The current work — phases 12–16.** Teams and handoffs: who is responsible for each process and component, where one team's work ends and another's begins, and the map on the process page. This is your task list. |
+| [`SPEC-PROCESSES.md`](SPEC-PROCESSES.md) | Layer B, phases 7–11. Complete and verified. Business processes: the L1/L2/L3 hierarchy and the components each one uses. Read it as background — §3 is the schema you are extending and §12 the invariants that still hold. |
 | [`SPEC.md`](SPEC.md) | Layer A, phases 1–6. Complete and verified. Read it as background: §3–§8 is the data model and API you are extending, §15 the invariants that still hold. |
 | [`schema/process-pack.schema.json`](schema/process-pack.schema.json) | The Layer B contract. Written and validated. Its `description` fields are instructions to whoever authors a pack, not documentation. |
 | [`schema/example.order-and-execution.json`](schema/example.order-and-execution.json) | A valid pack against the demo estate: 20 processes, 15 leaves. Your Phase 7 fixture. |
@@ -87,13 +88,16 @@ missing.
 
 ## 4 · Start at Phase 7
 
-Phases 1–6 are done: the topology layer, the map, search and drift all work, and
-`npm run verify` passes 53 assertions against a seeded ten-service estate. Run
-`npm run seed:demo` and look at it before you start.
+Phases 1–11 are done: the topology layer, the map, search, drift, the process
+hierarchy and the process/component join all work, and `npm run verify` passes
+175 assertions against a seeded ten-service, three-pack estate — plus 72 more in
+a browser via `npm run verify:ui`. Run `npm run seed:demo` and look at it before
+you start.
 
-**Your work is [`SPEC-PROCESSES.md`](SPEC-PROCESSES.md) — Layer B.** Read it in
-full, then begin at its §9 Phase 7: the process-pack tables, ingest, and sweep
-routing. The schema and a worked example are already written and validated.
+**Your work is [`SPEC-ORG.md`](SPEC-ORG.md) — Layer C.** Read it in full, then
+begin at its §9 Phase 12: the team registry, `teamId()`, and the derived team on
+every component. Its §1 explains the one rule that is easy to get wrong — why a
+synchronous call is a dependency and only a Kafka event is a handoff.
 
 The old Phase 1 instructions below are kept because the shape of that work is
 the shape of yours — process-pack ingest deliberately mirrors manifest ingest,
@@ -166,7 +170,7 @@ Violating any of these makes the product wrong rather than merely buggy.
 
 ## 6 · Prove it, then commit
 
-Every phase in SPEC-PROCESSES.md §9 has verification steps in its **§10**. Run
+Every phase in SPEC-ORG.md §9 has verification steps in its **§10**. Run
 them, and extend `server/scripts/verify.mjs` with them as you go — that script is
 this project's test suite, and it is how the next person trusts your work.
 
