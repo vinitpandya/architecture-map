@@ -14,6 +14,34 @@ export const KIND_COLOR: Record<NodeKind, string> = {
   external: '--text-muted',
 }
 
+/**
+ * The eight categorical slots, in the order theme.css declares them. Node kind
+ * already owns six of these, which is why a team cannot simply be another
+ * colour: one encoding has to win, and the map's "Colour by" control is what
+ * decides. See teamColours().
+ */
+const SERIES = [
+  '--series-1', '--series-2', '--series-3', '--series-4',
+  '--series-5', '--series-6', '--series-7', '--series-8',
+] as const
+
+/**
+ * A colour per team, for the teams actually on screen. The tokens are
+ * documented as "fixed order, never cycled", so past the eighth team there is
+ * no colour left: those are drawn in the muted border colour and the legend
+ * says so. Wrapping the palette round would put two teams in one colour with
+ * nothing telling the reader.
+ *
+ * Sorted by id so a team keeps its colour between two loads of the same map.
+ */
+export function teamColours(teamIds: (string | null | undefined)[]): Map<string, string> {
+  const ids = [...new Set(teamIds.filter((t): t is string => !!t))].sort()
+  return new Map(ids.slice(0, SERIES.length).map((id, i) => [id, SERIES[i]]))
+}
+
+/** What a node with no team, or past the eighth, is drawn in. */
+export const NO_TEAM_COLOR = '--text-muted'
+
 export const KIND_LABEL: Record<NodeKind, string> = {
   service: 'Service',
   'kafka.topic': 'Kafka topic',

@@ -427,6 +427,8 @@ export type ScopeData = {
   depth: string
   kinds: string[]
   repos: string[]
+  /** Canonical team ids, from the registry or from the data. */
+  teams: string[]
   includeExternal: boolean
   /** A process code. Restricts the map to that process's components. */
   process: string

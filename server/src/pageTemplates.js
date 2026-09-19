@@ -83,6 +83,20 @@ export const SYSTEM_PAGES = [
     ],
   },
   {
+    slug: 'teams',
+    name: 'Teams and handoffs',
+    layout: [
+      { i: 'tm-1', type: 'stat', title: '', x: 0, y: 0, w: 3, h: 2, options: { kind: 'teams' } },
+      { i: 'tm-2', type: 'stat', title: '', x: 3, y: 0, w: 3, h: 2, options: { kind: 'crossTeam' } },
+      { i: 'tm-3', type: 'stat', title: '', x: 6, y: 0, w: 3, h: 2, options: { kind: 'undocumented' } },
+      { i: 'tm-4', type: 'stat', title: '', x: 9, y: 0, w: 3, h: 2, options: { kind: 'processPacks' } },
+      { i: 'tm-5', type: 'team-handoffs', title: '', x: 0, y: 2, w: 6, h: 7, options: {} },
+      { i: 'tm-6', type: 'team-list', title: '', x: 6, y: 2, w: 6, h: 7, options: {} },
+      { i: 'tm-7', type: 'process-handoffs', title: '', x: 0, y: 9, w: 6, h: 6, options: {} },
+      { i: 'tm-8', type: 'process-map', title: '', x: 6, y: 9, w: 6, h: 6, options: {} },
+    ],
+  },
+  {
     slug: 'health',
     name: 'Health',
     layout: [

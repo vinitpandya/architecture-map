@@ -65,6 +65,16 @@ export function ScopeBar() {
   }))
 
   const repoOptions: Option[] = (status?.repos ?? []).map((r) => ({ value: r.repo, label: r.repo }))
+  // Off the nodes already loaded for the focus picker, so the filter row makes
+  // no request of its own — and so it offers exactly the teams that own
+  // something on the map rather than the whole org chart.
+  const teamOptions: Option[] = [
+    ...new Map(
+      nodes
+        .filter((n) => n.teamId)
+        .map((n) => [n.teamId!, { value: n.teamId!, label: n.teamName ?? n.teamId! }])
+    ).values(),
+  ].sort((a, b) => a.label.localeCompare(b.label))
 
   // Indented by level, because the tree is the point: picking a level 1 gives
   // the whole of it, picking a level 2 narrows to that stage.
@@ -114,6 +124,17 @@ export function ScopeBar() {
         placeholder="All but contracts"
         width={230}
       />
+
+      {teamOptions.length > 0 && (
+        <Picker
+          label="Teams"
+          options={teamOptions}
+          selected={scope.teams}
+          onChange={(teams) => setScope({ teams })}
+          placeholder="All teams"
+          width={190}
+        />
+      )}
 
       {repoOptions.length > 0 && (
         <Picker

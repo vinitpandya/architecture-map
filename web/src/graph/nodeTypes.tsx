@@ -19,6 +19,8 @@ export type MapNodeData = {
   /** Dimmed when something else is selected and this is not its neighbour. */
   faded: boolean
   showLabel: boolean
+  /** A theme token name, when the map is colouring by something else. */
+  color?: string
 }
 
 function Shell({ data, extra, glyph }: { data: MapNodeData; extra?: string; glyph?: JSX.Element }) {
@@ -38,7 +40,7 @@ function Shell({ data, extra, glyph }: { data: MapNodeData; extra?: string; glyp
   return (
     <div
       className={classes}
-      style={{ ['--node-color' as string]: `var(${KIND_COLOR[node.kind]})` }}
+      style={{ ['--node-color' as string]: `var(${data.color ?? KIND_COLOR[node.kind]})` }}
       title={`${KIND_LABEL[node.kind]} · ${node.id}`}
     >
       <Handle type="target" position={Position.Left} className="map-handle" />

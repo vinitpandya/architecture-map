@@ -11,11 +11,16 @@ import { ProcessFlow } from '../graph/ProcessFlow'
 import { ProcessTree } from '../components/ProcessTree'
 import { full } from '../lib/format'
 import { DRIFT_KINDS } from '../lib/drift'
+import { HandoffList } from '../components/HandoffList'
+import { teamHref } from '../lib/nodes'
 import type {
   ContractVersions,
   CoverageRow,
+  Department,
   DriftFinding,
   Evidence,
+  Handoff,
+  Team,
   NodeDetail,
   Process,
   ProcessDetail,
@@ -122,6 +127,9 @@ export const WIDGETS: WidgetDef[] = [
           { value: 'processLeaves', label: 'Atomic actions' },
           { value: 'processPacks', label: 'Process packs' },
           { value: 'coverage', label: 'Components covered' },
+          { value: 'teams', label: 'Teams' },
+          { value: 'crossTeam', label: 'Cross-team handoffs' },
+          { value: 'undocumented', label: 'Undocumented handoffs' },
         ],
       },
     ],
@@ -255,6 +263,34 @@ export const WIDGETS: WidgetDef[] = [
     desc: "One process's parts, in order, with what each one touches",
     w: 7, h: 5, minW: 4, minH: 3,
     fields: [PROCESS_FIELD],
+  },
+  {
+    type: 'process-map',
+    label: 'Process on the map',
+    desc: "One process's components and the relationships among them",
+    w: 7, h: 6, minW: 4, minH: 4,
+    fields: [PROCESS_FIELD],
+  },
+  {
+    type: 'process-handoffs',
+    label: 'Process handoffs',
+    desc: 'Where one process ends and another team\'s begins',
+    w: 6, h: 5, minW: 4, minH: 3,
+    fields: [PROCESS_FIELD],
+  },
+  {
+    type: 'team-list',
+    label: 'Teams',
+    desc: 'Who owns what, by department',
+    w: 6, h: 5, minW: 4, minH: 3,
+    fields: [],
+  },
+  {
+    type: 'team-handoffs',
+    label: 'Team handoff matrix',
+    desc: 'Which team hands off to which, counted',
+    w: 6, h: 6, minW: 4, minH: 4,
+    fields: [],
   },
   {
     type: 'process-flow',
@@ -405,6 +441,10 @@ export function WidgetBody({ widget }: { widget: WidgetConfig }) {
     case 'process-flow': return <ProcessFlowBody widget={widget} />
     case 'process-coverage': return <ProcessCoverageBody widget={widget} />
     case 'process-list': return <ProcessListBody widget={widget} />
+    case 'process-map': return <ProcessMapBody widget={widget} />
+    case 'process-handoffs': return <ProcessHandoffsBody widget={widget} />
+    case 'team-list': return <TeamListBody />
+    case 'team-handoffs': return <TeamMatrixBody />
     default: return <Empty title={`Unknown widget "${widget.type}"`} />
   }
 }
@@ -431,6 +471,30 @@ function StatBody({ widget }: { widget: WidgetConfig }) {
         </div>
         <div className="muted" style={{ fontSize: 12 }}>
           services and topics a documented process accounts for
+        </div>
+      </div>
+    )
+  }
+
+  if (kind === 'teams' || kind === 'crossTeam' || kind === 'undocumented') {
+    const [value, note] =
+      kind === 'teams'
+        ? [
+            status.teams?.registered ?? 0,
+            status.teams?.unregistered
+              ? `registered, and ${status.teams.unregistered} the registry does not have`
+              : `across ${status.teams?.departments ?? 0} departments`,
+          ]
+        : kind === 'crossTeam'
+          ? [status.handoffs?.crossTeam ?? 0, "handoffs where one team's work becomes another's"]
+          : [status.handoffs?.undocumented ?? 0, 'cross-team handoffs no pack mentions']
+    return (
+      <div>
+        <div className="value" style={{ fontSize: 30, fontWeight: 650, letterSpacing: '-0.02em' }}>
+          {full(value)}
+        </div>
+        <div className="muted" style={{ fontSize: 12 }}>
+          {note}
         </div>
       </div>
     )
@@ -972,6 +1036,142 @@ function ProcessFlowBody({ widget }: { widget: WidgetConfig }) {
       children={data.children}
       nameOf={(id) => data.components.find((c) => c.id === id)?.name ?? idValue(id)}
       title={`${displayCode(data.process.code)} ${data.process.name}`}
+    />
+  )
+}
+
+function ProcessMapBody({ widget }: { widget: WidgetConfig }) {
+  const code = useProcessCode(widget)
+  if (!code)
+    return (
+      <Empty title="Pick a process">
+        <span className="muted" style={{ fontSize: 12 }}>
+          Set a code on this widget, or choose one in the filter row.
+        </span>
+      </Empty>
+    )
+  // Sized off the widget's grid rows, exactly as the estate map is.
+  return <MapCanvas height={bodyHeight(widget.h)} focus="" depth="all" process={code} />
+}
+
+function ProcessHandoffsBody({ widget }: { widget: WidgetConfig }) {
+  const code = useProcessCode(widget)
+  const { data, error } = useQuery<ProcessDetail>(code ? '/process' : null, { code })
+  if (!code)
+    return (
+      <Empty title="Pick a process">
+        <span className="muted" style={{ fontSize: 12 }}>
+          Set a code on this widget, or choose one in the filter row.
+        </span>
+      </Empty>
+    )
+  if (error) return <NoSuchProcess code={code} error={error} />
+  if (!data) return null
+  const total = data.links.out.length + data.links.in.length + data.links.inside.length
+  if (!total)
+    return <Empty title={`${displayCode(data.process.code)} hands off to nobody, and nobody hands off to it`} />
+  return (
+    <div className="stack" style={{ gap: 12 }}>
+      <HandoffList title="Hands off to" handoffs={data.links.out} side="to" />
+      <HandoffList title="Picked up from" handoffs={data.links.in} side="from" />
+      <HandoffList title="Inside this process" handoffs={data.links.inside} side="both" />
+    </div>
+  )
+}
+
+function TeamListBody() {
+  const { data } = useQuery<{ configured: boolean; departments: Department[]; teams: Team[] }>('/teams')
+  if (!data) return null
+  if (!data.teams.length)
+    return (
+      <Empty title="No teams yet">
+        <span className="muted" style={{ fontSize: 12 }}>
+          A team arrives with the data — <code>service.team</code> in a manifest, or{' '}
+          <code>owner</code> on a process.
+        </span>
+      </Empty>
+    )
+  return (
+    <DataGrid
+      rows={data.teams}
+      rowKey={(t) => t.id}
+      columns={[
+        {
+          key: 'name',
+          label: 'Team',
+          wide: true,
+          value: (t) => t.name,
+          render: (t) => (
+            <span className="row" style={{ gap: 6, alignItems: 'baseline' }}>
+              <Link to={teamHref(t.id)}>{t.name}</Link>
+              {!t.registered && <span className="pill bad">unregistered</span>}
+            </span>
+          ),
+        },
+        { key: 'dept', label: 'Department', value: (t) => t.department?.name ?? '' },
+        { key: 'components', label: 'Owns', value: (t) => t.components },
+        { key: 'processes', label: 'Runs', value: (t) => t.processes },
+        { key: 'out', label: 'Hands off', value: (t) => t.handoffsOut },
+      ]}
+    />
+  )
+}
+
+/**
+ * Which team hands off to which. A table of counts rather than a chart: the
+ * house style has a table, and a cell that is a link is worth more than a cell
+ * that is a shade.
+ */
+function TeamMatrixBody() {
+  const { data } = useQuery<{ handoffs: Handoff[] }>('/handoffs', { crossTeam: 'true' })
+  if (!data) return null
+  if (!data.handoffs.length)
+    return (
+      <Empty title="No handoff crosses a team">
+        <span className="muted" style={{ fontSize: 12 }}>
+          Either the processes are all one team's, or the events that carry work between them are
+          not documented yet.
+        </span>
+      </Empty>
+    )
+
+  const names = new Map<string, string>()
+  const counts = new Map<string, number>()
+  for (const h of data.handoffs) {
+    const a = h.from.teamId
+    const b = h.to.teamId
+    if (!a || !b) continue
+    names.set(a, h.from.teamName ?? a)
+    names.set(b, h.to.teamName ?? b)
+    counts.set(`${a}|${b}`, (counts.get(`${a}|${b}`) ?? 0) + 1)
+  }
+  const ids = [...names.keys()].sort((x, y) => names.get(x)!.localeCompare(names.get(y)!))
+  const rows = ids.map((from) => ({ from, ...Object.fromEntries(ids.map((to) => [to, counts.get(`${from}|${to}`) ?? 0])) }))
+
+  return (
+    <DataGrid
+      rows={rows as Record<string, string | number>[]}
+      rowKey={(r) => String(r.from)}
+      columns={[
+        {
+          key: 'from',
+          label: 'Hands off ↓ to →',
+          wide: true,
+          value: (r) => names.get(String(r.from)) ?? String(r.from),
+          render: (r) => <Link to={teamHref(String(r.from))}>{names.get(String(r.from))}</Link>,
+        },
+        ...ids.map((to) => ({
+          key: to,
+          label: names.get(to)!,
+          value: (r: Record<string, string | number>) => Number(r[to]),
+          render: (r: Record<string, string | number>) =>
+            Number(r[to]) ? (
+              <strong>{Number(r[to])}</strong>
+            ) : (
+              <span className="muted">·</span>
+            ),
+        })),
+      ]}
     />
   )
 }

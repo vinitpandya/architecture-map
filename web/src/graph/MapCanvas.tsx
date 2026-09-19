@@ -16,27 +16,50 @@ import '@xyflow/react/dist/style.css'
 import { api, type Evidence, type GraphData, type GraphEdge, type GraphNode, type NodeDetail } from '../lib/api'
 import { useQuery, useScope } from '../lib/scope'
 import { Empty, Legend, useThemeVersion } from '../components/ui'
-import { EDGE_LABEL, KIND_COLOR, KIND_LABEL, edgeStyle, flowDirection, nodeHref } from '../lib/nodes'
+import {
+  EDGE_LABEL,
+  KIND_COLOR,
+  KIND_LABEL,
+  NO_TEAM_COLOR,
+  edgeStyle,
+  flowDirection,
+  nodeHref,
+  teamColours,
+} from '../lib/nodes'
 import { layoutGraph, layoutKey, nodeSize, type Position } from './layout'
 import { nodeTypes, type MapNodeData } from './nodeTypes'
 
 /** Above this, labels go away below 0.5 zoom — §11. */
 const LABEL_BUDGET = 150
 const INSPECTOR_KEY = 'architecture-map.inspector'
+const COLOUR_KEY = 'architecture-map.colour-by'
 
 export function MapCanvas({
   height,
   focus,
   depth,
   pinned = false,
+  process,
 }: {
   height: number
   focus: string
   depth: string
   /** A map fixed to one node by its widget options ignores the filter row. */
   pinned?: boolean
+  /**
+   * Restrict to one process's components, ignoring the filter row entirely.
+   * The process page has no filter row, and must not inherit whatever the map
+   * page was last set to — so every scope parameter is overridden, not just
+   * `process`.
+   */
+  process?: string
 }) {
-  const { data, loading } = useQuery<GraphData>('/graph', { focus, depth })
+  const { data, loading } = useQuery<GraphData>(
+    '/graph',
+    process
+      ? { process, focus: '', depth: 'all', kinds: '', repos: '', teams: '', includeExternal: 'true' }
+      : { focus, depth }
+  )
   const { setScope, status } = useScope()
   const [params, setParams] = useSearchParams()
   const theme = useThemeVersion()
@@ -46,11 +69,20 @@ export function MapCanvas({
   const [selected, setSelected] = useState<string | null>(null)
   const [zoomedOut, setZoomedOut] = useState(false)
   const [open, setOpen] = useState(() => localStorage.getItem(INSPECTOR_KEY) !== 'closed')
+  /**
+   * Node kind already owns six of theme.css's eight categorical slots and that
+   * file is off limits, so there is no second palette: a team cannot simply be
+   * another colour. One encoding wins at a time, and this is what decides.
+   */
+  const [colourBy, setColourBy] = useState<'kind' | 'team'>(
+    () => (localStorage.getItem(COLOUR_KEY) === 'team' ? 'team' : 'kind')
+  )
   const flow = useRef<ReactFlowInstance | null>(null)
   const urlFocus = useRef<string | null>(null)
 
   const nodes = data?.nodes ?? []
   const edges = data?.edges ?? []
+  const teamSlot = useMemo(() => teamColours(nodes.map((n) => n.teamId)), [nodes])
   const key = useMemo(() => layoutKey(nodes, edges), [nodes, edges])
 
   // A selection the graph no longer contains has no neighbours, so every node
@@ -90,12 +122,12 @@ export function MapCanvas({
   // The browser back button has to undo a re-focus, so focus and depth live in
   // the query string and the filter row follows them.
   useEffect(() => {
-    if (pinned) return
+    if (pinned || process) return
     const fromUrl = params.get('focus')
     if (fromUrl === urlFocus.current) return
     urlFocus.current = fromUrl
     setScope({ focus: fromUrl ?? '', depth: params.get('depth') ?? '1' })
-  }, [params, pinned, setScope])
+  }, [params, pinned, process, setScope])
 
   const refocus = useCallback(
     (id: string) => {
@@ -127,6 +159,7 @@ export function MapCanvas({
         selected: n.id === selected,
         faded: !!selected && n.id !== selected && !neighbours.has(n.id),
         showLabel,
+        color: colourBy === 'team' ? (n.teamId && teamSlot.get(n.teamId)) || NO_TEAM_COLOR : undefined,
       } satisfies MapNodeData,
       ...nodeSize(n),
       // Above the edges. An edge carries an invisible 20px interaction stroke,
@@ -136,7 +169,9 @@ export function MapCanvas({
       selectable: true,
       connectable: false,
     }))
-  }, [nodes, positions, focus, selected, neighbours, showLabel])
+    // colourBy and teamSlot are in here because the node's colour is part of
+    // its data: without them the legend switched and the nodes did not.
+  }, [nodes, positions, focus, selected, neighbours, showLabel, colourBy, teamSlot])
 
   const rfEdges: Edge[] = useMemo(
     () =>
@@ -170,9 +205,14 @@ export function MapCanvas({
     const ingested = (status?.repos.length ?? 0) > 0
     const [title, hint] = !ingested
       ? ['Nothing ingested yet', 'Run a scan, or npm run seed:demo for the sample estate.']
-      : focus
-        ? ['Nothing connected to that node', 'Widen the depth or clear the focus.']
-        : ['Nothing matches these filters', 'Widen Show, Repos or Process in the row above.']
+      : process
+        ? [
+            'Nothing in the map is bound to this process',
+            'Its components are named by the pack, and none of them resolved.',
+          ]
+        : focus
+          ? ['Nothing connected to that node', 'Widen the depth or clear the focus.']
+          : ['Nothing matches these filters', 'Widen Show, Repos or Process in the row above.']
     return (
       <Empty title={title}>
         <span className="muted" style={{ fontSize: 12 }}>{hint}</span>
@@ -199,7 +239,7 @@ export function MapCanvas({
             instance.fitView({ padding: 0.14, duration: 0 })
           }}
           onNodeClick={(_, n) => setSelected(n.id)}
-          onNodeDoubleClick={(_, n) => !pinned && refocus(n.id)}
+          onNodeDoubleClick={(_, n) => !pinned && !process && refocus(n.id)}
           onPaneClick={() => setSelected(null)}
           onMove={(_, viewport) => setZoomedOut((was) => (viewport.zoom < 0.5) !== was ? viewport.zoom < 0.5 : was)}
           nodesDraggable={false}
@@ -212,7 +252,30 @@ export function MapCanvas({
           maxZoom={2.5}
         >
           <Panel position="top-left" className="map-legend">
-            <Legend items={legend(nodes)} />
+            <div className="stack" style={{ gap: 8 }}>
+              <Legend items={colourBy === 'team' ? teamLegend(nodes, teamSlot) : legend(nodes)} />
+              {teamSlot.size > 0 && (
+                <div className="segmented" role="group" aria-label="Colour by">
+                  {(['kind', 'team'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={colourBy === mode}
+                      onClick={() => {
+                        setColourBy(mode)
+                        try {
+                          localStorage.setItem(COLOUR_KEY, mode)
+                        } catch {
+                          /* a private window is not a reason to fail */
+                        }
+                      }}
+                    >
+                      {mode === 'kind' ? 'Kind' : 'Team'}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </Panel>
           <Background variant={BackgroundVariant.Dots} gap={18} size={1} color={token.gridline} />
           <Controls showInteractive={false} />
@@ -236,7 +299,7 @@ export function MapCanvas({
             return !v
           })
         }}
-        onFocus={pinned ? undefined : refocus}
+        onFocus={pinned || process ? undefined : refocus}
       />
     </div>
   )
@@ -420,6 +483,32 @@ function Citation({ evidence }: { evidence: Evidence }) {
       </pre>
     </li>
   )
+}
+
+/**
+ * The teams on screen, in the order they took their colours. A team past the
+ * eighth has none — the tokens are documented as never cycled — so it is drawn
+ * muted and the legend says how many, rather than silently reusing a colour.
+ */
+function teamLegend(nodes: GraphNode[], slots: Map<string, string>) {
+  const named = new Map(nodes.filter((n) => n.teamId).map((n) => [n.teamId!, n.teamName ?? n.teamId!]))
+  const items = [...slots].map(([id, tokenName]) => ({
+    id,
+    label: named.get(id) ?? id,
+    color: `var(${tokenName})`,
+  }))
+  const uncoloured = [...named.keys()].filter((id) => !slots.has(id)).length
+  const teamless = nodes.filter((n) => !n.teamId).length
+  if (uncoloured || teamless) {
+    items.push({
+      id: '·none',
+      label: uncoloured
+        ? `${uncoloured} more team${uncoloured === 1 ? '' : 's'}, and ${teamless} with none`
+        : `${teamless} with no team`,
+      color: `var(${NO_TEAM_COLOR})`,
+    })
+  }
+  return items
 }
 
 /** Only the kinds actually on screen — a legend for absent things is noise. */

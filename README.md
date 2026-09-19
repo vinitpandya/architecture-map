@@ -45,8 +45,8 @@ database again, leaving the generated files under `demo/` alone; add `--files`
 to delete those too.
 
 ```bash
-npm run verify        # SPEC.md §14 and SPEC-PROCESSES.md §10 — 175 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 72 more
+npm run verify        # SPEC.md §14 and SPEC-PROCESSES.md §10 — 307 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 93 more
 npm run validate -- inbox/payments-service.json
 npm run build && npm start           # production build, UI and API on one port
 ```

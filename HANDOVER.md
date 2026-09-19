@@ -1,10 +1,22 @@
 # Handover
 
-Two sessions. The first took the repository from "the shell works, nothing under
-it does" to Layer A complete — SPEC.md phases 1–6. The second added Layer B, the
-business processes — SPEC-PROCESSES.md phases 7–11 — and then spent a polish
-pass reading the result back against the spec, which found seven more defects on
-paths the demo data never reaches. All of it is complete and verified.
+Three layers, all complete and verified.
+
+**Layer A** — SPEC.md phases 1–6 — is the topology: what talks to what, derived
+from code, with a file and a line behind every claim.
+
+**Layer B** — SPEC-PROCESSES.md phases 7–11 — is what the business does: the
+L1/L2/L3 hierarchy and the components each part of it runs through. Written by
+people, and cross-checked against Layer A, which is where its value is.
+
+**Layer C** — SPEC-ORG.md phases 12–16 — is who is responsible: a team on every
+process and every component, from a registry rather than free text, and the
+handoffs where one team's work ends and another's begins.
+
+Between B and C a polish pass read the whole result back against the spec and
+found defects on paths the demo data never reaches. That turned out to be the
+most productive thing in the build, and it is why §"Nothing is failing" below is
+as long as it is.
 
 Read [DECISIONS.md](DECISIONS.md) alongside this. It has the working for every
 judgement call, including three places where a spec contradicts itself and how
@@ -19,8 +31,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 175 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 72 more
+npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 307 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 93 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run build && npm start           # production build, UI and API on one port
@@ -47,6 +59,11 @@ database and leaves the committed fixtures under `demo/` alone unless you add
 | 10 · read API and the core pages | Complete, verified |
 | 11 · the map overlay, the flow view, the widgets | Complete, verified in a browser |
 | polish · seven defects from an adversarial read | Complete, verified |
+| 12 · the team registry, and a team on every component | Complete, verified |
+| 13 · handoffs between processes | Complete, verified |
+| 14 · the demo registry, declarations and defects | Complete, verified |
+| 15 · the read API, /teams, /team, the process cards | Complete, verified |
+| 16 · the map on the process page, colour by team, the widgets | Complete, verified in a browser |
 
 Beyond §13 and §9's lists, two things the shells had not met: node detail renders
 per kind (the topic page — producers against consumers with the version skew
@@ -55,7 +72,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 175 assertions across four stages, all passing.**
+**`npm run verify` — 307 assertions across four stages, all passing.**
 
 *Ingest (20, in-process against a fresh database).* A fresh install answers
 `coverage` as two numbers rather than `{total: 0, covered: null}`, which is what
@@ -101,7 +118,24 @@ every placeholder in its body filled — the pack id, the components and the cod
 already taken. `--remove` clears packs,
 processes, the join tables and every process finding.
 
-*Packs (32, in-process).* The situations the demo estate cannot contain, because
+*Org (114, in-process and over HTTP).* `teamId()` fixes case and separators and
+deliberately does not merge `Trading Team` into `trading`. A service takes its
+own team, a database its owner's, an endpoint its exposer's, a cache its single
+writing team's; an external, a contract, an unproduced topic, a two-writer cache
+and a topic two teams publish to all have none, and the last of those says why.
+An override beats the manifest, carries to everything that inherits from it, and
+re-runs the link pass rather than leaving the derived columns stale. With no
+registry the teams are still all there, all unregistered, and `unknown-team`
+does not fire against the whole organisation. Eight derived handoffs, seven
+crossing a team — two of them found only because the consumer named the topic in
+`touches`, while the one that names it with no consuming edge derives nothing. A
+rolled-up handoff keeps the leaf pair's team rather than the ancestor's. `L2`
+hands off to `L3` over two topics, one agreed and one nobody declared. The three
+demo defects fire exactly once each. `/api/team`, `/api/teams` and
+`/api/handoffs` answer with both ends resolved, `graph?teams=` narrows, and
+searching a team's name finds the team and its processes.
+
+*Packs (50, in-process).* The situations the demo estate cannot contain, because
 its packs are well-formed on purpose. A pack whose `pack` field is not a string
 quarantines instead of throwing, and a malformed file in the inbox does not stop
 the good file behind it from landing. A typo in `touches` raises
@@ -115,7 +149,7 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-**`npm run verify:ui` — 72 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 93 checks in Chromium at 1280×900, all passing.**
 
 Two fresh loads of the map put all 35 nodes at byte-identical transforms. A
 `kafka.consume` edge's arrow head lands 72px from the service and 275px from the
@@ -124,7 +158,12 @@ topic. A plain unforced click on a node fills the inspector. Selecting process
 for 2.1 draws four steps in code order in both themes. Every new screen —
 the tree, a process at each level, a node with processes, the Process map page,
 Health, Scan, Search — renders in dark mode with no horizontal scroll and no
-console errors. A component that is not in the map renders as unresolved rather
+console errors. The map on the process page draws exactly the component count `/api/process`
+reports, at all three levels. Colouring by team re-tints the nodes and swaps the
+legend from kinds to teams, and switching back restores byte-identical colours.
+`/teams`, `/team?id=`, a team the registry lacks and the seeded Teams and
+handoffs page all render in dark mode with no console errors and no horizontal
+scroll. A component that is not in the map renders as unresolved rather
 than vanishing — and a missing *interaction* leaves its two real ends as
 working links, saying only that the relationship is not in the map. A level 1
 offers its diagram and draws four steps, which is the case §8 names. The Scan

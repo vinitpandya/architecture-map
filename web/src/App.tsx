@@ -21,6 +21,7 @@ const SYSTEM_NAV: { slug: string; icon: () => JSX.Element }[] = [
   { slug: 'messaging', icon: IconFlow },
   { slug: 'contracts', icon: IconContract },
   { slug: 'processes', icon: IconSteps },
+  { slug: 'teams', icon: IconHandoff },
   { slug: 'health', icon: IconReport },
 ]
 
@@ -433,6 +434,18 @@ function IconTree() {
     </svg>
   )
 }
+/** A handoff: one lane ending where another begins. */
+function IconHandoff() {
+  return (
+    <svg {...S}>
+      <path d="M1.8 4.6h5.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M6 2.8l1.9 1.8L6 6.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M14.2 11.4H8.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.6" />
+      <path d="M10 9.6l-1.9 1.8L10 13.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.6" />
+    </svg>
+  )
+}
+
 /** Teams: two people, because a team is the smallest unit that is not one. */
 function IconPeople() {
   return (

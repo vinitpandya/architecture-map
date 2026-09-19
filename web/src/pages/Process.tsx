@@ -7,6 +7,7 @@ import { relative } from '../lib/format'
 import { driftTitle } from '../lib/drift'
 import { HandoffList } from '../components/HandoffList'
 import { ProcessFlow } from '../graph/ProcessFlow'
+import { MapCanvas } from '../graph/MapCanvas'
 import {
   KIND_PLURAL,
   VIA_LABEL,
@@ -167,6 +168,13 @@ export function ProcessPage() {
         ) : (
           <Empty title="Nothing in the map is bound to this process yet" />
         )}
+      </Card>
+
+      <Card
+        title="On the map"
+        sub="This process's components and the relationships among them — the shape the sequence diagram cannot show"
+      >
+        <MapCanvas height={420} focus="" depth="all" process={process.code} />
       </Card>
 
       <TeamsCard process={process} teams={teams} />

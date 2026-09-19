@@ -92,7 +92,7 @@ export function TeamsPage() {
               title={dept?.name ?? 'No department'}
               sub={dept?.description ?? (id ? undefined : 'Not in the registry, so not placed anywhere')}
             >
-              <TeamGrid teams={teams} />
+              <TeamGrid teams={teams} storageKey={`teams-${id || 'none'}`} />
             </Card>
           )
         })
@@ -101,12 +101,13 @@ export function TeamsPage() {
   )
 }
 
-function TeamGrid({ teams }: { teams: Team[] }) {
+function TeamGrid({ teams, storageKey }: { teams: Team[]; storageKey: string }) {
   return (
     <DataGrid
       rows={teams}
       rowKey={(t) => t.id}
-      storageKey="teams"
+      // One key per department: two grids sharing a key share their sort.
+      storageKey={storageKey}
       columns={[
         {
           key: 'name',

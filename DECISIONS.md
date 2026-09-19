@@ -322,6 +322,46 @@ the git log rather than here. Three were judgement calls:
   of the database. The pack box on /scan is free text, so a pack id of `` $` ``
   spliced the whole prompt back into itself.
 
+## Layer C — teams and handoffs (phases 12–16)
+
+- **`teams.json` is per deployment; `demo/teams.json` is the fixture.** The live
+  registry is an org chart somebody maintains, so it is gitignored like
+  `repos.json`, and `seed:demo` creates it only when there is not one already —
+  seeding a demo is not a reason to overwrite it. What the verification runs
+  against is the committed fixture under `demo/`, through `TEAMS_FILE`, so a
+  stage never depends on what this machine happens to have at the root.
+- **A team the data mentions still gets a row**, marked `registered = 0` with a
+  `source` saying whether a manifest or a pack named it. Dropping it would leave
+  a component showing a bare id with nowhere to click; keeping it is what lets
+  `unknown-team` be a finding rather than an absence.
+- **`process_teams` holds reach BEYOND the process's own team.** A process's own
+  team's components are in `process_components` already and are not a crossing.
+  The table is about where the process leaves the team and what carries it
+  there, which is why it is small enough to be one query per screen.
+- **A declared handoff over HTTP scores `component`, not `none`.** It is never
+  derived, so reporting on `derived = 0` would have fired on every synchronous
+  handoff an author wrote down — which is precisely the case the field exists
+  for. Only a claim whose two processes do not touch a single directly-named
+  component between them is reported.
+- **Handoffs on a page collapse to the reader's altitude.** One handoff exists
+  at every level of both its ends, so a level 1 showed three rows saying the
+  same thing. Collapsed on the counterpart AND the carrier, because a pair that
+  genuinely hands off over two topics is two facts.
+- **`cross_team` stays two-valued.** A link with a teamless end is "unknown"
+  rather than "internal", and a third state would touch every query and every
+  filter. With a process inheriting its nearest ancestor's team, the only way to
+  reach the unknown state is an entire level 1 subtree with no owner anywhere —
+  which `process-no-owner` already reports at the level that matters.
+- **The map's colour is a mode, not a second encoding.** Node kind owns six of
+  theme.css's eight categorical slots and that file may not be touched, so
+  "colour by team" cannot coexist with "colour by kind". Past the eighth team
+  the nodes are muted and the legend says how many, because the tokens are
+  documented as never cycled and wrapping them would put two teams in one colour
+  with nothing telling the reader.
+- **The team matrix is a DataGrid, not a chart.** It is a table of counts, the
+  house style has a table, and a cell that is a link is worth more than a cell
+  that is a shade.
+
 ## Working
 
 - **`npm run verify` was added** — SPEC.md §14 as a runnable check, over HTTP,

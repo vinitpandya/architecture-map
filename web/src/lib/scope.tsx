@@ -27,6 +27,7 @@ export const DEFAULT_SCOPE: Scope = {
   depth: '1',
   kinds: ['service', 'kafka.topic', 'database', 'cache', 'endpoint'],
   repos: [],
+  teams: [],
   includeExternal: true,
   process: '',
 }
@@ -184,6 +185,7 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
       depth: scope.depth,
       kinds: scope.kinds.join(','),
       repos: scope.repos.join(','),
+      teams: scope.teams.join(','),
       includeExternal: String(scope.includeExternal),
       process: scope.process,
     }),

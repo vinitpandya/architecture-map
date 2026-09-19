@@ -472,6 +472,94 @@ for (const [code, expected] of [['2', 4], ['2.1', 4]]) {
   await ctx.close()
 }
 
+/* ---- SPEC-ORG §10 Phase 16: the map on the process page.
+
+   `/api/graph?process=` has always been able to serve this and nothing
+   rendered it. It must show exactly what /api/process counts, at every level,
+   and must NOT inherit whatever the map page's filter row was last set to. */
+for (const code of ['1', '2.1', '2.3.5']) {
+  const { ctx, page, problems } = await open(`/process?code=${code}`)
+  await page.waitForSelector('.proc-binding, .proc-flow, .card', { timeout: 20000 })
+  await page.waitForSelector('.map-node', { timeout: 30000 })
+  await page.waitForTimeout(1500)
+  const drawn = await page.$$eval('.react-flow__node', (els) => els.length)
+  const expected = (await api(`/process?code=${code}`)).components.length
+  is(`process ${code}: the map draws every component`, drawn, expected)
+  ok(`  …with no console error`, problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+/* ---- colour by team, which has to be a mode rather than a second encoding:
+   node kind already owns six of theme.css's eight categorical slots. */
+{
+  const { ctx, page } = await open('/process?code=2')
+  await page.waitForSelector('.map-node', { timeout: 30000 })
+  await page.waitForTimeout(1200)
+  const colourOf = () =>
+    page.$$eval('.map-node', (els) =>
+      els.map((e) => getComputedStyle(e).getPropertyValue('--node-color').trim())
+    )
+  const byKind = await colourOf()
+  const legendByKind = await page.$$eval('.map-legend .legend-item, .map-legend li', (els) =>
+    els.map((e) => e.textContent?.trim())
+  )
+  const toggle = await page.$('.map-legend button:has-text("Team")')
+  ok('the map offers Colour by Team', !!toggle)
+  await toggle.click()
+  await page.waitForTimeout(900)
+  const byTeam = await colourOf()
+  ok(
+    '  …and it re-tints the nodes',
+    byKind.join() !== byTeam.join(),
+    `${new Set(byKind).size} kind colours, ${new Set(byTeam).size} team colours`
+  )
+  const legendByTeam = await page.$$eval('.map-legend .legend-item, .map-legend li', (els) =>
+    els.map((e) => e.textContent?.trim())
+  )
+  ok(
+    '  …and the legend lists teams instead of kinds',
+    legendByTeam.some((t) => (t ?? '').includes('Trading')) &&
+      !legendByTeam.some((t) => (t ?? '').includes('Kafka topic')),
+    `${legendByKind.join(', ')}  →  ${legendByTeam.join(', ')}`
+  )
+  const kindBtn = await page.$('.map-legend button:has-text("Kind")')
+  await kindBtn.click()
+  await page.waitForTimeout(700)
+  is('  …and switching back restores exactly the previous colours', (await colourOf()).join(), byKind.join())
+  await ctx.close()
+}
+
+/* ---- the team pages, and the seeded dashboard */
+{
+  const pages = await api('/dashboards')
+  const teamsPage = pages.dashboards.find((d) => d.slug === 'teams')
+  ok('a Teams and handoffs page is seeded', !!teamsPage, pages.dashboards.map((d) => d.slug).join(', '))
+
+  for (const [name, url, selector] of [
+    ['teams', '/teams', 'table'],
+    ['one team', '/team?id=wallet', '.handoff-list'],
+    ['a team the registry lacks', '/team?id=risk-ops', '.card'],
+    ['the seeded teams page', `/d/${teamsPage.id}`, '[data-grid-id]'],
+  ]) {
+    const { ctx, page, problems } = await open(url, 'dark')
+    await page.waitForSelector(selector, { timeout: 20000 })
+    await page.waitForTimeout(500)
+    ok(`${name}: no horizontal page scroll at 1280px`, await noSideScroll(page))
+    ok(`${name}: no console errors`, problems.length === 0, problems.join(' | '))
+    await ctx.close()
+  }
+}
+
+/* ---- and a team that owns nothing says so, rather than showing a bare 0 */
+{
+  const { ctx, page } = await open('/teams')
+  await page.waitForSelector('table', { timeout: 20000 })
+  const text = await page.evaluate(() => document.body.innerText)
+  is('an unregistered team is marked on the teams page', text.includes('unregistered'), true)
+  is('  …and the page says why it matters', text.includes('not in the registry'), true)
+  await ctx.close()
+}
+
 await browser.close()
 console.log(`\n  ${checks - failures}/${checks} checks passed\n`)
 process.exit(failures ? 1 : 0)
