@@ -3,7 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "description": "Local-first map of a service estate, built from evidence-carrying scan manifests",
-  "workspaces": ["server", "web"],
+  "workspaces": [
+    "server",
+    "web"
+  ],
   "scripts": {
     "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "npm run dev --workspace server",
@@ -13,7 +16,8 @@
     "validate": "node server/scripts/validate.mjs",
     "seed:demo": "node server/scripts/seed-demo.mjs",
     "verify": "node server/scripts/verify.mjs",
-    "verify:ui": "node server/scripts/verify-ui.mjs"
+    "verify:ui": "node server/scripts/verify-ui.mjs",
+    "prompts": "node server/scripts/build-prompts.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

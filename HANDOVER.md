@@ -31,10 +31,11 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # SPEC.md §14 and SPEC-PROCESSES.md §10 — 312 assertions
+npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 318 assertions
 npm run build && npm run verify:ui   # the checks that need a browser — 93 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
+npm run prompts                      # rebuild prompts/standalone/ from prompts/ and schema/
 npm run build && npm start           # production build, UI and API on one port
 ```
 
@@ -42,6 +43,20 @@ Both verify scripts run against throwaway databases under `data/`. Neither
 touches your own, and neither modifies the working tree — `--remove` clears the
 database and leaves the committed fixtures under `demo/` alone unless you add
 `--files`.
+
+## Mapping something real
+
+[`prompts/standalone/`](prompts/standalone/) is the thing to hand somebody:
+two prompts with their schemas and a worked example of each, self-contained, no
+app needed. It exists because the prompts in `prompts/` are templates that only
+render through `GET /api/prompt` — right for the Scan page and wrong for the
+bootstrap, since you need manifests before the map is useful.
+
+They are **generated** by `npm run prompts` and `npm run verify` fails if a
+schema is edited without rebuilding them. A hand-maintained copy of a schema
+that has drifted from the real one is precisely the failure this project is
+built to detect, and shipping one in the onboarding material would be a poor
+joke.
 
 ## Phases
 
@@ -72,9 +87,14 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 312 assertions across four stages, all passing.**
+**`npm run verify` — 318 assertions across five stages, all passing.**
 
-*Ingest (20, in-process against a fresh database).* A fresh install answers
+*Ingest (26, in-process against a fresh database).* `prompts/standalone/` is in
+sync with the schemas it inlines, carries no unfilled placeholder, and has the
+README, both schemas and both worked examples beside it — the check that stops
+somebody being handed a copy of a schema that has quietly drifted.
+
+A fresh install answers
 `coverage` as two numbers rather than `{total: 0, covered: null}`, which is what
 SQLite's SUM over zero rows gives you. `validate.mjs` exits 0 on the example and
 1 on a `kind` typo naming `/edges/0/kind`. A quarantined manifest

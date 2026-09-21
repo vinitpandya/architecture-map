@@ -91,6 +91,32 @@ if (stage === 'ingest') {
     server.close()
   }
 
+  /* ---- the standalone prompt pack is generated, so it cannot drift.
+
+     `prompts/standalone/` is what somebody is handed to map a repository this
+     app has never seen. It inlines the schema, so a schema edit that is not
+     rebuilt hands them a copy that is quietly wrong — which is the exact class
+     of error this whole project exists to catch. */
+  {
+    const built = spawnSync(process.execPath, [path.join(HERE, 'build-prompts.mjs'), '--check'], {
+      encoding: 'utf8',
+      env: process.env,
+    })
+    is('prompts/standalone/ is in sync with the schemas', built.status, 0, built.stdout + built.stderr)
+    const dir = path.join(ROOT, 'prompts', 'standalone')
+    for (const name of ['1-scan-a-repository.md', '2-author-a-process-pack.md']) {
+      const body = fs.readFileSync(path.join(dir, name), 'utf8')
+      is(`  …${name} has no unfilled placeholder`, /\{\{[A-Z_]+\}\}/.test(body), false)
+      ok(`  …and carries the schema itself`, body.includes('"$id"'), 'no $id in the inlined schema')
+    }
+    ok(
+      '  …and the folder stands alone',
+      ['README.md', 'manifest.schema.json', 'process-pack.schema.json', 'example.manifest.json', 'example.process-pack.json']
+        .every((f) => fs.existsSync(path.join(dir, f))),
+      fs.readdirSync(dir).join(', ')
+    )
+  }
+
   const example = path.join(ROOT, 'schema', 'example.payments-service.json')
   const good = JSON.parse(fs.readFileSync(example, 'utf8'))
   const broken = structuredClone(good)
