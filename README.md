@@ -100,9 +100,28 @@ per detail level, with a `Reset layout` to hand it back to the layout engine.
 
 Pick a process in the filter row and the map draws only that process: every
 service, endpoint, cache and topic it runs through, across every repository.
-A process also renders as a sequence diagram generated from its own parts,
-which is where this project started — except now the diagram is generated from
-data that is checked against the code.
+A process also renders as a diagram generated from its own parts — five of
+them, because the children are the flow and that one fact makes every view work
+at any level:
+
+| | What it answers |
+|---|---|
+| **Sequence** | what talks to what, in order |
+| **Flow** | what happens, what decides it, and where it stops |
+| **Lanes** | where the work crosses a team boundary |
+| **Handoffs** | who picks it up, and over which topic |
+| **Decomposition** | what the process is made of, all the way down |
+
+Only the ones with something to draw are offered: a level 3 decomposes into
+nothing, and a stage one team does all of has one lane. This is where the
+project started — hand-drawn mermaid process diagrams — except now they are
+generated from data that is checked against the code, and a branch to a process
+nobody has written is drawn as the dead end it is.
+
+A process can say where the flow goes when it is not simply the next number —
+`next: [{"when": "the balance does not cover it", "end": "Order rejected"}]` —
+which is what turns the flowchart from a straight line into a process. Leave it
+out and the numbering decides, exactly as it always has.
 
 ## The four ideas
 

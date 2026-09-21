@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "promptVersion": "2026-09-18b",
+  "promptVersion": "2026-09-21a",
   "pack": "onboarding",
   "name": "Onboarding and funding",
   "description": "How a customer opens an account, is verified, and gets money onto the platform — the account record, the wallets, the session, the KYC decision and card funding. It stops where trading starts: pricing an order, placing it and settling it belong to order-and-execution. It does not cover withdrawals, refunds, chargebacks or any other reversal of a settled payment, closing an account, or how the verification provider reaches its decision, which happens outside the platform entirely.",
@@ -110,7 +110,17 @@
         "from": "svc:identity-service",
         "kind": "db.write",
         "to": "db:postgres/identity"
-      }
+      },
+      "next": [
+        {
+          "when": "the documents pass",
+          "process": "L1.2.2"
+        },
+        {
+          "when": "they do not",
+          "process": "L4.2"
+        }
+      ]
     },
     {
       "code": "1.2.2",

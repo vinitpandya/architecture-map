@@ -362,6 +362,58 @@ the git log rather than here. Three were judgement calls:
   house style has a table, and a cell that is a link is worth more than a cell
   that is a shade.
 
+## Five diagrams, and `next`
+
+- **`next` is the departures from the numbering, never the sequence.** The code
+  has always carried the order, so a step with no `next` still falls through to
+  the next sibling and a pack written before this existed draws exactly the
+  straight line it always described. `next` says only what a number cannot: a
+  condition, a jump, a stop. The corollary is a rule for authors — a `next` that
+  restates the numbering is noise the first renumbering will break — and it is
+  in the prompt.
+- **A branch is the same shape as a handoff, and follows the same rules.**
+  Read off `process_packs.raw` by the link pass rather than given a column, for
+  the reason SPEC-PROCESSES §3 already gave for `touches`; resolved into a
+  rebuilt-whole table; and a target nobody has written is kept with
+  `resolved = 0` and reported, never rejected. Consistency here was worth more
+  than any of the alternatives.
+- **A branch to the process it leaves is dropped.** It is the one loop nobody
+  means — a self-arrow that mermaid draws as a circle and a reader reads as a
+  bug in the tool. A branch back to an *earlier sibling* is kept: that is a
+  retry, and it is how a retry is written.
+- **A branching step is not a rhombus.** The convention assumes a short
+  question — "Permitted?" — and every label here is a sentence, which inflates
+  a diamond to three times the area of the box beside it and turned a four-step
+  diagram into a scroll. The condition sits on the arrow, which is where it
+  belongs, and the split is visible because the arrows split.
+- **A terminal node is drawn only if something reaches it.** Where every arm
+  ends in an outcome the author wrote, the process's own `outcome` node is an
+  unreachable box floating beside the diagram — which is what it was.
+- **Lanes pick their own dimension, and say which.** By team where more than one
+  team is involved, because that is the boundary worth seeing; by component
+  where one team does everything, because a swimlane diagram of a single
+  swimlane is a flowchart with a box round it. Where even that gives one lane,
+  the tab is not offered at all.
+- **A tab with nothing behind it is worse than a missing tab.** It teaches the
+  reader that the diagrams are unreliable. A level 3 decomposes into nothing, a
+  process that hands off to nobody has no handoff picture, and a decomposition
+  that is just the children fanned out is the list above it drawn worse.
+- **The handoff diagram keeps the deepest far end.** The rollup emits one row
+  per ancestor of the other end — `2 → 3`, `2 → 3.1` and `2 → 3.1.2` are one
+  crossing said three times — so only the deepest is drawn. And one box per
+  process however many rows name it: a rolled-up row carries the *leaf* pair's
+  teams, deliberately, which put "L2 Order and execution" in two different team
+  lanes at once.
+- **One card, one control.** The same rows drawn five ways are one thing on the
+  page, not five cards. The `process-flow` widget takes the same choice as an
+  option, and falls back to the sequence diagram rather than showing an empty
+  box when its process cannot draw what it was pinned to.
+- **The seven Layer C findings finally have titles.** `unknown-team`,
+  `component-no-team`, `multi-team-topic`, `process-no-owner` and the three
+  `process-link-*` kinds all still arrived on the Health page as bare slugs,
+  which is the exact defect the polish pass fixed for Layer B and never came
+  back to finish.
+
 ## Editing the registry — rename, merge, assign
 
 - **A merge is an alias and nothing else.** `teams.json` gains `aliases`, and

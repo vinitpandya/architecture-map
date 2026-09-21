@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, type Process, type ProcessComponent, type ProcessDetail, type ProcessSource, type TeamReach, type Handoff } from '../lib/api'
 import { Card, Empty } from '../components/ui'
@@ -6,7 +6,18 @@ import { DataGrid } from '../components/DataGrid'
 import { relative } from '../lib/format'
 import { driftTitle } from '../lib/drift'
 import { HandoffList } from '../components/HandoffList'
-import { ProcessFlow } from '../graph/ProcessFlow'
+import { Mermaid } from '../graph/ProcessFlow'
+import {
+  DIAGRAM_LABEL,
+  DIAGRAM_SUB,
+  available,
+  flowDiagram,
+  handoffDiagram,
+  laneDiagram,
+  sequenceDiagram,
+  treeDiagram,
+  type DiagramKind,
+} from '../graph/processDiagrams'
 import { MapCanvas } from '../graph/MapCanvas'
 import {
   KIND_PLURAL,
@@ -132,7 +143,7 @@ export function ProcessPage() {
       )}
 
       {children.length > 0 ? (
-        <Flow process={process} children={children} components={components} />
+        <Flow detail={data} />
       ) : (
         <Card title="What happens here" sub="This is a leaf — the atomic unit of work">
           <Binding process={process} />
@@ -243,47 +254,111 @@ export function ProcessPage() {
   )
 }
 
+const KINDS: DiagramKind[] = ['sequence', 'flow', 'lanes', 'handoffs', 'tree']
+const DIAGRAM_KEY = 'architecture-map.process-diagram'
+
 /**
- * The decomposition, as a list or as a diagram. Both are the same data read
- * the same way — the children in order — because the numbering is the order
- * and there is no separate sequence anywhere.
+ * The decomposition, as a list or as one of five diagrams. Every one of them
+ * is the same data read the same way — the children in order — because the
+ * numbering is the order and there is no separate sequence anywhere. What
+ * differs is the question each answers.
+ *
+ * One card and one control rather than a card per diagram: the same rows drawn
+ * five ways are one thing on the page, not five.
  */
-function Flow({
-  process,
-  children,
-  components,
-}: {
-  process: Process
-  children: Process[]
-  components: ProcessComponent[]
-}) {
+function Flow({ detail }: { detail: ProcessDetail }) {
+  const { process, children, descendants, components, links } = detail
   const [view, setView] = useState<'list' | 'diagram'>('list')
+  const [kind, setKind] = useState<DiagramKind>(() => {
+    const saved = localStorage.getItem(DIAGRAM_KEY)
+    return KINDS.includes(saved as DiagramKind) ? (saved as DiagramKind) : 'sequence'
+  })
   const nameOf = (id: string) => components.find((c) => c.id === id)?.name ?? idValue(id)
-  // Every process with children has a diagram, per §8: "because the children
-  // are the flow, this works at every level — L2 draws four boxes, L2.1 draws
-  // its four actions". A level 1's stages carry no interaction of their own,
-  // which is the `Note over` case, not a reason to withhold the view.
-  const drawable = children.length > 0
+  const title = `${displayCode(process.code)} ${process.name}`
+
+  // A tab with nothing behind it is worse than a missing tab: it teaches the
+  // reader that the diagrams are unreliable. A level 3 decomposes into nothing
+  // and a process that hands off to nobody has no handoff picture.
+  const offered = KINDS.filter((k) => available(k, detail, nameOf))
+  const shown = offered.includes(kind) ? kind : offered[0]
+
+  const lanes = useMemo(() => laneDiagram(process, children, nameOf), [process, children, components])
+  const source = useMemo(() => {
+    switch (shown) {
+      case 'flow':
+        return flowDiagram(process, children)
+      case 'lanes':
+        return lanes.source
+      case 'handoffs':
+        return handoffDiagram(process, links)
+      case 'tree':
+        return treeDiagram(process, descendants)
+      default:
+        return sequenceDiagram(children, nameOf, title)
+    }
+    // `nameOf` closes over components, which is in the list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shown, process, children, descendants, components, links, lanes, title])
 
   return (
     <Card
       title={`What happens, in order (${children.length})`}
-      sub="Each of these says the same thing in more detail. The numbering is the order."
+      sub={
+        view === 'diagram' && shown
+          ? DIAGRAM_SUB[shown]
+          : 'Each of these says the same thing in more detail. The numbering is the order.'
+      }
       actions={
-        drawable ? (
-          <div className="segmented" role="group" aria-label="View">
-            <button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}>
-              List
-            </button>
-            <button type="button" aria-pressed={view === 'diagram'} onClick={() => setView('diagram')}>
-              Diagram
-            </button>
+        children.length > 0 ? (
+          <div className="row" style={{ gap: 8 }}>
+            {view === 'diagram' && offered.length > 1 && (
+              <select
+                aria-label="Diagram"
+                value={shown}
+                onChange={(e) => {
+                  const next = e.target.value as DiagramKind
+                  setKind(next)
+                  try {
+                    localStorage.setItem(DIAGRAM_KEY, next)
+                  } catch {
+                    /* a private window is not a reason to fail */
+                  }
+                }}
+              >
+                {offered.map((k) => (
+                  <option key={k} value={k}>
+                    {DIAGRAM_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div className="segmented" role="group" aria-label="View">
+              <button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}>
+                List
+              </button>
+              <button
+                type="button"
+                aria-pressed={view === 'diagram'}
+                onClick={() => setView('diagram')}
+              >
+                Diagram
+              </button>
+            </div>
           </div>
         ) : undefined
       }
     >
-      {view === 'diagram' && drawable ? (
-        <ProcessFlow children={children} nameOf={nameOf} title={`${displayCode(process.code)} ${process.name}`} />
+      {view === 'diagram' && shown ? (
+        <div className="stack" style={{ gap: 8 }}>
+          <Mermaid source={source} label={`${DIAGRAM_LABEL[shown]} diagram of ${title}`} />
+          {shown === 'lanes' && (
+            <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+              {lanes.by === 'team'
+                ? 'One lane per team. Every arrow that leaves a lane is work crossing a boundary.'
+                : 'One team does all of this, so the lanes are the components instead — a diagram with one lane says nothing.'}
+            </p>
+          )}
+        </div>
       ) : (
         <ol className="proc-flow">
           {children.map((c) => (

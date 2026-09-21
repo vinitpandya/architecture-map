@@ -7,7 +7,17 @@ import { Empty } from '../components/ui'
 import { api } from '../lib/api'
 import { EDGE_LABEL, KIND_LABEL, KIND_PLURAL, VIA_LABEL, displayCode, idValue, nodeHref, processHref } from '../lib/nodes'
 import { MapCanvas } from '../graph/MapCanvas'
-import { ProcessFlow } from '../graph/ProcessFlow'
+import { Mermaid } from '../graph/ProcessFlow'
+import {
+  DIAGRAM_LABEL,
+  available,
+  flowDiagram,
+  handoffDiagram,
+  laneDiagram,
+  sequenceDiagram,
+  treeDiagram,
+  type DiagramKind,
+} from '../graph/processDiagrams'
 import { ProcessTree } from '../components/ProcessTree'
 import { full } from '../lib/format'
 import { DRIFT_KINDS } from '../lib/drift'
@@ -295,9 +305,21 @@ export const WIDGETS: WidgetDef[] = [
   {
     type: 'process-flow',
     label: 'Process diagram',
-    desc: "A process's parts as a sequence diagram",
+    desc: "A process's parts, drawn five ways",
     w: 7, h: 6, minW: 4, minH: 4,
-    fields: [PROCESS_FIELD],
+    fields: [
+      PROCESS_FIELD,
+      {
+        key: 'diagram',
+        label: 'Diagram',
+        kind: 'select',
+        quick: true,
+        choices: (['sequence', 'flow', 'lanes', 'handoffs', 'tree'] as DiagramKind[]).map((k) => ({
+          value: k,
+          label: DIAGRAM_LABEL[k],
+        })),
+      },
+    ],
   },
   {
     type: 'process-coverage',
@@ -1032,13 +1054,25 @@ function ProcessFlowBody({ widget }: { widget: WidgetConfig }) {
   if (!data.children.length)
     return <Empty title="Nothing to draw — this process has no parts beneath it" />
 
-  return (
-    <ProcessFlow
-      children={data.children}
-      nameOf={(id) => data.components.find((c) => c.id === id)?.name ?? idValue(id)}
-      title={`${displayCode(data.process.code)} ${data.process.name}`}
-    />
-  )
+  const nameOf = (id: string) => data.components.find((c) => c.id === id)?.name ?? idValue(id)
+  const title = `${displayCode(data.process.code)} ${data.process.name}`
+  const asked = (widget.options.diagram || 'sequence') as DiagramKind
+  // A widget pinned to a diagram its process cannot draw — a decomposition of
+  // a leaf, handoffs where there are none — falls back rather than showing an
+  // empty box, and says which it drew.
+  const kind = available(asked, data, nameOf) ? asked : 'sequence'
+  const source =
+    kind === 'flow'
+      ? flowDiagram(data.process, data.children)
+      : kind === 'lanes'
+        ? laneDiagram(data.process, data.children, nameOf).source
+        : kind === 'handoffs'
+          ? handoffDiagram(data.process, data.links)
+          : kind === 'tree'
+            ? treeDiagram(data.process, data.descendants)
+            : sequenceDiagram(data.children, nameOf, title)
+
+  return <Mermaid source={source} label={`${DIAGRAM_LABEL[kind]} diagram of ${title}`} />
 }
 
 function ProcessMapBody({ widget }: { widget: WidgetConfig }) {

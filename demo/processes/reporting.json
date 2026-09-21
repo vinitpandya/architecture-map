@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "promptVersion": "2026-09-18b",
+  "promptVersion": "2026-09-21a",
   "pack": "reporting",
   "name": "Reporting",
   "description": "How the data team turns the platform's event stream into the trade and balance warehouse, and how a customer or an operator gets a report or a statement back out of it. It covers the loaders, the reconciliation against the ledger, the report index and the retrieval path that runs through reporting-service. It does not cover report search, which the gateway serves straight off the index without coming through this service; the price tick feed reporting-service also consumes, which values holdings and is the trading team's to document; the ledger itself, which is the book of record; or the regulatory submissions built on top of the warehouse, which are assembled by hand outside anything in this map.",

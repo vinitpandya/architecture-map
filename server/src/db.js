@@ -314,6 +314,26 @@ CREATE TABLE IF NOT EXISTS process_links (
 CREATE INDEX IF NOT EXISTS process_links_from ON process_links (from_id);
 CREATE INDEX IF NOT EXISTS process_links_to   ON process_links (to_id);
 
+-- ──────────────────────── where the flow goes next, when it is not simply the
+-- next sibling. Authored as a next list on a process, read back off the body
+-- by the link pass and resolved here, exactly as a declared handoff is.
+--
+-- Absence is the common case and means fall-through in numbering order, which
+-- is the model SPEC-PROCESSES has always had: the code carries the order. This
+-- adds only what a code cannot say -- a condition, a jump, a stop.
+CREATE TABLE IF NOT EXISTS process_next (
+  from_id   TEXT NOT NULL,      -- 'proc:2.1.3'
+  seq       INTEGER NOT NULL,   -- position in the authored list; the drawing order
+  condition TEXT,               -- 'the customer is permitted'; NULL is unconditional
+  to_id     TEXT,               -- 'proc:2.1.5'; NULL when this branch ends
+  -- Whether that code is a process anybody has written. Unresolved is a
+  -- finding, never a rejection -- the same rule a declared handoff follows.
+  resolved  INTEGER NOT NULL DEFAULT 0,
+  end_label TEXT,               -- 'Order rejected', when the branch stops here
+  PRIMARY KEY (from_id, seq)
+);
+CREATE INDEX IF NOT EXISTS process_next_to ON process_next (to_id);
+
 -- ─────────────── which teams a process reaches, and what reaches them.
 -- Derived, never authored. One query per screen rather than a join per row.
 

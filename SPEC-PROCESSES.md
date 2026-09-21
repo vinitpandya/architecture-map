@@ -98,7 +98,7 @@ is a valid pack against the Meridian estate: 20 processes — 1 at level 1, 4 at
 level 2, 15 at level 3 — every leaf carrying exactly one interaction. It is your
 Phase 7 fixture, and it is the shape every pack should look like.
 
-### The five things that matter in it
+### The six things that matter in it
 
 **A pack is the unit of ingest.** Processes span repositories, so unlike a scan
 manifest there is nothing per-repo about them. A pack is a domain's worth of
@@ -127,6 +127,17 @@ line because they are derived from code. Layer B facts are asserted by people,
 so they carry attribution — a Confluence page, a diagram, the person who
 confirmed it, and when. Do not bolt an `evidence` array onto processes, and
 never fabricate a code citation for a process.
+
+**The numbering is still the order, and `next` says only what it cannot.** A
+process may carry `next: [{when, process | end}]`, and a process without one
+falls through to the next sibling exactly as it always has. So `next` is never
+the sequence — it is the departures from it: a decision with two outcomes, an
+error path that skips ahead, a retry that points back, a step that stops the
+process. Two consequences follow, and both are the point. A pack written before
+`next` existed still draws the straight line it always described, and a `next`
+that merely restates the numbering is noise the first renumbering will break.
+The rules a code follows apply to it unchanged: a `process` it names may belong
+to a pack nobody has written, which is reported and never rejected.
 
 ---
 
@@ -213,6 +224,28 @@ CREATE TABLE IF NOT EXISTS process_edges (
 );
 CREATE INDEX IF NOT EXISTS process_edges_edge ON process_edges (edge_id);
 ```
+
+### `process_next`
+
+```sql
+CREATE TABLE IF NOT EXISTS process_next (
+  from_id   TEXT NOT NULL,      -- 'proc:2.1.3'
+  seq       INTEGER NOT NULL,   -- position in the authored list; the drawing order
+  condition TEXT,               -- 'the customer is permitted'; NULL is unconditional
+  to_id     TEXT,               -- 'proc:2.1.5'; NULL when this branch ends
+  resolved  INTEGER NOT NULL DEFAULT 0,
+  end_label TEXT,               -- 'Order rejected', when the branch stops here
+  PRIMARY KEY (from_id, seq)
+);
+```
+
+Rebuilt whole by the link pass off `process_packs.raw`, exactly as `touches` and
+`handsOffTo` are and for the same reason: nothing but the link pass reads the
+authored form, so a column on `processes` would be a column nothing else ever
+looked at. A branch naming a code nobody has written is kept with `resolved = 0`
+rather than dropped — the branch is still what the author said, and hiding it
+would make the flow look complete when it is not. A branch to the process it
+leaves is the one loop nobody means, and is dropped.
 
 ### `sort_key`, and the trap it exists for
 
@@ -314,6 +347,7 @@ the parties, with the data the UI needs attached.
 | `process-duplicate-code` | two active packs declare the same code | warn |
 | `process-no-detail` | a leaf with no `node`, no `interaction` and no `touches` — a title and nothing else | info |
 | `uncovered-component` | a `service` or `kafka.topic` no process touches | info |
+| `process-flow-unknown-target` | a `next` naming a code that no pack declares | warn |
 
 Four judgement calls baked into that table:
 
@@ -332,6 +366,12 @@ rollup simply includes it. Do not invent a finding for it.
 **`uncovered-component` fires only when at least one pack is loaded**, and only
 for services and topics. Fired against an empty Layer B it would report the
 whole estate and train people to ignore it.
+
+**`process-flow-unknown-target` is the same rule once more.** A pack may not
+bring a process into existence, so a branch to a code that does not resolve is
+reported rather than rejected. It is a likelier mistake than an unknown handoff
+target, because a branch is usually written to a sibling and a renumbering
+breaks it silently — the flow simply stops drawing that arm.
 
 **A pack never modifies a node.** Re-state that to yourself before writing this:
 a missing component is *reported*, never created. Contrast with Layer A's
@@ -445,17 +485,31 @@ This is the feature that makes the whole project worth having: pick "Getting
 estimate", see exactly the services, endpoints, caches and topics it runs
 through, across every repository, laid out. Give it the care it deserves.
 
-### A process renders as a flow diagram
+### A process renders as a diagram — five of them
 
-Mermaid is already a dependency. For any process with children, generate a
-`sequenceDiagram` from **the children in order** — participants are the distinct
-services, each child an arrow using its resolved interaction, `Note over` for a
-child with no interaction. Because the children are the flow, this works at
-every level: `L2` draws four boxes, `L2.1` draws its four actions.
+Mermaid is already a dependency. For any process with children, generate the
+diagram from **the children in order**, because the children are the flow. That
+one fact is why all five work at every level without a second data model.
 
-Put it on the process detail page behind a diagram/list toggle. This closes the
-loop with where the project started — hand-drawn mermaid process diagrams —
-except now they are generated from data that is checked against the code.
+| | What it answers | Drawn from |
+|---|---|---|
+| **Sequence** | what talks to what, in order | each child's resolved interaction; `Note over` where there is none |
+| **Flow** | what happens, what decides it, where it stops | the children, `next`, `trigger`, `outcome`, `optional` |
+| **Lanes** | where the work crosses a boundary | the same, split by team — or by component where one team does all of it |
+| **Handoffs** | who picks it up | `process_links`, grouped into team lanes |
+| **Decomposition** | what it is made of | the descendants, parented by their codes |
+
+Put them on the process detail page behind the existing diagram/list toggle,
+with one control for which — the same rows drawn five ways are one thing on the
+page, not five cards. Offer only the ones with something to draw: a level 3
+decomposes into nothing, a process that hands off to nobody has no handoff
+picture, and a stage where one team does everything has one lane, which is a
+flowchart with a box round it.
+
+This closes the loop with where the project started — hand-drawn mermaid process
+diagrams — except now they are generated from data that is checked against the
+code, and a branch that leads to a process nobody wrote is drawn as the dead end
+it is.
 
 ### The scan page gains a second tab
 

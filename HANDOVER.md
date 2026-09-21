@@ -16,9 +16,11 @@ handoffs where one team's work ends and another's begins.
 On top of those, the map reads at two detail levels: services with their
 relationships collapsed into one line per pair, or the scan as it was stored.
 Its key is a set of switches, and nodes can be dragged into an arrangement that
-is saved. And the team registry is editable from the Teams page, because a scan
+is saved. The team registry is editable from the Teams page, because a scan
 derives a team from the commit history and an estate therefore arrives with
-teams named after people.
+teams named after people. And a process draws five ways — sequence, flow,
+lanes, handoffs and decomposition — all from the same rows, because the
+children are the flow.
 
 Between B and C a polish pass read the whole result back against the spec and
 found defects on paths the demo data never reaches. That turned out to be the
@@ -39,7 +41,7 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 
 ```bash
 npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 318 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 133 more
+npm run build && npm run verify:ui   # the checks that need a browser — 150 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run prompts                      # rebuild prompts/standalone/ from prompts/ and schema/
@@ -88,6 +90,7 @@ joke.
 | 16 · the map on the process page, colour by team, the widgets | Complete, verified in a browser |
 | map · two detail levels, the key as a switch, drag to arrange | Complete, verified in a browser |
 | teams · rename, merge, and a team on every service | Complete, verified in a browser |
+| diagrams · five views of a process, and `next` in the schema | Complete, verified in a browser |
 
 Beyond §13 and §9's lists, two things the shells had not met: node detail renders
 per kind (the topic page — producers against consumers with the version skew
@@ -96,7 +99,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 363 assertions across five stages, all passing.**
+**`npm run verify` — 385 assertions across five stages, all passing.**
 
 *Ingest (26, in-process against a fresh database).* `prompts/standalone/` is in
 sync with the schemas it inlines, carries no unfilled placeholder, and has the
@@ -126,7 +129,7 @@ return hits rather than an FTS5 syntax error. **An override changes
 `/api/node` and a re-ingest of that repo does not revert it** — the single most
 important test in the suite.
 
-*Processes (74, over HTTP).* `validate.mjs` says which schema it picked. A
+*Processes (96, over HTTP).* `validate.mjs` says which schema it picked. A
 four-segment code exits 1 naming the path, quarantines the pack and imports zero
 processes. An all-`L`-prefixed copy ingests onto the same rows. **Ingesting a
 pack creates no rows in `nodes` or `edges`** — asserted before and after, and the
@@ -144,8 +147,18 @@ without a process. `code=L2` reads the same process as `code=2`. Searching
 `kind:process` narrows to processes rather than returning nothing. The authoring
 prompt keeps its placeholder legend, carries the schema exactly once, and comes back with
 every placeholder in its body filled — the pack id, the components and the codes
-already taken. `--remove` clears packs,
-processes, the join tables and every process finding.
+already taken.
+
+A step with no branches stores none; a decision stores one row per arm, in the
+order it was written, resolved to what each arm continues at; an arm that stops
+the process stores its outcome and continues to nothing. A branch to a code
+nobody wrote is kept and marked unresolved, and raises exactly one
+`process-flow-unknown-target` from 1.2.1 naming L4.2. `/api/process` carries
+`next` on each child, as codes rather than ids like every other reference in the
+API, with an empty list where there are no branches rather than a missing field.
+A branch to its own process is dropped; one back to an earlier sibling is kept,
+because that is a retry. `--remove` clears packs, processes, the join tables,
+the branches and every process finding.
 
 *Org (164, in-process and over HTTP).* `teamId()` fixes case and separators and
 deliberately does not merge `Trading Team` into `trading`. A service takes its
@@ -196,7 +209,7 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-**`npm run verify:ui` — 133 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 150 checks in Chromium at 1280×900, all passing.**
 
 The map opens collapsed to services and draws all ten of them, with a key
 naming the three kinds of line. The number of collapsed lines equals the number
@@ -211,6 +224,15 @@ was put after a reload, leaves every other node where the layout put it, and
 
 An external survives the collapse as a node of its own, drawn and switched off
 as the call it is rather than as a scanned edge.
+
+A level 1 offers all five diagrams; a stage with one team, no handoffs and
+nothing below it offers the two it can draw. The flowchart opens on the trigger
+and closes on the outcome, draws both conditions of a decision on its arrows,
+draws an arm that stops the process as a terminal — once per distinct outcome —
+and draws a branch to a code nobody wrote as a dead end that names it. The lane
+diagram draws more than one lane and says the lanes are teams. The handoff
+diagram draws each process exactly once, including the leaf crossings inside
+the process and the topic that carries one.
 
 The services grid puts a service in a team, records it as a correction rather
 than a scan, says so on the row, and reverting gives the manifest back. The
@@ -408,6 +430,20 @@ blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
   asymmetry is the lesson of this build: every defect found by reading rather
   than running lived on a path the demo data does not reach.** The four Layer A
   findings above are the remaining ones, and they are where to look next.
+- **`next` is the departures from the numbering, not the sequence.** A process
+  with no `next` falls through to the next sibling exactly as it always did, so
+  every pack written before this draws the same straight line. If you add a
+  field to it, the rule to hold onto is that a `next` restating the numbering is
+  noise the first renumbering will break.
+- **A branch is read off `process_packs.raw` by the link pass**, like `touches`
+  and `handsOffTo`, and resolved into `process_next` which is rebuilt whole. A
+  target nobody has written is kept with `resolved = 0` and reported. A branch
+  to the process it leaves is dropped; one back to an earlier sibling is kept,
+  because that is a retry.
+- **A diagram tab is offered only when it has something to draw.** The rule
+  lives in `available()` in `web/src/graph/processDiagrams.ts` and it shares
+  `laneSplit()` with the lane generator on purpose — the two answering
+  differently is how you get a tab that renders one lane.
 - **The registry is now something the server writes.** Both verification
   suites run against a *copy* of `demo/teams.json` under `data/` for that
   reason: `verify:ui` renames and merges teams, and pointed at the repo root it

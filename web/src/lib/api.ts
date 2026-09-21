@@ -210,7 +210,26 @@ export type Process = {
   unresolved: { node: boolean; edge: boolean; edgeFrom: boolean; edgeTo: boolean }
   /** The resolved team, and whether the process named it or inherited it. */
   teamId?: string | null
+  teamName?: string | null
   teamVia?: 'owner' | 'inherited' | null
+  /**
+   * Where the flow goes after this, when it is not simply the next sibling.
+   * Empty is the common case and means fall-through in numbering order.
+   */
+  next?: Branch[]
+}
+
+/** One arm of a decision, or one jump. Exactly one of `to` and `end`. */
+export type Branch = {
+  /** The condition, in the author's words. Null is unconditional. */
+  when: string | null
+  /** The code it continues to, or null when this arm ends the process. */
+  to: string | null
+  toName: string | null
+  /** False when no pack declares that code — drawn as a dead end, and a finding. */
+  resolved: boolean
+  /** A terminal outcome, when the flow stops here. */
+  end: string | null
 }
 
 export type ProcessTouch = {

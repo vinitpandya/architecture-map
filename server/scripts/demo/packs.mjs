@@ -23,7 +23,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ROOT } from '../../src/config.js'
 
-const PROMPT_VERSION = '2026-09-18b'
+const PROMPT_VERSION = '2026-09-21a'
 
 /** `svc:x http.call api:y` written the short way, since every one has a from. */
 const on = (from, kind, to) => ({ from, kind, to })
@@ -85,6 +85,15 @@ export const SKELETONS = [
         owner: 'risk-ops',
         node: 'svc:identity-service',
         interaction: on('svc:identity-service', 'db.write', 'db:postgres/identity'),
+        // Deliberate: a decision whose failing arm leads to the risk team's
+        // manual review, which is the same process nobody has written that
+        // L1.2.3 hands off to. This is the one `process-flow-unknown-target` —
+        // and the case that matters, because a branch to a code that does not
+        // exist fails silently: the flow just stops drawing that arm.
+        next: [
+          { when: 'the documents pass', process: 'L1.2.2' },
+          { when: 'they do not', process: 'L4.2' },
+        ],
       },
       {
         code: '1.2.2',
@@ -383,6 +392,7 @@ export function buildPacks() {
         interaction: p.interaction,
         touches: p.touches,
         handsOffTo: p.handsOffTo,
+        next: p.next,
         optional: prose.optional,
         tags: prose.tags,
         notes: prose.notes,

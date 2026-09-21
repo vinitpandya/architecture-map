@@ -196,6 +196,13 @@
             "$ref": "#/$defs/handoff"
           }
         },
+        "next": {
+          "type": "array",
+          "description": "Where this process goes next, when it is not simply the next sibling. Leave it out and the flow falls through in numbering order, which is what almost every step does — write it only for the interesting cases: a decision with two outcomes, an error path that skips ahead, a retry that goes back, or a step that ends the process. Each entry is one branch: `when` is the condition in the reader's words, and then either `process` (the code it continues to) or `end` (a terminal outcome, when the process stops here). Two or more entries make it a decision; one entry with no `when` is an unconditional jump. A `process` code that nobody has written is reported as a finding, never rejected — the same rule handsOffTo follows. Normally written on a level 3, beside the step whose outcome decides the branch.",
+          "items": {
+            "$ref": "#/$defs/branch"
+          }
+        },
         "optional": {
           "type": "boolean",
           "description": "True when this only happens in some cases; say when in `description`. A cache miss fallback is the usual example."
@@ -269,6 +276,39 @@
           "type": "string",
           "description": "Why, in one sentence, and especially HOW when the code cannot show it: 'a nightly export the risk team picks up', 'the operator emails the signed form'. This is the part a derived handoff does not have, and the reason a declaration is worth writing at all.",
           "maxLength": 400
+        }
+      }
+    },
+    "branch": {
+      "type": "object",
+      "description": "One outgoing branch of the flow. Exactly one of `process` and `end` — a branch either continues somewhere or finishes.",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "process"
+          ]
+        },
+        {
+          "required": [
+            "end"
+          ]
+        }
+      ],
+      "properties": {
+        "when": {
+          "type": "string",
+          "description": "The condition, in the words a reader would use: 'the customer is permitted', 'the balance does not cover it', 'the cache misses'. Leave it out for an unconditional jump. Keep it short — it is drawn on the arrow.",
+          "maxLength": 120
+        },
+        "process": {
+          "$ref": "#/$defs/code",
+          "description": "The code this branch continues to, with or without its 'L'. Usually a sibling, but it may be any code — an error path out of a stage, or a step earlier in the list, which is how a retry loop is written."
+        },
+        "end": {
+          "type": "string",
+          "description": "A terminal outcome, written instead of `process` when the process stops on this branch: 'Order rejected', 'Escalated to an operator'. Drawn as the end of the flow.",
+          "maxLength": 120
         }
       }
     }

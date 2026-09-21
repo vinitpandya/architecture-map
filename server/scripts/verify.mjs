@@ -729,6 +729,80 @@ if (stage === 'processes') {
     ok('  …with the fields the card reads', !!body.pack?.source?.asOf, JSON.stringify(body.pack?.source))
   }
 
+  /* ──── §2: `next`, which says what the numbering cannot.
+
+     Fall-through in numbering order is still the model, so a pack written
+     before this existed draws the same straight line it always described.
+     Everything below is about the departures from it. */
+  {
+    const branches = (code) =>
+      db.prepare('SELECT * FROM process_next WHERE from_id = ? ORDER BY seq').all(`proc:${code}`)
+
+    is('a step with no branches stores none', branches('2.1.2').length, 0)
+    const cache = branches('2.1.1')
+    is('a decision stores one row per arm', cache.length, 2)
+    is('  …in the order it was written', cache.map((b) => b.condition).join(' | '),
+      'the quote is still warm | the cache has expired')
+    is('  …resolved to the process each arm continues at', cache.map((b) => b.to_id).join(','),
+      'proc:2.1.3,proc:2.1.2')
+    is('  …and marked as resolved', cache.every((b) => b.resolved === 1), true)
+
+    const permitted = branches('2.1.3')
+    is('an arm that stops the process stores its outcome', permitted[1].end_label, 'Estimate refused')
+    is('  …and continues to nothing', permitted[1].to_id, null)
+
+    // The finding, and the case it exists for: a branch to a code nobody has
+    // written fails silently — the flow simply stops drawing that arm.
+    const dangling = branches('1.2.1')[1]
+    is('a branch to a code nobody wrote is kept, not dropped', dangling.to_id, 'proc:4.2')
+    is('  …and marked unresolved', dangling.resolved, 0)
+    is('exactly one process-flow-unknown-target',
+      n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-flow-unknown-target'`), 1)
+    is('  …from 1.2.1, naming L4.2',
+      one(`SELECT subject_id FROM drift WHERE kind = 'process-flow-unknown-target'`)?.subject_id, 'proc:1.2.1')
+
+    /* ---- the API carries it, because only the client draws the flow */
+    const { body: est } = await get('/process?code=2.1')
+    const by = Object.fromEntries(est.children.map((c) => [c.code, c]))
+    is('/api/process carries next on each child', by['2.1.1'].next.length, 2)
+    is('  …with the condition', by['2.1.1'].next[0].when, 'the quote is still warm')
+    is('  …the code rather than the id, like every other reference in the API',
+      by['2.1.1'].next[0].to, '2.1.3')
+    is('  …and the name of what it continues to', by['2.1.1'].next[0].toName, 'Check the customer may trade')
+    is('  …an arm that ends carries its label instead', by['2.1.3'].next[1].end, 'Estimate refused')
+    is('  …and a step with none carries an empty list, never a missing field',
+      Array.isArray(by['2.1.2'].next) && by['2.1.2'].next.length, 0)
+    const { body: kyc } = await get('/process?code=1.2')
+    is('  …an unresolved arm says so rather than vanishing',
+      kyc.children.find((c) => c.code === '1.2.1').next.find((b) => b.to === '4.2')?.resolved, false)
+
+    /* ---- a branch to the process it leaves is the one loop nobody means */
+    const { ingestProcessPack: ingest } = await import('../src/processes.js')
+    const { linkPass } = await import('../src/link.js')
+    ingest(
+      {
+        schemaVersion: 1,
+        pack: 'branch-probe',
+        name: 'Branch probe',
+        authoredAt: '2026-09-21T00:00:00Z',
+        producer: { kind: 'human' },
+        processes: [
+          { code: '9', name: 'Probe' },
+          { code: '9.1', name: 'Loops to itself', next: [{ process: '9.1' }] },
+          { code: '9.2', name: 'Loops back', next: [{ when: 'it failed', process: '9.1' }] },
+        ],
+      },
+      'probe.json'
+    )
+    linkPass()
+    is('a branch to its own process is dropped', branches('9.1').length, 0)
+    is('  …while a branch back to an earlier sibling is kept, because that is a retry',
+      branches('9.2')[0]?.to_id, 'proc:9.1')
+    db.prepare(`DELETE FROM process_packs WHERE pack = 'branch-probe'`).run()
+    linkPass()
+    is('  …and removing the probe pack leaves the demo estate alone', n('SELECT COUNT(*) n FROM processes'), 46)
+  }
+
   /* ---- removal */
   const removed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs'), '--remove'], {
     encoding: 'utf8',
@@ -738,6 +812,7 @@ if (stage === 'processes') {
   is('  …clearing the packs', n(`SELECT COUNT(*) n FROM process_packs WHERE status = 'active'`), 0)
   is('  …and the processes', n('SELECT COUNT(*) n FROM processes'), 0)
   is('  …and the join tables', n('SELECT COUNT(*) n FROM process_components'), 0)
+  is('  …and the branches', n('SELECT COUNT(*) n FROM process_next'), 0)
   is(
     '  …and leaving zero process findings',
     n(`SELECT COUNT(*) n FROM drift WHERE kind LIKE 'process-%' OR kind = 'uncovered-component'`),

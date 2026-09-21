@@ -861,6 +861,43 @@ router.post('/ingest/process-pack', wrap(async (req, res) => {
  * screen that shows processes wants all of it, so paging it would cost more
  * than it saves.
  */
+/**
+ * `next` on every process that has one, in one query rather than per row.
+ *
+ * A branch is on the process it leaves, not on the pair, because that is where
+ * it was authored and where it is drawn from. A process with no branches gets
+ * an empty list rather than nothing, so a caller never has to distinguish
+ * "falls through" from "not asked for".
+ */
+function withBranches(processes) {
+  if (!processes.length) return processes
+  const ids = processes.map((p) => p.id)
+  const rows = db
+    .prepare(
+      `SELECT n.*, p.name AS to_name FROM process_next n
+       LEFT JOIN processes p ON p.id = n.to_id
+       WHERE n.from_id IN (${ids.map(() => '?').join(',')})
+       ORDER BY n.from_id, n.seq`
+    )
+    .all(...ids)
+  const byFrom = new Map()
+  for (const r of rows) {
+    if (!byFrom.has(r.from_id)) byFrom.set(r.from_id, [])
+    byFrom.get(r.from_id).push({
+      when: r.condition,
+      // The code rather than the id, because every other process reference in
+      // this API is a code and the client routes on one.
+      to: r.to_id ? r.to_id.replace(/^proc:/, '') : null,
+      toName: r.to_name ?? null,
+      // False means the code resolves to nothing. Kept rather than dropped:
+      // the branch is still what the author said, and the finding says so.
+      resolved: !!r.resolved,
+      end: r.end_label,
+    })
+  }
+  return processes.map((p) => ({ ...p, next: byFrom.get(p.id) ?? [] }))
+}
+
 const processRow = (r) => ({
   id: r.id,
   code: r.code,
@@ -878,6 +915,7 @@ const processRow = (r) => ({
   source: parse(r.source, null),
   packId: r.pack_id,
   teamId: r.team_id ?? null,
+  teamName: r.team_name ?? null,
   teamVia: r.team_via ?? null,
   node: r.node_id,
   // Kept verbatim whether or not it resolved: an interaction the code does not
@@ -900,6 +938,7 @@ const processRow = (r) => ({
 
 const PROCESS_SELECT = `
   SELECT p.*,
+         (SELECT name FROM teams t WHERE t.id = p.team_id) AS team_name,
          (SELECT COUNT(*) FROM processes c WHERE c.parent_id = p.id) AS child_count,
          (SELECT COUNT(*) FROM process_components pc WHERE pc.process_id = p.id) AS component_count,
          (SELECT COUNT(*) FROM nodes n WHERE n.id = p.node_id)   AS node_known,
@@ -966,11 +1005,12 @@ router.get('/process', wrap(async (req, res) => {
         .map(processRow)
     : []
 
-  const children = db.prepare(`${PROCESS_SELECT} WHERE p.parent_id = ? ORDER BY p.sort_key`).all(row.id).map(processRow)
-  const descendants = db
-    .prepare(`${PROCESS_SELECT} WHERE p.code LIKE ? ORDER BY p.sort_key`)
-    .all(`${code}.%`)
-    .map(processRow)
+  const children = withBranches(
+    db.prepare(`${PROCESS_SELECT} WHERE p.parent_id = ? ORDER BY p.sort_key`).all(row.id).map(processRow)
+  )
+  const descendants = withBranches(
+    db.prepare(`${PROCESS_SELECT} WHERE p.code LIKE ? ORDER BY p.sort_key`).all(`${code}.%`).map(processRow)
+  )
 
   const ov = overrideMap('node')
   const components = db
@@ -993,7 +1033,7 @@ router.get('/process', wrap(async (req, res) => {
     .map((r) => ({ ...edgeRow(r), via: r.via }))
 
   res.json({
-    process,
+    process: withBranches([process])[0],
     ancestors,
     children,
     descendants,

@@ -82,6 +82,7 @@ const run = db.transaction((now) => {
   // processes share a component, and that is what the rollup has just
   // established.
   rebuildProcessLinks(now)
+  rebuildProcessNext()
   rebuildProcessTeams()
   rebuildDrift(now)
 })
@@ -277,6 +278,7 @@ function fromActivePacks() {
   const touches = new Map()
   const owners = new Map()
   const declared = new Map()
+  const branches = new Map()
   for (const row of db.prepare(`SELECT pack, raw FROM process_packs WHERE status = 'active'`).all()) {
     let parsed = null
     try {
@@ -303,12 +305,58 @@ function fromActivePacks() {
         declared.get(id).set(`proc:${to}`, h?.note ?? null)
       }
 
+      // Where the flow goes next, for the same reason and off the same body.
+      // Kept as a list rather than a map: two branches of one decision can
+      // lead to the same place under different conditions, and the order they
+      // were written in is the order they are drawn.
+      if (p.next?.length) {
+        branches.set(
+          id,
+          p.next.map((b) => ({
+            when: typeof b?.when === 'string' && b.when.trim() ? b.when.trim() : null,
+            to: b?.process ? `proc:${String(b.process).trim().replace(/^[Ll]/, '')}` : null,
+            end: typeof b?.end === 'string' && b.end.trim() ? b.end.trim() : null,
+          })).filter((b) => b.to || b.end)
+        )
+      }
+
       if (!p.touches?.length) continue
       if (!touches.has(id)) touches.set(id, new Set())
       for (const nodeId of p.touches) touches.get(id).add(nodeId)
     }
   }
-  return { touches, owners, declared }
+  return { touches, owners, declared, branches }
+}
+
+/**
+ * `process_next`, resolved against the processes that exist.
+ *
+ * A branch naming a code nobody has written is kept with `resolved = 0` rather
+ * than dropped, and reported — SPEC-PROCESSES §12.1 applied once more: a pack
+ * may not bring a process into existence, and "our error path goes to a
+ * process that is not on the map" is worth knowing.
+ */
+function rebuildProcessNext() {
+  db.prepare('DELETE FROM process_next').run()
+  const known = new Set(db.prepare('SELECT id FROM processes').all().map((r) => r.id))
+  if (!known.size) return
+
+  const { branches } = fromActivePacks()
+  const ins = db.prepare(
+    `INSERT OR REPLACE INTO process_next (from_id, seq, condition, to_id, resolved, end_label)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  )
+  for (const [from, list] of branches) {
+    // A branch on a process the pack never declared has nothing to be a branch
+    // of. That is the duplicate-code case rather than a new one, and the row
+    // would be unreachable from every screen.
+    if (!known.has(from)) continue
+    list.forEach((b, i) => {
+      // A branch to itself is the one loop that is never what anybody meant.
+      if (b.to === from) return
+      ins.run(from, i, b.when, b.to, b.to && known.has(b.to) ? 1 : 0, b.end)
+    })
+  }
 }
 
 function rebuildProcessRollup() {
@@ -934,6 +982,29 @@ function handoffFindings(write) {
         { code: a.code, name: a.name, target: to.replace(/^proc:/, ''), note: note ?? null }
       )
     }
+  }
+
+  /* a branch pointing at a process nobody has written.
+
+     The same rule once more: a pack may not bring a process into existence, so
+     a `next` naming a code that does not resolve is reported rather than
+     rejected. It is a likelier mistake than an unknown handoff target, because
+     a branch is usually written to a sibling and a renumbering breaks it
+     silently — the flow simply stops drawing that arm. */
+  for (const r of db
+    .prepare(`SELECT * FROM process_next WHERE to_id IS NOT NULL AND resolved = 0`)
+    .all()) {
+    const a = byId.get(r.from_id)
+    if (!a) continue
+    write(
+      'process-flow-unknown-target',
+      r.from_id,
+      'warn',
+      `${label(a)} continues to ${r.to_id.replace(/^proc:/, 'L')}${
+        r.condition ? ` when ${r.condition}` : ''
+      }, and no pack declares that process. The branch is drawn as a dead end until one does.`,
+      { code: a.code, name: a.name, target: r.to_id.replace(/^proc:/, ''), condition: r.condition }
+    )
   }
 
   /* a declared handoff with nothing at all behind it.

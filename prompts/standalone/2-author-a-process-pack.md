@@ -71,8 +71,43 @@ destroys exactly the signal the tool is built to produce.
 5. **Leave the higher levels unbound.** A level 1 or 2 rarely names a component
    of its own; its component list is derived by rolling its children up. Do not
    pick its "main" child's component and copy it upward.
-6. **Attribute it.** Fill `source` with where the knowledge came from and, if
+6. **Mark the branches.** Where the flow does something other than continue at
+   the next number — a decision with two outcomes, an error path that skips
+   ahead, a retry that goes back, a step that stops the process — write `next`.
+   Leave it out everywhere else; fall-through in numbering order is the default
+   and almost every step takes it. See below.
+7. **Attribute it.** Fill `source` with where the knowledge came from and, if
    you can tell, who last confirmed it.
+
+## Branches: where the flow does not just continue
+
+The numbering is the order, so a step with no `next` continues at the next
+sibling. That is right for most of a process and wrong for the interesting
+parts, which is what `next` is for.
+
+```json
+{ "code": "2.1.3", "name": "Check the customer may trade",
+  "next": [
+    { "when": "the customer may trade", "process": "2.1.4" },
+    { "when": "they may not", "end": "Estimate refused" }
+  ] }
+```
+
+- **Two or more entries is a decision.** The `when` is drawn on the arrow, so
+  write it as a condition in the reader's words — *the cache has expired*, *the
+  balance does not cover it* — not as a variable name.
+- **`end` stops the process** on that arm, with the outcome as its label.
+  *Order rejected*, *Escalated to an operator*.
+- **`process` continues somewhere.** Usually a sibling. It may be any code: an
+  error path out of the stage, or one written earlier in the list, which is how
+  a retry loop is written.
+- A `process` code nobody has written is reported as a finding, never rejected.
+  Say what you know.
+- **Do not write a `next` that only restates the numbering.** `2.1.1 → 2.1.2`
+  with no condition is what already happens, and writing it out turns a clean
+  document into a maintenance burden the first time anybody renumbers.
+- Branches belong on the step whose outcome decides them, which is normally a
+  level 3. Do not restate a child's branch on its parent.
 
 ## Writing the descriptions
 
@@ -93,7 +128,8 @@ restate the title in the description.
 
 **Fill `trigger` and `outcome`** where they are not obvious from the parent —
 usually at levels 1 and 2. They are short, and they are what make a process
-reviewable by someone who was not in the room.
+reviewable by someone who was not in the room. They are also drawn as the first
+and last shape of the flowchart, so keep them to one line.
 
 **Do not pad.** A level 3 with nothing worth saying beyond its name should have
 no description at all. Filler makes a document look thorough and read as noise.
@@ -118,7 +154,7 @@ no description at all. Filler makes a document look thorough and read as noise.
 ## Output
 
 Return **only** a single JSON object conforming to the schema below. No prose
-before or after, no markdown fence. Set `promptVersion` to `2026-09-18b` and
+before or after, no markdown fence. Set `promptVersion` to `2026-09-21a` and
 `producer` to `{"kind": "claude", "model": "<your model id>"}`.
 
 Write it to `<pack>.json`. Drop it in the Architecture Map’s `inbox/` and
@@ -362,6 +398,13 @@ nobody has taken.
             "$ref": "#/$defs/handoff"
           }
         },
+        "next": {
+          "type": "array",
+          "description": "Where this process goes next, when it is not simply the next sibling. Leave it out and the flow falls through in numbering order, which is what almost every step does — write it only for the interesting cases: a decision with two outcomes, an error path that skips ahead, a retry that goes back, or a step that ends the process. Each entry is one branch: `when` is the condition in the reader's words, and then either `process` (the code it continues to) or `end` (a terminal outcome, when the process stops here). Two or more entries make it a decision; one entry with no `when` is an unconditional jump. A `process` code that nobody has written is reported as a finding, never rejected — the same rule handsOffTo follows. Normally written on a level 3, beside the step whose outcome decides the branch.",
+          "items": {
+            "$ref": "#/$defs/branch"
+          }
+        },
         "optional": {
           "type": "boolean",
           "description": "True when this only happens in some cases; say when in `description`. A cache miss fallback is the usual example."
@@ -435,6 +478,39 @@ nobody has taken.
           "type": "string",
           "description": "Why, in one sentence, and especially HOW when the code cannot show it: 'a nightly export the risk team picks up', 'the operator emails the signed form'. This is the part a derived handoff does not have, and the reason a declaration is worth writing at all.",
           "maxLength": 400
+        }
+      }
+    },
+    "branch": {
+      "type": "object",
+      "description": "One outgoing branch of the flow. Exactly one of `process` and `end` — a branch either continues somewhere or finishes.",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "process"
+          ]
+        },
+        {
+          "required": [
+            "end"
+          ]
+        }
+      ],
+      "properties": {
+        "when": {
+          "type": "string",
+          "description": "The condition, in the words a reader would use: 'the customer is permitted', 'the balance does not cover it', 'the cache misses'. Leave it out for an unconditional jump. Keep it short — it is drawn on the arrow.",
+          "maxLength": 120
+        },
+        "process": {
+          "$ref": "#/$defs/code",
+          "description": "The code this branch continues to, with or without its 'L'. Usually a sibling, but it may be any code — an error path out of a stage, or a step earlier in the list, which is how a retry loop is written."
+        },
+        "end": {
+          "type": "string",
+          "description": "A terminal outcome, written instead of `process` when the process stops on this branch: 'Order rejected', 'Escalated to an operator'. Drawn as the end of the flow.",
+          "maxLength": 120
         }
       }
     }

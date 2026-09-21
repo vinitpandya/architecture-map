@@ -516,6 +516,105 @@ for (const [name, url, selector] of [
   await ctx.close()
 }
 
+/* ---- §8: the same rows, drawn five ways.
+
+   Every one of these is generated from the children in order, so the test that
+   matters for each is not "did mermaid run" but "is the thing this diagram
+   exists to say actually on screen". */
+
+const diagramText = (page) => page.$eval('.proc-diagram', (e) => e.textContent ?? '')
+
+const openDiagram = async (page, kind) => {
+  await page.waitForSelector('.proc-flow', { timeout: 15000 })
+  await page.click('button:has-text("Diagram")')
+  await page.waitForSelector('.proc-diagram svg', { timeout: 20000 })
+  if (kind) {
+    await page.selectOption('select[aria-label="Diagram"]', kind)
+    await page.waitForTimeout(1400)
+  }
+}
+
+{
+  const { ctx, page, problems } = await open('/process?code=2')
+  await openDiagram(page)
+  const offered = await page.$$eval('select[aria-label="Diagram"] option', (els) => els.map((e) => e.value))
+  is('a level 1 offers every diagram', offered.join(','), 'sequence,flow,lanes,handoffs,tree')
+
+  /* ---- the flowchart */
+  await page.selectOption('select[aria-label="Diagram"]', 'flow')
+  await page.waitForTimeout(1400)
+  const flow = await diagramText(page)
+  ok('the flowchart opens on the trigger', flow.includes('A customer decides to trade'), flow.slice(0, 80))
+  ok('  …and ends on the outcome', flow.includes('The trade is settled'))
+  ok('  …drawing every child', ['L2.1', 'L2.2', 'L2.3', 'L2.4'].every((c) => flow.includes(c)), flow.slice(0, 200))
+
+  /* ---- lanes, which is the diagram Layer C made possible */
+  await page.selectOption('select[aria-label="Diagram"]', 'lanes')
+  await page.waitForTimeout(1400)
+  const lanes = await page.$$eval('.proc-diagram .cluster, .proc-diagram .cluster-label', (els) => els.length)
+  ok('the lane diagram draws more than one lane', lanes > 1, `${lanes} lane elements`)
+  ok(
+    '  …and says the lanes are teams',
+    (await page.evaluate(() => document.body.innerText)).includes('One lane per team')
+  )
+
+  /* ---- handoffs: one box per process, however many rows mention it.
+
+     The rollup carries the LEAF pair's teams, so a rolled-up row puts this
+     process under a team that is not its own — and drawing a box per row put
+     "L2 Order and execution" in two different lanes at once. */
+  await page.selectOption('select[aria-label="Diagram"]', 'handoffs')
+  await page.waitForTimeout(1400)
+  const boxes = await page.$$eval('.proc-diagram .nodeLabel', (els) => els.map((e) => e.textContent?.trim() ?? ''))
+  const dupes = boxes.filter((b, i) => boxes.indexOf(b) !== i)
+  is('the handoff diagram draws each process once', dupes.join(', '), '')
+  ok('  …including the leaf crossings inside it', boxes.some((b) => b.startsWith('L2.3.2')), boxes.join(' | '))
+  ok('  …and the topic that carries one', (await diagramText(page)).includes('orders.matched.v1'))
+
+  /* ---- decomposition */
+  await page.selectOption('select[aria-label="Diagram"]', 'tree')
+  await page.waitForTimeout(1400)
+  const tree = await diagramText(page)
+  ok('the decomposition reaches level 3', tree.includes('L2.3.5'), tree.slice(0, 120))
+  ok('no console errors across the five diagrams', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+/* ---- a tab with nothing behind it is worse than a missing tab: it teaches
+   the reader that the diagrams are unreliable. L2.1 is four steps, one team,
+   one service, no handoffs and nothing below it. */
+{
+  const { ctx, page } = await open('/process?code=2.1')
+  await openDiagram(page)
+  const offered = await page.$$eval('select[aria-label="Diagram"] option', (els) => els.map((e) => e.value))
+  is('a stage with one team and no handoffs offers only what it can draw', offered.join(','), 'sequence,flow')
+  await ctx.close()
+}
+
+/* ---- §2: `next`, on screen. The conditions belong on the arrows, the ends
+   are terminals, and a branch to a code nobody wrote is a dead end that says
+   so rather than an arm that quietly is not drawn. */
+{
+  const { ctx, page } = await open('/process?code=2.1')
+  await openDiagram(page, 'flow')
+  const flow = await diagramText(page)
+  ok('a decision draws both conditions on its arrows',
+    flow.includes('the quote is still warm') && flow.includes('the cache has expired'), flow.slice(0, 200))
+  ok('  …and an arm that stops the process draws its outcome', flow.includes('Estimate refused'))
+  ok('  …with both outcomes, once each',
+    (flow.match(/Estimate refused/g) ?? []).length === 1 && flow.includes('Estimate offered'))
+  await ctx.close()
+}
+
+{
+  const { ctx, page } = await open('/process?code=1.2')
+  await openDiagram(page, 'flow')
+  const flow = await diagramText(page)
+  ok('a branch to a code nobody wrote is drawn as a dead end', flow.includes('not written'), flow.slice(0, 200))
+  ok('  …naming the code it was pointed at', flow.includes('L4.2'))
+  await ctx.close()
+}
+
 /* ---- §8: "because the children are the flow, this works at every level —
    L2 draws four boxes". A level 1's stages carry no interaction of their own,
    and the diagram used to be withheld for exactly the case the spec names. */

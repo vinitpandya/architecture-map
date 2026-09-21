@@ -69,6 +69,42 @@ export const DRIFT_KINDS: Record<string, DriftKind> = {
     title: 'Components no documented process touches',
     why: 'Something is running that nobody has written down a reason for. Either a process is missing from the documents, or the component is.',
   },
+  'process-flow-unknown-target': {
+    title: 'Branches that lead nowhere',
+    why: 'A step says the flow continues at a code nobody has written. Usually a renumbering that a branch did not follow, and it fails quietly — the flowchart simply stops drawing that arm.',
+  },
+
+  /* Layer C. Every one of these arrived as a bare slug: the Health page and
+     the process page both read this table, and neither had a sentence for a
+     team finding. */
+  'unknown-team': {
+    title: 'Teams the registry does not have',
+    why: 'A manifest or a pack names a team that is not in teams.json. Either it was renamed or merged and the documents have not followed, or the registry is behind. Rename or merge it on the Teams page.',
+  },
+  'component-no-team': {
+    title: 'Services nobody is accountable for',
+    why: 'A service whose manifest names no team, so everything it owns is teamless too. Set one on the service page or in the services grid on the Teams page.',
+  },
+  'multi-team-topic': {
+    title: 'Topics more than one team publishes',
+    why: 'Fan-in is not a defect, but it means the topic has no single owner — so it is drawn teamless rather than attributed to whichever repo happened to be scanned first.',
+  },
+  'process-no-owner': {
+    title: 'Processes with no owner of their own',
+    why: 'A level 1 or 2 whose document names no accountable team. It inherits one for display, but nobody has actually said whose it is.',
+  },
+  'process-link-unknown-target': {
+    title: 'Handoffs to a process nobody wrote',
+    why: 'A pack says it hands off to a code no pack declares. Often the honest answer — the team at the other end has not written theirs yet — and worth knowing either way.',
+  },
+  'process-link-unsupported': {
+    title: 'Handoffs nothing in the code backs up',
+    why: 'A declared handoff whose two processes do not even share a component. Either it happens outside the code entirely — a file drop, a person — or it stopped happening.',
+  },
+  'process-link-undocumented': {
+    title: 'Handoffs the code makes and no document mentions',
+    why: 'One team publishes and another consumes, and neither pack says so. This is the cross-team dependency nobody knows they have.',
+  },
 }
 
 /** A title in the reader's terms, or the slug if the kind is new. */
