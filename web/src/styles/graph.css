@@ -243,6 +243,11 @@
   border-radius: 7px;
   background: color-mix(in srgb, var(--surface-1) 88%, transparent);
   border: 1px solid var(--border);
+  /* Capped so the key and whatever the map is saying on the other side can
+     both be on screen. Uncapped it laid its kinds out in one row about 430px
+     wide, which on a narrow card reached across to the far corner and sat on
+     top of them. The legend already wraps; it was never asked to. */
+  max-width: min(260px, 46%);
 }
 
 .map-legend .legend {
@@ -263,8 +268,11 @@
   line-height: 1;
 }
 
-/* Shut, it is just the way back to itself. */
+/* Shut, it is the way back to itself and the way to the other view. */
 .map-legend-shut {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 2px 7px;
 }
 
@@ -284,16 +292,145 @@
   align-self: flex-start;
 }
 
+/* The map's controls, two or three to a row rather than one. */
+.map-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.map-controls .segmented button {
+  padding: 2px 7px;
+  font-size: 11px;
+}
+
+.map-arrange {
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
 .map-reset {
   align-self: flex-start;
   font-size: 11px;
   padding: 2px 0;
 }
 
+/* ───────────────────────────────────────────────── the chord view
+
+   Who talks to whom, when the topology is a hairball. It lives inside the
+   map's canvas, so the key floats over it exactly as it does over the graph. */
+
+.map-canvas-plain {
+  position: relative;
+  overflow: hidden;
+}
+
+.map-legend-float {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 4;
+}
+
+.chord,
+.chord-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.chord svg {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.chord-arc {
+  cursor: pointer;
+  transition: fill-opacity 120ms ease;
+}
+
+.chord-ribbons path {
+  transition: fill-opacity 120ms ease;
+}
+
+.chord-label {
+  font-size: 10px;
+  fill: var(--text-secondary);
+  cursor: pointer;
+}
+
+/* The one line under the circle that says what the reader is looking at, and
+   turns into the hovered ribbon's own sentence. Fixed height, so the diagram
+   does not jump every time the mouse crosses a ribbon. */
+.chord-note {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 16px 6px;
+  max-width: 720px;
+  min-height: 34px;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* The box an arrangement draws round a team or a column. Painted behind
+   everything and deaf to the mouse — see nodeTypes.tsx for why it is not a
+   React Flow parent. */
+.map-group {
+  width: 100%;
+  height: 100%;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 45%, transparent);
+  pointer-events: none;
+}
+
+.map-group-label {
+  position: absolute;
+  top: 7px;
+  left: 12px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* The corner the map talks back in. Stacked rather than two panels, because
+   two panels at one corner overlap. */
+.map-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 8px;
+  max-width: min(280px, 46%);
+}
+
+/* A transient mode needs a way out you can see without opening the key. */
+.map-isolated {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-1) 94%, transparent);
+  border: 1px solid var(--border);
+}
+
+.map-isolated .ghost {
+  padding: 0;
+  font-size: 12px;
+}
+
 /* ------------------------------------------- what a derived line stands for */
 
 .map-through {
-  margin: 8px;
   padding: 6px 9px;
   max-width: 260px;
   border-radius: 7px;

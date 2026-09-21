@@ -1,6 +1,6 @@
 import type { ELK as ElkInstance } from 'elkjs/lib/elk-api'
-import type { GraphEdge, GraphNode } from '../lib/api'
-import { flowDirection } from '../lib/nodes'
+import type { GraphEdge, GraphNode, NodeKind } from '../lib/api'
+import { KIND_PLURAL, flowDirection } from '../lib/nodes'
 
 /**
  * Layered layout, never force. A service has to be in the same place on every
@@ -21,13 +21,38 @@ const elk = () => {
   return engine
 }
 
-const OPTIONS = {
+/**
+ * Four ways of arranging the same graph, because one arrangement cannot answer
+ * every question. All four are deterministic — a node has to be in the same
+ * place on every visit or the map stops being something people build a mental
+ * picture from.
+ */
+export type Arrangement = 'compact' | 'teams' | 'columns' | 'crossings'
+
+export const ARRANGEMENT_LABEL: Record<Arrangement, string> = {
+  compact: 'Compact',
+  teams: 'Teams',
+  columns: 'Columns',
+  crossings: 'Fewest crossings',
+}
+
+export const ARRANGEMENT_SUB: Record<Arrangement, string> = {
+  compact: 'Layered, wrapped to fill the panel',
+  teams: 'A box per team — what leaves one is a cross-team dependency',
+  columns: 'One column per kind, sorted by name',
+  crossings: 'Layered, unwrapped, with crossings minimised harder — taller, and clearest',
+}
+
+const LAYERED = {
   'elk.algorithm': 'layered',
   'elk.direction': 'RIGHT',
   'elk.layered.spacing.nodeNodeBetweenLayers': '110',
   'elk.spacing.nodeNode': '48',
   'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
   'elk.layered.crossingMinimization.semiInteractive': 'true',
+}
+
+const OPTIONS: Record<'compact' | 'teams' | 'crossings', Record<string, string>> = {
   /*
    * An estate is mostly a long dependency chain, and laid out in one run of
    * layers it comes out as a ribbon: 1968×214 for the demo estate at service
@@ -38,11 +63,63 @@ const OPTIONS = {
    * and only then: a graph that is already squarer is laid out exactly as it
    * was before. Same layered algorithm, same determinism.
    */
-  'elk.layered.wrapping.strategy': 'MULTI_EDGE',
-  'elk.aspectRatio': '1.7',
+  compact: { ...LAYERED, 'elk.layered.wrapping.strategy': 'MULTI_EDGE', 'elk.aspectRatio': '1.7' },
+
+  /*
+   * The wrapping traded away, and the crossing minimisation turned up.
+   * Thoroughness is a search budget, so this ought to be the slow one and is
+   * not: the wrapping compact does is more expensive than the search, and on
+   * the demo estate this comes out at 341ms against compact's 633ms, holding
+   * at roughly half the way up to 258 nodes. What it costs is height — every
+   * layer in one run — which is the trade, because a wrapped layer puts two
+   * things side by side that are nothing of the sort.
+   */
+  crossings: {
+    ...LAYERED,
+    'elk.layered.thoroughness': '40',
+    'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+    'elk.layered.crossingMinimization.semiInteractive': 'false',
+    'elk.layered.nodePlacement.favorStraightEdges': 'true',
+  },
+
+  /* One box per team, each laid out inside itself and the boxes arranged among
+     themselves — which is what SEPARATE_CHILDREN means and why it is here.
+     Letting the layers run through the boxes instead (INCLUDE_CHILDREN) puts
+     one team's nodes in four different layers and drags its box across the
+     whole width: 3191x1156 for the demo estate against 1460x878 this way. The
+     boxes are the point of this arrangement, so the boxes are what it packs. */
+  teams: {
+    ...LAYERED,
+    'elk.hierarchyHandling': 'SEPARATE_CHILDREN',
+    'elk.layered.wrapping.strategy': 'MULTI_EDGE',
+    'elk.aspectRatio': '1.7',
+    'elk.spacing.nodeNode': '44',
+    'elk.padding': '[top=34,left=18,bottom=18,right=18]',
+  },
 }
 
 export type Position = { x: number; y: number }
+
+/**
+ * A group box, for the arrangements that have them. Positioned absolutely like
+ * everything else rather than as a React Flow parent: a parent re-bases its
+ * children's coordinates, which would fight both the saved hand-placed
+ * positions and the drag that produces them.
+ */
+export type Group = { id: string; label: string; x: number; y: number; width: number; height: number }
+
+export type Laid = { positions: Record<string, Position>; groups: Group[] }
+
+/** The order the columns run in: what runs, what it serves, what it says, what it keeps. */
+const COLUMN_ORDER: NodeKind[] = [
+  'service',
+  'endpoint',
+  'kafka.topic',
+  'contract',
+  'database',
+  'cache',
+  'external',
+]
 
 /**
  * Roughly what the label needs, in the same 12px the node CSS renders at.
@@ -66,37 +143,122 @@ export function nodeSize(node: GraphNode): { width: number; height: number } {
  * written as an escape, not as the byte: a literal NUL in the source makes the
  * whole file binary to git, and this file stopped being diffable.
  */
-export const layoutKey = (nodes: GraphNode[], edges: GraphEdge[]) =>
-  `${nodes.map((n) => n.id).sort().join('\u0000')}|${edges.map((e) => e.id).sort().join('\u0000')}`
+export const layoutKey = (nodes: GraphNode[], edges: GraphEdge[], arrangement: Arrangement = 'compact') =>
+  `${arrangement}|${nodes.map((n) => n.id).sort().join('\u0000')}|${edges.map((e) => e.id).sort().join('\u0000')}`
 
 export async function layoutGraph(
   nodes: GraphNode[],
-  edges: GraphEdge[]
-): Promise<Record<string, Position>> {
-  if (!nodes.length) return {}
+  edges: GraphEdge[],
+  arrangement: Arrangement = 'compact'
+): Promise<Laid> {
+  if (!nodes.length) return { positions: {}, groups: [] }
+  if (arrangement === 'columns') return columns(nodes)
 
   const present = new Set(nodes.map((n) => n.id))
-  const graph = {
-    id: 'root',
-    layoutOptions: OPTIONS,
-    children: [...nodes]
-      .sort((a, b) => a.id.localeCompare(b.id))
-      .map((n) => ({ id: n.id, ...nodeSize(n) })),
-    // Laid out in the direction data flows, not the direction the edge is
-    // stored in — a consumer belongs downstream of the topic it reads.
-    edges: [...edges]
-      .sort((a, b) => a.id.localeCompare(b.id))
-      .flatMap((e) => {
-        const { source, target } = flowDirection(e)
-        if (!present.has(source) || !present.has(target)) return []
-        return [{ id: e.id, sources: [source], targets: [target] }]
-      }),
-  }
+  const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id))
+  // Laid out in the direction data flows, not the direction the edge is
+  // stored in — a consumer belongs downstream of the topic it reads.
+  const elkEdges = [...edges]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .flatMap((e) => {
+      const { source, target } = flowDirection(e)
+      if (!present.has(source) || !present.has(target)) return []
+      return [{ id: e.id, sources: [source], targets: [target] }]
+    })
+
+  const graph =
+    arrangement === 'teams'
+      ? { id: 'root', layoutOptions: OPTIONS.teams, children: teamBoxes(sorted), edges: elkEdges }
+      : {
+          id: 'root',
+          layoutOptions: OPTIONS[arrangement],
+          children: sorted.map((n) => ({ id: n.id, ...nodeSize(n) })),
+          edges: elkEdges,
+        }
 
   const laid = await (await elk()).layout(graph)
   const positions: Record<string, Position> = {}
+  const groups: Group[] = []
   for (const child of laid.children ?? []) {
-    positions[child.id] = { x: child.x ?? 0, y: child.y ?? 0 }
+    if (!child.children?.length) {
+      positions[child.id] = { x: child.x ?? 0, y: child.y ?? 0 }
+      continue
+    }
+    // A group's children come back relative to it, so they are offset here and
+    // nowhere else — every consumer of this file works in one coordinate space.
+    groups.push({
+      id: child.id,
+      label: String((child as { labels?: { text: string }[] }).labels?.[0]?.text ?? child.id),
+      x: child.x ?? 0,
+      y: child.y ?? 0,
+      width: child.width ?? 0,
+      height: child.height ?? 0,
+    })
+    for (const leaf of child.children) {
+      positions[leaf.id] = { x: (child.x ?? 0) + (leaf.x ?? 0), y: (child.y ?? 0) + (leaf.y ?? 0) }
+    }
   }
-  return positions
+  return { positions, groups }
+}
+
+/** One elk group per team, in a fixed order so the boxes do not swap places. */
+function teamBoxes(nodes: GraphNode[]) {
+  const by = new Map<string, { label: string; nodes: GraphNode[] }>()
+  for (const n of nodes) {
+    const id = n.teamId ?? '\u00b7none'
+    if (!by.has(id)) by.set(id, { label: n.teamName ?? n.teamId ?? 'No team', nodes: [] })
+    by.get(id)!.nodes.push(n)
+  }
+  return [...by]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([id, group]) => ({
+      id: `group:${id}`,
+      labels: [{ text: group.label }],
+      layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT' },
+      children: group.nodes.map((n) => ({ id: n.id, ...nodeSize(n) })),
+    }))
+}
+
+/**
+ * One column per kind, sorted by name, computed rather than laid out.
+ *
+ * elk would do this with partitions, but a column layout has no crossings to
+ * minimise and no layers to assign — it is an ordering, and computing it
+ * directly makes it instant, exactly reproducible and readable as arithmetic.
+ */
+function columns(nodes: GraphNode[]): Laid {
+  const GAP_X = 90
+  const GAP_Y = 14
+  const HEAD = 34
+
+  const by = new Map<NodeKind, GraphNode[]>()
+  for (const n of nodes) {
+    if (!by.has(n.kind)) by.set(n.kind, [])
+    by.get(n.kind)!.push(n)
+  }
+  const present = COLUMN_ORDER.filter((k) => by.has(k))
+
+  const positions: Record<string, Position> = {}
+  const groups: Group[] = []
+  let x = 0
+  for (const kind of present) {
+    const column = by.get(kind)!.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+    const width = Math.max(...column.map((n) => nodeSize(n).width))
+    let y = HEAD
+    for (const n of column) {
+      // Centred in the column, so a short name does not read as a ragged edge.
+      positions[n.id] = { x: x + Math.round((width - nodeSize(n).width) / 2), y }
+      y += nodeSize(n).height + GAP_Y
+    }
+    groups.push({
+      id: `column:${kind}`,
+      label: `${KIND_PLURAL[kind]} (${column.length})`,
+      x: x - 14,
+      y: 0,
+      width: width + 28,
+      height: y - GAP_Y + 14,
+    })
+    x += width + GAP_X
+  }
+  return { positions, groups }
 }

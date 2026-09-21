@@ -154,8 +154,12 @@ const setScope = (slug, scope) =>
     body: JSON.stringify({ scope }),
   })
 
+/** The components on the map. An arrangement's group boxes are React Flow
+ *  nodes as well, and none of these checks is ever asking about those. */
+const MAP_NODE = '.react-flow__node:not(:has(.map-group))'
+
 const nodePositions = (page) =>
-  page.$$eval('.react-flow__node', (els) =>
+  page.$$eval(MAP_NODE, (els) =>
     Object.fromEntries(els.map((e) => [e.getAttribute('data-id'), e.style.transform]))
   )
 
@@ -167,7 +171,7 @@ const showEverything = async (page) => {
 }
 
 const kindsOnScreen = (page) =>
-  page.$$eval('.react-flow__node', (els) => [
+  page.$$eval(MAP_NODE, (els) => [
     ...new Set(els.map((e) => e.getAttribute('data-id').split(':')[0])),
   ])
 
@@ -194,7 +198,7 @@ await setScope('map', null)
   )
   const serviceCount = graph.nodes.filter((n) => n.kind === 'service').length
   is('  …and draws every service, including any nothing connects to',
-    (await page.$$('.react-flow__node')).length, serviceCount)
+    (await page.$$(MAP_NODE)).length, serviceCount)
   const relationKey = await page.$$eval('.map-legend .legend-item', (els) => els.map((e) => e.textContent.trim()))
   ok(
     '  …with a key naming what the lines stand for',
@@ -248,7 +252,7 @@ await setScope('map', null)
     fullKinds.join(', ')
   )
 
-  const shownNodes = await page.$$eval('.react-flow__node', (els) => els.map((e) => e.getAttribute('data-id')))
+  const shownNodes = await page.$$eval(MAP_NODE, (els) => els.map((e) => e.getAttribute('data-id')))
   const shownEdges = await page.$$eval('.react-flow__edge', (els) => els.map((e) => e.getAttribute('data-id')))
   const expectedPairs = (() => {
     const OUT = { event: ['kafka.produce'], call: ['http.call'], store: ['db.write', 'db.owns', 'cache.write'] }
@@ -316,8 +320,14 @@ await setScope('map', null)
     moved.length ? `${moved.length} moved` : `${Object.keys(again).length} nodes identical`
   )
 
-  /* ---- dragging, which is the point of the saved arrangement */
+  /* ---- dragging, which is the point of the saved arrangement.
 
+     The key is shut first: it floats over the canvas, and a drag that starts
+     under it is a click on the key. That is true of the app as well as of the
+     test, which is why the key can be shut at all. */
+
+  await second.page.click('.map-legend [aria-label="Hide the key"]')
+  await second.page.waitForTimeout(300)
   const before = await nodePositions(second.page)
   const target = await second.page.$('.react-flow__node[data-id^="svc:"]')
   const box = await target.boundingBox()
@@ -342,6 +352,9 @@ await setScope('map', null)
   ok('  …while every other node stayed where the layout put it',
     Object.keys(before).filter((id) => !dragged.includes(id)).every((id) => reloaded[id] === before[id]))
 
+  // The key was shut to drag under it; Reset layout lives inside it.
+  await second.page.click('.map-legend [aria-label="Show the key"]')
+  await second.page.waitForTimeout(300)
   await second.page.click('.map-reset')
   await second.page.waitForTimeout(1200)
   const reset = await nodePositions(second.page)
@@ -350,6 +363,167 @@ await setScope('map', null)
   is('  …and the Reset control goes away with nothing left to reset',
     (await second.page.$$('.map-reset')).length, 0)
   await second.ctx.close()
+}
+
+/* ---- isolating a selection.
+
+   The filter row's focus and depth ask the same question of the server. This
+   asks it of what is already on screen, and the reason it exists is that a
+   dense map has too many lines to read — so the check that matters is that the
+   count actually drops and the way back is on screen. */
+{
+  const { ctx, page, problems } = await open('/')
+  await page.waitForSelector('.map-node', { timeout: 30000 })
+  await page.waitForTimeout(1200)
+  await showEverything(page)
+  const count = async () => (await page.$$(MAP_NODE)).length
+  const whole = await count()
+
+  is('the isolate control is not offered with nothing selected', (await page.$$('.map-isolate')).length, 0)
+  await page.click('.react-flow__node[data-id="svc:order-service"]')
+  await page.waitForTimeout(800)
+  is('  …and appears once something is', (await page.$$('.map-isolate')).length, 1)
+
+  await page.click('.map-isolate button:has-text("1")')
+  await page.waitForTimeout(2200)
+  const oneHop = await count()
+  ok('one hop hides everything the selection does not touch', oneHop < whole, `${whole} → ${oneHop}`)
+
+  // Checkable rather than a matter of taste: one hop is the node and its
+  // neighbours in the graph the map is drawing.
+  const graph = await api('/graph')
+  const expected = new Set(['svc:order-service'])
+  for (const e of graph.edges) {
+    if (e.from === 'svc:order-service') expected.add(e.to)
+    if (e.to === 'svc:order-service') expected.add(e.from)
+  }
+  const drawn = new Set(await page.$$eval(MAP_NODE, (els) => els.map((e) => e.getAttribute('data-id'))))
+  is(
+    '  …leaving exactly the node and its neighbours',
+    [...drawn].filter((id) => !expected.has(id)).join(', '),
+    ''
+  )
+
+  await page.click('.map-isolate button:has-text("2")')
+  await page.waitForTimeout(2200)
+  const twoHops = await count()
+  ok('  …and two hops reaches further than one', twoHops > oneHop, `${oneHop} → ${twoHops}`)
+
+  ok('the way back is on screen without opening the key', (await page.$$('.map-isolated')).length === 1)
+  ok(
+    '  …saying what it is isolated to and how much is hidden',
+    (await page.$eval('.map-isolated', (e) => e.textContent ?? '')).includes('Order Service')
+  )
+  await page.click('.map-isolated button:has-text("Show the rest")')
+  await page.waitForTimeout(2200)
+  is('  …and taking it puts the map back', await count(), whole)
+
+  /* An endpoint or a topic two hops out is the service behind it, which is the
+     question this was built for. */
+  await page.click('.react-flow__node[data-id="topic:orders.matched.v1"]')
+  await page.waitForTimeout(700)
+  await page.click('.map-isolate button:has-text("2")')
+  await page.waitForTimeout(2200)
+  const around = await page.$$eval(MAP_NODE, (els) => els.map((e) => e.getAttribute('data-id')))
+  ok(
+    'two hops from a topic reaches the services on the other side of it',
+    around.includes('svc:ledger-service') && around.includes('svc:matching-engine'),
+    around.filter((id) => id.startsWith('svc:')).join(', ')
+  )
+  ok('no console errors while isolating', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+/* ---- the arrangements. One layout cannot answer every question, and the two
+   with boxes are the ones that say something the layered one cannot. */
+{
+  const { ctx, page, problems } = await open('/')
+  await page.waitForSelector('.map-node', { timeout: 30000 })
+  await page.waitForTimeout(1200)
+  await showEverything(page)
+  const drawn = (await page.$$(MAP_NODE)).length
+  const boxes = () => page.$$eval('.map-group-label', (els) => els.map((e) => e.textContent ?? ''))
+
+  is('the map arranges itself compactly by default',
+    await page.$eval('select[aria-label="Arrangement"]', (e) => e.value), 'compact')
+  is('  …with no group boxes', (await boxes()).length, 0)
+
+  await page.selectOption('select[aria-label="Arrangement"]', 'teams')
+  await page.waitForTimeout(3000)
+  const teams = await boxes()
+  ok('Teams draws a box per team', teams.length > 1, teams.join(', '))
+  ok('  …labelled with the team', teams.includes('Trading'), teams.join(', '))
+  is('  …and draws every component it drew before', (await page.$$(MAP_NODE)).length, drawn)
+
+  await page.selectOption('select[aria-label="Arrangement"]', 'columns')
+  await page.waitForTimeout(2200)
+  const columns = await boxes()
+  ok('Columns draws a column per kind, counted', columns.some((c) => /^Services \(\d+\)$/.test(c)), columns.join(', '))
+  // On the centre, not on the left edge: a column centres its nodes, so a
+  // short name and a long one start at different x and sit in one column.
+  const centres = await page.$$eval(MAP_NODE, (els) =>
+    els
+      .filter((e) => e.getAttribute('data-id').startsWith('svc:'))
+      .map((e) => Math.round(new DOMMatrixReadOnly(getComputedStyle(e).transform).e + e.offsetWidth / 2))
+  )
+  // Within a pixel or two: a node's width is estimated from its label before
+  // it is rendered, and the estimate is what centres it in the column.
+  ok(
+    '  …with every service centred in the same one',
+    Math.max(...centres) - Math.min(...centres) <= 2,
+    `spread ${Math.max(...centres) - Math.min(...centres)}px`
+  )
+
+  await page.selectOption('select[aria-label="Arrangement"]', 'crossings')
+  await page.waitForTimeout(3500)
+  is('Fewest crossings draws no boxes', (await boxes()).length, 0)
+  is('  …and still every component', (await page.$$(MAP_NODE)).length, drawn)
+  ok('no console errors across the arrangements', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+/* ---- the chord: who talks to whom, when the topology is a hairball.
+
+   Hand-written geometry rather than d3, so the numbers are worth asserting:
+   an arc per service that connects to anything, a ribbon per derived line. */
+{
+  const { ctx, page, problems } = await open('/')
+  await page.waitForSelector('.map-node', { timeout: 30000 })
+  await page.waitForTimeout(1200)
+  await page.click('.map-surface button:has-text("Chord")')
+  await page.waitForTimeout(1600)
+
+  const services = (await api('/graph')).nodes.filter((n) => n.kind === 'service').length
+  is('the chord draws an arc per service', (await page.$$('.chord-arc')).length, services)
+  const labels = await page.$$eval('.chord-label', (els) => els.map((e) => e.textContent ?? ''))
+  ok('  …labelled', labels.includes('Order Service'), labels.join(', '))
+  const ribbons = (await page.$$('.chord-ribbons path')).length
+  ok('  …and a ribbon per service-to-service line', ribbons > 0, `${ribbons} ribbons`)
+
+  ok('  …with a key naming what the ribbons are',
+    (await page.$$eval('.map-legend .legend-item', (els) => els.map((e) => e.textContent.trim())))
+      .includes('Shared stores'))
+  await page.click('.map-legend .legend-item:has-text("Shared stores")')
+  await page.waitForTimeout(900)
+  ok('  …that switches them off, like the map\'s does',
+    (await page.$$('.chord-ribbons path')).length < ribbons)
+  await page.click('.map-legend .legend-item:has-text("Shared stores")')
+  await page.waitForTimeout(900)
+
+  await page.hover('.chord-label:has-text("Ledger Service")')
+  await page.waitForTimeout(700)
+  const note = await page.$eval('.chord-note', (e) => e.textContent ?? '')
+  ok('hovering an arc says how much goes each way', /\d+ out, \d+ in/.test(note), note.trim().slice(0, 90))
+  await page.click('.chord-label:has-text("Ledger Service")')
+  await page.waitForTimeout(1200)
+  is('clicking one opens it in the inspector',
+    await page.$eval('.map-inspector h3', (e) => e.textContent), 'Ledger Service')
+
+  await page.click('.map-surface button:has-text("Map")')
+  await page.waitForTimeout(2500)
+  ok('and the map comes back', (await page.$$('.map-node')).length > 0)
+  ok('no console errors on the chord', problems.length === 0, problems.join(' | '))
+  await ctx.close()
 }
 
 /* ---- an external is drawn as itself, because there is nothing on the far
@@ -421,7 +595,7 @@ console.log('\nSPEC-PROCESSES.md §10 Phase 11 — processes in the browser')
   await showEverything(page)
   is(
     'the map shows exactly the process’s components',
-    (await page.$$('.react-flow__node')).length,
+    (await page.$$(MAP_NODE)).length,
     detail.components.length
   )
   ok('no console errors with a process selected', problems.length === 0, problems.join(' | '))
@@ -774,7 +948,7 @@ for (const code of ['1', '2.1', '2.3.5']) {
   await page.waitForSelector('.proc-binding, .proc-flow, .card', { timeout: 20000 })
   await page.waitForSelector('.map-node', { timeout: 30000 })
   await page.waitForTimeout(1500)
-  const drawn = await page.$$eval('.react-flow__node', (els) => els.length)
+  const drawn = await page.$$eval(MAP_NODE, (els) => els.length)
   const expected = (await api(`/process?code=${code}`)).components.length
   is(`process ${code}: the map draws every component`, drawn, expected)
   ok(`  …with no console error`, problems.length === 0, problems.join(' | '))

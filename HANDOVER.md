@@ -16,11 +16,13 @@ handoffs where one team's work ends and another's begins.
 On top of those, the map reads at two detail levels: services with their
 relationships collapsed into one line per pair, or the scan as it was stored.
 Its key is a set of switches, and nodes can be dragged into an arrangement that
-is saved. The team registry is editable from the Teams page, because a scan
-derives a team from the commit history and an estate therefore arrives with
-teams named after people. And a process draws five ways — sequence, flow,
+is saved, and a selection can isolate itself by hops when a screen has too many
+lines to read. The team registry is editable from the Teams page, because a
+scan derives a team from the commit history and an estate therefore arrives
+with teams named after people. A process draws five ways — sequence, flow,
 lanes, handoffs and decomposition — all from the same rows, because the
-children are the flow.
+children are the flow. And the map draws itself four ways, or as a chord when
+the topology is a hairball and only the traffic still reads.
 
 Between B and C a polish pass read the whole result back against the spec and
 found defects on paths the demo data never reaches. That turned out to be the
@@ -91,6 +93,7 @@ joke.
 | map · two detail levels, the key as a switch, drag to arrange | Complete, verified in a browser |
 | teams · rename, merge, and a team on every service | Complete, verified in a browser |
 | diagrams · five views of a process, and `next` in the schema | Complete, verified in a browser |
+| map · isolate by hops, four arrangements, a chord view | Complete, verified in a browser |
 
 Beyond §13 and §9's lists, two things the shells had not met: node detail renders
 per kind (the topic page — producers against consumers with the version skew
@@ -430,6 +433,26 @@ blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
   asymmetry is the lesson of this build: every defect found by reading rather
   than running lived on a path the demo data does not reach.** The four Layer A
   findings above are the remaining ones, and they are where to look next.
+- **A group box is a React Flow node.** Two arrangements draw them, so every
+  check that counts "things on the map" goes through `MAP_NODE` in
+  `verify-ui.mjs`, which excludes them. If you add a count, use it.
+- **Isolation is applied last, over what the key left**, and the walk is
+  undirected. Both are deliberate: two hops through things you switched off
+  would be two hops through a graph nobody is looking at, and "what does this
+  topic connect to" means its producers as well as its consumers.
+- **`Fewest crossings` is not the slow one.** Thoroughness is a search budget
+  so it ought to be, and is not: the wrapping `compact` does costs more than
+  the search. 341ms against compact's 633ms on the demo estate, holding at
+  about half the way up to 258 nodes. What it costs is height.
+- **The key floats over the canvas and it is a controls panel now**, so a drag
+  that starts under it is a click on the key — which is why `verify:ui` shuts
+  it before dragging, and why it can be shut at all. Both panels are width
+  capped for the same reason: uncapped, the key reached across a narrow card
+  and sat on top of whatever the map was saying in the other corner.
+- **The chord's geometry is in `web/src/graph/chord.ts`, written rather than
+  imported.** It is pure and deterministic; `Chord.tsx` is only the drawing. An
+  arc is sized by out *and* in together, which is where it departs from d3's
+  default and the reason a service everybody calls still gets an arc.
 - **`next` is the departures from the numbering, not the sequence.** A process
   with no `next` falls through to the next sibling exactly as it always did, so
   every pack written before this draws the same straight line. If you add a

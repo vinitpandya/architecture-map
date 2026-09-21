@@ -70,6 +70,26 @@ const Contract = (p: NodeProps) => <Shell data={p.data as MapNodeData} />
 const External = (p: NodeProps) => <Shell data={p.data as MapNodeData} />
 const Store = (p: NodeProps) => <Shell data={p.data as MapNodeData} glyph={<Cylinder />} />
 
+/**
+ * The box an arrangement draws round a group — a team, or a column of one kind.
+ *
+ * Not a React Flow parent node: a parent re-bases its children's coordinates,
+ * which would fight both the saved hand-placed positions and the drag that
+ * produces them. This is an ordinary node sized by the layout, painted behind
+ * everything and deaf to the mouse, so a click aimed at what is inside it
+ * lands on what is inside it.
+ */
+export type MapGroupData = { label: string }
+
+function Group({ data }: NodeProps) {
+  const { label } = data as MapGroupData
+  return (
+    <div className="map-group">
+      <span className="map-group-label">{label}</span>
+    </div>
+  )
+}
+
 /** Keyed by node kind, so /api/graph's `kind` is the React Flow node type. */
 export const nodeTypes = {
   service: Service,
@@ -79,6 +99,7 @@ export const nodeTypes = {
   endpoint: Endpoint,
   contract: Contract,
   external: External,
+  group: Group,
 }
 
 function Cylinder() {

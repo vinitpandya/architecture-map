@@ -362,6 +362,66 @@ the git log rather than here. Three were judgement calls:
   house style has a table, and a cell that is a link is worth more than a cell
   that is a shade.
 
+## Isolating, arranging, and the chord
+
+- **Isolation is transient, and the filter row is not.** `focus` and `depth`
+  ask the server what the graph *is*; isolate asks what is already on screen
+  what to keep. One click, no refetch, no URL, and it works inside a widget that
+  has no filter row — which is the difference between "what does this map cover"
+  and "I cannot read this screen".
+- **It is applied last, over what the key left.** Hiding a kind and then
+  isolating means two hops through what you can see, not two hops through
+  things you switched off and out the other side.
+- **The walk is undirected.** "What does this topic connect to" means its
+  producers and its consumers, and isolating an endpoint has to keep the
+  service that serves it as well as the ones that call it. The direction is on
+  the arrow once they are both on screen.
+- **The way out is on the canvas, not in the key.** A mode you entered with one
+  click and cannot see is a mode people get stuck in.
+- **Teams groups with `SEPARATE_CHILDREN`, not `INCLUDE_CHILDREN`.** Letting
+  the layers run through the boxes puts one team's nodes in four layers and
+  drags its box across the whole width — 3191×1156 for the demo estate against
+  1460×878 the other way. The boxes are the point of that arrangement, so the
+  boxes are what it packs.
+- **A group box is not a React Flow parent.** A parent re-bases its children's
+  coordinates, which would fight both the saved hand-placed positions and the
+  drag that produces them. It is an ordinary node, sized by the layout, painted
+  behind and deaf to the mouse.
+- **Columns is computed, not laid out.** A column per kind has no crossings to
+  minimise and no layers to assign — it is an ordering, and doing the
+  arithmetic directly makes it instant, exactly reproducible and readable as
+  arithmetic.
+- **A hand-placed arrangement is per map, per detail level and per
+  arrangement.** A drag made against the compact layout means nothing against
+  the columns, so it is not applied to it.
+- **The chord's geometry is written here rather than imported.** It is one page
+  of trigonometry; d3-chord is the reference implementation and this is the
+  same arithmetic with the theme tokens applied directly rather than bent back
+  afterwards. The repository keeps its six runtime dependencies.
+- **An arc is sized by everything that happens at a service, sent and received
+  together.** d3's default sizes a group by its outgoing row alone, which gives
+  a service that everybody calls and that calls nobody no arc at all — and on
+  an estate map that is the one thing the picture may not drop.
+- **Arcs are ordered by team, then by name — never by traffic.** An arc that
+  moves when a filter changes takes its ribbons with it and the picture has to
+  be re-read from scratch. Team order is also what makes a cross-team bundle
+  visible as a bundle.
+- **Ribbons are outlined in the surface colour, not their own.** A dozen of them
+  overlap in the middle of the circle and without a gap between them they read
+  as one shape.
+- **The chord is always service-to-service**, whatever the map's detail level
+  says, so its key is drawn from the collapse rather than from the current view
+  — which at full detail holds scanned edges with no relation on them and left
+  the key empty.
+- **`Fewest crossings` turned out to be the fast one.** Thoroughness is a
+  search budget so it ought to be the slow one; the wrapping `compact` does
+  costs more than the search. 341ms against 633ms on the demo estate, and about
+  half the way up to 258 nodes. The label was corrected once it was measured
+  rather than assumed.
+- **The key can be shut and the way to the chord lives in it**, so the shut
+  state carries the view toggle too. Without that, shutting the key on the map
+  is a door locking behind you.
+
 ## Five diagrams, and `next`
 
 - **`next` is the departures from the numbering, never the sequence.** The code

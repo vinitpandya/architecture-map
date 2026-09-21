@@ -38,8 +38,18 @@ import {
   nodeHref,
   teamColours,
 } from '../lib/nodes'
-import { layoutGraph, layoutKey, nodeSize, type Position } from './layout'
-import { nodeTypes, type MapNodeData } from './nodeTypes'
+import {
+  ARRANGEMENT_LABEL,
+  ARRANGEMENT_SUB,
+  layoutGraph,
+  layoutKey,
+  nodeSize,
+  type Arrangement,
+  type Group,
+  type Position,
+} from './layout'
+import { nodeTypes, type MapGroupData, type MapNodeData } from './nodeTypes'
+import { Chord } from './Chord'
 import {
   RELATIONS,
   RELATION_COLOR,
@@ -58,6 +68,33 @@ const COLOUR_KEY = 'architecture-map.colour-by'
 const LEGEND_KEY = 'architecture-map.legend'
 const DETAIL_KEY = 'architecture-map.detail.'
 const LAYOUT_KEY = 'architecture-map.layout.'
+const ISOLATE_KEY = 'architecture-map.isolate.'
+const ARRANGE_KEY = 'architecture-map.arrangement.'
+const ARRANGEMENTS: Arrangement[] = ['compact', 'teams', 'columns', 'crossings']
+const SURFACE_KEY = 'architecture-map.surface.'
+
+/**
+ * The map draws the topology; the chord draws the traffic. Past a few dozen
+ * services the first is a hairball and the second still reads, so they are two
+ * views of one card rather than two cards.
+ */
+type Surface = 'map' | 'chord'
+
+/**
+ * How far from the selection the map keeps drawing. 0 is off — the selection
+ * dims its non-neighbours and everything stays on screen. Anything else hides
+ * the rest entirely.
+ *
+ * The filter row's `focus` and `depth` ask the same question of the server and
+ * answer it by changing what the graph *is*. This asks it of what is already on
+ * screen: one click, no refetch, no URL, and it works inside a widget that has
+ * no filter row. Reaching for it is what you do when a screen has too many
+ * lines to read, which is a different moment from deciding what the map covers.
+ */
+const HOPS = [0, 1, 2, Infinity] as const
+type Hops = (typeof HOPS)[number]
+
+const HOP_LABEL = (h: Hops) => (h === 0 ? 'Off' : h === Infinity ? 'All' : String(h))
 
 /**
  * How much of the estate a map draws. `services` collapses every topic, store
@@ -82,9 +119,11 @@ function write(key: string, value: unknown) {
     /* nothing here is worth failing a render over */
   }
 }
-/** Hand-placed nodes are per map and per detail level: the two levels do not
- *  share a node set, so they cannot share an arrangement. */
-const layoutSlot = (storageKey: string, detail: Detail) => `${LAYOUT_KEY}${storageKey}.${detail}`
+/** Hand-placed nodes are per map, per detail level and per arrangement. The
+ *  two levels do not share a node set and the four arrangements do not share a
+ *  starting point, so a drag made against one means nothing against another. */
+const layoutSlot = (storageKey: string, detail: Detail, arrangement: Arrangement) =>
+  `${LAYOUT_KEY}${storageKey}.${detail}.${arrangement}`
 
 /** The key's row for everything the registry does not name an owner for. */
 const TEAMLESS = '·none'
@@ -127,6 +166,14 @@ export function MapCanvas({
   const theme = useThemeVersion()
 
   const [positions, setPositions] = useState<Record<string, Position> | null>(null)
+  const [groups, setGroups] = useState<Group[]>([])
+  const [surface, setSurface] = useState<Surface>(() =>
+    read<Surface>(SURFACE_KEY + storageKey, 'map') === 'chord' ? 'chord' : 'map'
+  )
+  const [arrangement, setArrangement] = useState<Arrangement>(() => {
+    const saved = read<Arrangement>(ARRANGE_KEY + storageKey, 'compact')
+    return ARRANGEMENTS.includes(saved) ? saved : 'compact'
+  })
   const [laidOut, setLaidOut] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [zoomedOut, setZoomedOut] = useState(false)
@@ -157,6 +204,11 @@ export function MapCanvas({
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set())
   const [hiddenTeams, setHiddenTeams] = useState<Set<string>>(new Set())
   const [hiddenRelations, setHiddenRelations] = useState<Set<string>>(new Set())
+  /** How far from the selection to keep drawing. 0 leaves the map whole. */
+  const [isolate, setIsolate] = useState<Hops>(() => {
+    const saved = read<number | null>(ISOLATE_KEY + storageKey, null)
+    return HOPS.includes(saved as Hops) ? (saved as Hops) : saved === null ? 0 : Infinity
+  })
   /** Hand-placed nodes, overlaid on the computed layout. */
   const [placedByHand, setPlacedByHand] = useState<Record<string, Position>>({})
   /** The derived line whose intermediaries are on screen. */
@@ -173,7 +225,9 @@ export function MapCanvas({
   const view = useMemo(() => {
     const empty: GraphNode[] = []
     const noEdges: GraphEdge[] = []
-    if (!data) return { nodes: empty, edges: noEdges, candidates: empty, candidateEdges: noEdges }
+    if (!data) {
+      return { nodes: empty, edges: noEdges, candidates: empty, candidateEdges: noEdges, isolated: false, hidden: 0 }
+    }
     const base: GraphData = detail === 'services' ? collapseToServices(data) : data
     const gone = (n: GraphNode) =>
       colourBy === 'team' ? hiddenTeams.has(n.teamId ?? TEAMLESS) : hiddenKinds.has(n.kind)
@@ -182,21 +236,33 @@ export function MapCanvas({
     const edges = base.edges.filter(
       (e) => live.has(e.from) && live.has(e.to) && !(isDerived(e) && hiddenRelations.has(e.relation))
     )
-    // The key is drawn from what this detail level *could* show, not from
-    // what survived the toggles: a row that vanishes when you switch it off
-    // leaves no way to switch it back on.
-    return { nodes, edges, candidates: base.nodes, candidateEdges: base.edges }
-  }, [data, detail, colourBy, hiddenKinds, hiddenTeams, hiddenRelations])
+
+    /* Isolation, last, and over what the key left: hiding a kind and then
+       isolating has to mean "two hops through what I can see", not "two hops
+       through things I switched off and out the other side". */
+    const reached = isolate && selected && live.has(selected) ? within(edges, selected, isolate) : null
+    return {
+      nodes: reached ? nodes.filter((n) => reached.has(n.id)) : nodes,
+      edges: reached ? edges.filter((e) => reached.has(e.from) && reached.has(e.to)) : edges,
+      // The key is drawn from what this detail level *could* show, not from
+      // what survived the toggles: a row that vanishes when you switch it off
+      // leaves no way to switch it back on.
+      candidates: base.nodes,
+      candidateEdges: base.edges,
+      isolated: !!reached,
+      hidden: reached ? nodes.length - reached.size : 0,
+    }
+  }, [data, detail, colourBy, hiddenKinds, hiddenTeams, hiddenRelations, isolate, selected])
 
   const nodes = view.nodes
   const edges = view.edges
-  const key = useMemo(() => layoutKey(nodes, edges), [nodes, edges])
+  const key = useMemo(() => layoutKey(nodes, edges, arrangement), [nodes, edges, arrangement])
 
   // Detail level and map identity each pick a different saved arrangement.
   useEffect(() => {
-    setPlacedByHand(read<Record<string, Position>>(layoutSlot(storageKey, detail), {}))
+    setPlacedByHand(read<Record<string, Position>>(layoutSlot(storageKey, detail, arrangement), {}))
     setThrough(null)
-  }, [storageKey, detail])
+  }, [storageKey, detail, arrangement])
 
   // A selection the graph no longer contains has no neighbours, so every node
   // on the map counts as un-adjacent and the whole canvas dims with nothing
@@ -216,13 +282,15 @@ export function MapCanvas({
     if (!data) return
     if (!nodes.length) {
       setPositions({})
+      setGroups([])
       setLaidOut(key)
       return
     }
     let cancelled = false
-    layoutGraph(nodes, edges).then((next) => {
+    layoutGraph(nodes, edges, arrangement).then((next) => {
       if (cancelled) return
-      setPositions(next)
+      setPositions(next.positions)
+      setGroups(next.groups)
       setLaidOut(key)
       requestAnimationFrame(() => flow.current?.fitView({ padding: 0.14, duration: 0 }))
     })
@@ -264,7 +332,22 @@ export function MapCanvas({
 
   const computed: Node[] = useMemo(() => {
     if (!positions) return []
-    return nodes.map((n) => ({
+    // The boxes first, so they are behind everything in DOM order as well as
+    // by zIndex — React Flow paints in array order within a z layer.
+    const boxes: Node[] = groups.map((g) => ({
+      id: g.id,
+      type: 'group',
+      position: { x: g.x, y: g.y },
+      data: { label: g.label } satisfies MapGroupData,
+      width: g.width,
+      height: g.height,
+      zIndex: 0,
+      draggable: false,
+      selectable: false,
+      connectable: false,
+      focusable: false,
+    }))
+    return boxes.concat(nodes.map((n) => ({
       id: n.id,
       type: n.kind,
       // A node somebody put somewhere stays there; elk only places the rest.
@@ -284,10 +367,10 @@ export function MapCanvas({
       draggable: true,
       selectable: true,
       connectable: false,
-    }))
+    })))
     // colourBy and teamSlot are in here because the node's colour is part of
     // its data: without them the legend switched and the nodes did not.
-  }, [nodes, positions, placedByHand, focus, selected, neighbours, showLabel, colourBy, teamSlot])
+  }, [nodes, groups, positions, placedByHand, focus, selected, neighbours, showLabel, colourBy, teamSlot])
 
   /*
    * React Flow owns node positions while a drag is in flight, so the array it
@@ -306,18 +389,21 @@ export function MapCanvas({
     (_: unknown, __: Node, dragged: Node[]) => {
       setPlacedByHand((prev) => {
         const next = { ...prev }
-        for (const n of dragged) next[n.id] = { x: Math.round(n.position.x), y: Math.round(n.position.y) }
-        write(layoutSlot(storageKey, detail), next)
+        for (const n of dragged) {
+          if (n.type === 'group') continue
+          next[n.id] = { x: Math.round(n.position.x), y: Math.round(n.position.y) }
+        }
+        write(layoutSlot(storageKey, detail, arrangement), next)
         return next
       })
     },
-    [storageKey, detail]
+    [storageKey, detail, arrangement]
   )
   const resetLayout = useCallback(() => {
     setPlacedByHand({})
-    write(layoutSlot(storageKey, detail), {})
+    write(layoutSlot(storageKey, detail, arrangement), {})
     requestAnimationFrame(() => flow.current?.fitView({ padding: 0.14, duration: 240 }))
-  }, [storageKey, detail])
+  }, [storageKey, detail, arrangement])
 
   const rfEdges: Edge[] = useMemo(
     () =>
@@ -368,6 +454,12 @@ export function MapCanvas({
   }, [derived, through])
   const name = useCallback((id: string) => all.find((n) => n.id === id)?.name ?? idValue(id), [all])
 
+  /* The chord is always service-to-service, whatever the map's detail level
+     says — so its key is drawn from the collapse rather than from `view`,
+     which at full detail holds scanned edges with no relation on them and
+     would leave the key empty. */
+  const chordEdges = useMemo(() => (data ? collapseToServices(data).edges : []), [data])
+
   if (!data && !positions) return <div className="map-loading" style={{ height }}><span className="spinner" /></div>
   if (data && !nodes.length) {
     // An empty graph has four quite different causes and they need four
@@ -396,6 +488,118 @@ export function MapCanvas({
 
   const settling = laidOut !== key
 
+  const surfaceToggle = (
+    <div className="segmented map-surface" role="group" aria-label="View">
+      {(['map', 'chord'] as const).map((v) => (
+        <button
+          key={v}
+          type="button"
+          aria-pressed={surface === v}
+          onClick={() => {
+            setSurface(v)
+            write(SURFACE_KEY + storageKey, v)
+          }}
+        >
+          {v === 'map' ? 'Map' : 'Chord'}
+        </button>
+      ))}
+    </div>
+  )
+
+  if (surface === 'chord') {
+    return (
+      <div className="map-shell" style={{ height }}>
+        <div className="map-canvas map-canvas-plain">
+          <div className={`map-legend map-legend-float${legendOpen ? '' : ' map-legend-shut'}`}>
+            {!legendOpen ? (
+              <>
+                <button
+                  type="button"
+                  className="ghost"
+                  aria-label="Show the key"
+                  onClick={() => {
+                    setLegendOpen(true)
+                    localStorage.setItem(LEGEND_KEY, 'open')
+                  }}
+                >
+                  Key
+                </button>
+                {surfaceToggle}
+              </>
+            ) : (
+            <div className="stack" style={{ gap: 8 }}>
+              <div className="map-legend-head">
+                <span className="nav-group-label">Key</span>
+                <button
+                  type="button"
+                  className="ghost"
+                  aria-label="Hide the key"
+                  onClick={() => {
+                    setLegendOpen(false)
+                    localStorage.setItem(LEGEND_KEY, 'closed')
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              <Legend
+                shape="line"
+                items={relationLegend(chordEdges)}
+                hidden={hiddenRelations}
+                onToggle={(id) => setHiddenRelations((was) => toggled(was, id))}
+              />
+              {surfaceToggle}
+              {teamSlot.size > 0 && (
+                <div className="segmented" role="group" aria-label="Colour by">
+                  {(['kind', 'team'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={colourBy === mode}
+                      onClick={() => {
+                        setColourBy(mode)
+                        try {
+                          localStorage.setItem(COLOUR_KEY, mode)
+                        } catch {
+                          /* a private window is not a reason to fail */
+                        }
+                      }}
+                    >
+                      {mode === 'kind' ? 'Kind' : 'Team'}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            )}
+          </div>
+          {data && (
+            <Chord
+              data={data}
+              height={height - 8}
+              colourBy={colourBy}
+              teamSlot={teamSlot}
+              hiddenRelations={hiddenRelations}
+              selected={selected}
+              onSelect={setSelected}
+            />
+          )}
+        </div>
+        <Inspector
+          id={selected}
+          open={open}
+          onToggle={() => {
+            setOpen((v) => {
+              localStorage.setItem(INSPECTOR_KEY, v ? 'closed' : 'open')
+              return !v
+            })
+          }}
+          onFocus={pinned || process ? undefined : refocus}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="map-shell" style={{ height }}>
       <div className="map-canvas">
@@ -415,6 +619,7 @@ export function MapCanvas({
           onNodesChange={onNodesChange}
           onNodeDragStop={onNodeDragStop}
           onNodeClick={(_, n) => {
+            if (n.type === 'group') return
             setSelected(n.id)
             setThrough(null)
           }}
@@ -471,49 +676,102 @@ export function MapCanvas({
                   />
                 )}
 
-                <div className="segmented map-detail" role="group" aria-label="Detail">
-                  {(['services', 'all'] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      aria-pressed={detail === mode}
-                      onClick={() => {
-                        setDetail(mode)
-                        write(DETAIL_KEY + storageKey, mode)
-                      }}
-                    >
-                      {mode === 'services' ? 'Services' : 'Everything'}
-                    </button>
-                  ))}
-                </div>
+                {/* Two to a row. Seven controls stacked made the key a column
+                    tall enough to sit on the nodes underneath it, which is a
+                    key that has stopped being a key. */}
+                <div className="map-controls">
+                  {surfaceToggle}
 
-                {teamSlot.size > 0 && (
-                  <div className="segmented" role="group" aria-label="Colour by">
-                    {(['kind', 'team'] as const).map((mode) => (
+                  <div className="segmented map-detail" role="group" aria-label="Detail">
+                    {(['services', 'all'] as const).map((mode) => (
                       <button
                         key={mode}
                         type="button"
-                        aria-pressed={colourBy === mode}
+                        aria-pressed={detail === mode}
                         onClick={() => {
-                          setColourBy(mode)
-                          try {
-                            localStorage.setItem(COLOUR_KEY, mode)
-                          } catch {
-                            /* a private window is not a reason to fail */
-                          }
+                          setDetail(mode)
+                          write(DETAIL_KEY + storageKey, mode)
                         }}
                       >
-                        {mode === 'kind' ? 'Kind' : 'Team'}
+                        {mode === 'services' ? 'Services' : 'Everything'}
                       </button>
                     ))}
                   </div>
-                )}
 
-                {Object.keys(placedByHand).length > 0 && (
-                  <button type="button" className="ghost map-reset" onClick={resetLayout}>
-                    Reset layout
-                  </button>
-                )}
+                  <select
+                    className="map-arrange"
+                    aria-label="Arrangement"
+                    title={ARRANGEMENT_SUB[arrangement]}
+                    value={arrangement}
+                    onChange={(e) => {
+                      const next = e.target.value as Arrangement
+                      setArrangement(next)
+                      write(ARRANGE_KEY + storageKey, next)
+                    }}
+                  >
+                    {ARRANGEMENTS.map((a) => (
+                      <option key={a} value={a}>
+                        {ARRANGEMENT_LABEL[a]}
+                      </option>
+                    ))}
+                  </select>
+
+                  {teamSlot.size > 0 && (
+                    <div className="segmented" role="group" aria-label="Colour by">
+                      {(['kind', 'team'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          aria-pressed={colourBy === mode}
+                          onClick={() => {
+                            setColourBy(mode)
+                            try {
+                              localStorage.setItem(COLOUR_KEY, mode)
+                            } catch {
+                              /* a private window is not a reason to fail */
+                            }
+                          }}
+                        >
+                          {mode === 'kind' ? 'Kind' : 'Team'}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {selected && (
+                    <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                      <span className="nav-group-label">Isolate</span>
+                      <div className="segmented map-isolate" role="group" aria-label="Isolate">
+                        {HOPS.map((h) => (
+                          <button
+                            key={String(h)}
+                            type="button"
+                            aria-pressed={isolate === h}
+                            title={
+                              h === 0
+                                ? 'Keep the whole map, dimming what the selection does not touch'
+                                : h === Infinity
+                                  ? 'Everything the selection can reach, however far'
+                                  : `Everything within ${h} ${h === 1 ? 'hop' : 'hops'}`
+                            }
+                            onClick={() => {
+                              setIsolate(h)
+                              write(ISOLATE_KEY + storageKey, h === Infinity ? -1 : h)
+                            }}
+                          >
+                            {HOP_LABEL(h)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {Object.keys(placedByHand).length > 0 && (
+                    <button type="button" className="ghost map-reset" onClick={resetLayout}>
+                      Reset layout
+                    </button>
+                  )}
+                </div>
               </div>
             </Panel>
           ) : (
@@ -529,28 +787,55 @@ export function MapCanvas({
               >
                 Key
               </button>
+              {/* The way to the chord lives in the key, and the key can be
+                  shut — so it comes out with it, or shutting the key is a door
+                  locking behind you. */}
+              {surfaceToggle}
             </Panel>
           )}
 
-          {through && (
-            <Panel position="top-right" className="map-through">
-              <div className="map-legend-head">
-                <span className="nav-group-label">{RELATION_LABEL[through.relation]}</span>
-                <button type="button" className="ghost" aria-label="Close" onClick={() => setThrough(null)}>
-                  ×
-                </button>
-              </div>
-              <p className="muted" style={{ fontSize: 12, margin: '2px 0 6px' }}>
-                {name(through.from)} → {name(through.to)}, through:
-              </p>
-              <ul className="map-through-list">
-                {through.through.map((t) => (
-                  <li key={t.id}>
-                    <Link to={nodeHref(t.id)}>{idValue(t.id)}</Link>{' '}
-                    <span className="muted">{KIND_LABEL[t.kind as NodeKind] ?? t.kind}</span>
-                  </li>
-                ))}
-              </ul>
+          {/* One panel for both, stacked. Two panels at one corner overlap, and
+              every other corner is taken: the key top-left, React Flow's own
+              controls bottom-left and its minimap bottom-right — which is what
+              the isolate banner was landing underneath. */}
+          {(view.isolated || through) && (
+            <Panel position="top-right" className="map-aside">
+              {view.isolated && (
+                <div className="map-isolated">
+                  <span>
+                    Isolated to <strong>{name(selected!)}</strong>
+                    {isolate === Infinity
+                      ? ', and everything it reaches'
+                      : `, ${isolate} ${isolate === 1 ? 'hop' : 'hops'} out`}
+                  </span>
+                  <span className="muted">{view.hidden} hidden</span>
+                  <button type="button" className="ghost" onClick={() => setIsolate(0)}>
+                    Show the rest
+                  </button>
+                </div>
+              )}
+
+              {through && (
+                <div className="map-through">
+                  <div className="map-legend-head">
+                    <span className="nav-group-label">{RELATION_LABEL[through.relation]}</span>
+                    <button type="button" className="ghost" aria-label="Close" onClick={() => setThrough(null)}>
+                      ×
+                    </button>
+                  </div>
+                  <p className="muted" style={{ fontSize: 12, margin: '2px 0 6px' }}>
+                    {name(through.from)} → {name(through.to)}, through:
+                  </p>
+                  <ul className="map-through-list">
+                    {through.through.map((t) => (
+                      <li key={t.id}>
+                        <Link to={nodeHref(t.id)}>{idValue(t.id)}</Link>{' '}
+                        <span className="muted">{KIND_LABEL[t.kind as NodeKind] ?? t.kind}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </Panel>
           )}
           <Background variant={BackgroundVariant.Dots} gap={18} size={1} color={token.gridline} />
@@ -560,7 +845,9 @@ export function MapCanvas({
             zoomable
             bgColor={token.surface}
             maskColor={token.mask}
-            nodeColor={(n) => token.kinds[(n.data as MapNodeData)?.node?.kind] ?? token.axis}
+            nodeColor={(n) =>
+              n.type === 'group' ? 'transparent' : token.kinds[(n.data as MapNodeData)?.node?.kind] ?? token.axis
+            }
             nodeStrokeWidth={2}
           />
         </ReactFlow>
@@ -585,6 +872,40 @@ const DASH: Record<'solid' | 'dashed' | 'dotted', string | undefined> = {
   solid: undefined,
   dashed: '7 5',
   dotted: '1.5 4',
+}
+
+/**
+ * Everything within `hops` of a node, the node itself included.
+ *
+ * Undirected on purpose. "What does this topic connect to" means its producers
+ * and its consumers, and a reader isolating an endpoint wants the service that
+ * serves it as much as the ones that call it — the direction is on the arrow
+ * once they are on screen.
+ */
+function within(edges: GraphEdge[], from: string, hops: number) {
+  const near = new Map<string, string[]>()
+  for (const e of edges) {
+    if (!near.has(e.from)) near.set(e.from, [])
+    if (!near.has(e.to)) near.set(e.to, [])
+    near.get(e.from)!.push(e.to)
+    near.get(e.to)!.push(e.from)
+  }
+  const seen = new Set([from])
+  let frontier = [from]
+  for (let hop = 0; hop < hops && frontier.length; hop++) {
+    const next: string[] = []
+    for (const id of frontier) {
+      for (const other of near.get(id) ?? []) {
+        if (seen.has(other)) continue
+        seen.add(other)
+        next.push(other)
+      }
+    }
+    // Collected per hop rather than appended while iterating: the bug §14
+    // caught in /api/graph's BFS, which walked the whole component at depth 1.
+    frontier = next
+  }
+  return seen
 }
 
 /** Every node one hop from the selection, for dimming the rest. */

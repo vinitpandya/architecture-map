@@ -96,6 +96,31 @@ a whole team, and the map redraws without them. It can also be shut away
 entirely. Nodes drag, snap to a grid and stay where you put them — per map and
 per detail level, with a `Reset layout` to hand it back to the layout engine.
 
+### Reading a map with too many lines
+
+**Isolate** hides everything the selection does not reach: off, one hop, two
+hops, or the whole connected component. Select a Kafka topic and isolate at one
+hop for its producers and consumers; at two, for the services behind them. It
+is applied to what is on screen rather than asked of the server, so it is one
+click, it leaves the URL alone, and it works inside a widget that has no filter
+row. The way back sits on the canvas.
+
+**Arrangements** lay the same graph out four ways:
+
+| | |
+|---|---|
+| **Compact** | Layered and wrapped to fill the panel — the default |
+| **Teams** | A box per team; every arrow that leaves one is a cross-team dependency |
+| **Columns** | One column per kind, sorted by name — the estate as a catalogue |
+| **Fewest crossings** | Layered, unwrapped, crossings minimised harder |
+
+**Chord** drops the topology entirely and keeps one fact: how much of each
+service's traffic goes where. An arc is everything that happens at one service,
+sent and received together; the arcs are ordered by team, so a bundle crossing
+the circle crosses a boundary. It reads at a scale where the graph is a
+hairball, and it is drawn from the same three relationships the Services view
+collapses to, so the two cannot disagree about what a connection is.
+
 ### A process on the map
 
 Pick a process in the filter row and the map draws only that process: every
