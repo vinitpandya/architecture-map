@@ -180,10 +180,7 @@ export function MapCanvas({
     const nodes = base.nodes.filter((n) => !gone(n))
     const live = new Set(nodes.map((n) => n.id))
     const edges = base.edges.filter(
-      (e) =>
-        live.has(e.from) &&
-        live.has(e.to) &&
-        !(isDerived(e) && e.through.length > 0 && hiddenRelations.has(e.relation))
+      (e) => live.has(e.from) && live.has(e.to) && !(isDerived(e) && hiddenRelations.has(e.relation))
     )
     // The key is drawn from what this detail level *could* show, not from
     // what survived the toggles: a row that vanishes when you switch it off
@@ -329,10 +326,10 @@ export function MapCanvas({
         // Lit by its own selection as well as by either end's, so the line the
         // Through panel is describing is the line you can see.
         const lit = through?.id === e.id || (!!selected && (e.from === selected || e.to === selected))
-        // A derived line stands for something, so it is drawn in the colour of
-        // what it stands for. A scanned edge stays on the axis colour: the
-        // node it lands on already carries the kind.
-        const stands = isDerived(e) && e.through.length > 0 ? e : null
+        // A line in the service view is drawn in the colour of the
+        // relationship it stands for. A scanned edge stays on the axis colour:
+        // the node it lands on already carries the kind.
+        const stands = isDerived(e) ? e : null
         const stroke = lit ? token.accent : stands ? token.relations[stands.relation] : token.axis
         return {
           id: e.id,
@@ -347,7 +344,12 @@ export function MapCanvas({
             cursor: stands ? 'pointer' : undefined,
           },
           markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 13, height: 13 },
-          label: lit && showLabel ? (stands ? throughLabel(stands) : EDGE_LABEL[e.kind]) : undefined,
+          label:
+            lit && showLabel
+              ? stands?.through.length
+                ? throughLabel(stands)
+                : EDGE_LABEL[e.kind]
+              : undefined,
           labelStyle: { fill: token.text, fontSize: 10 },
           labelBgStyle: { fill: token.surface, fillOpacity: 0.92 },
           labelBgPadding: [4, 2] as [number, number],
@@ -356,10 +358,14 @@ export function MapCanvas({
     [edges, selected, through, token, showLabel]
   )
 
-  const derived = useMemo(
-    () => new Map(edges.filter((e) => isDerived(e) && e.through.length > 0).map((e) => [e.id, e as ServiceEdge])),
-    [edges]
-  )
+  const derived = useMemo(() => {
+    const out = new Map<string, ServiceEdge>()
+    for (const e of edges) if (isDerived(e) && e.through.length > 0) out.set(e.id, e)
+    return out
+  }, [edges])
+  useEffect(() => {
+    if (through && !derived.has(through.id)) setThrough(null)
+  }, [derived, through])
   const name = useCallback((id: string) => all.find((n) => n.id === id)?.name ?? idValue(id), [all])
 
   if (!data && !positions) return <div className="map-loading" style={{ height }}><span className="spinner" /></div>
@@ -449,7 +455,7 @@ export function MapCanvas({
                 </div>
 
                 <Legend
-                  items={colourBy === 'team' ? teamLegend(view.candidates, teamSlot) : legend(view.candidates)}
+                  items={colourBy === 'team' ? teamLegend(view.candidates, all, teamSlot) : legend(view.candidates)}
                   hidden={colourBy === 'team' ? hiddenTeams : hiddenKinds}
                   onToggle={(id) =>
                     (colourBy === 'team' ? setHiddenTeams : setHiddenKinds)((was) => toggled(was, id))
@@ -764,8 +770,10 @@ function Citation({ evidence }: { evidence: Evidence }) {
  * eighth has none — the tokens are documented as never cycled — so it is drawn
  * muted and the legend says how many, rather than silently reusing a colour.
  */
-function teamLegend(nodes: GraphNode[], slots: Map<string, string>) {
-  const named = new Map(nodes.filter((n) => n.teamId).map((n) => [n.teamId!, n.teamName ?? n.teamId!]))
+function teamLegend(nodes: GraphNode[], everything: GraphNode[], slots: Map<string, string>) {
+  // Names off the whole graph, because the colours are assigned off the whole
+  // graph and a slot with nothing on screen would otherwise read as its id.
+  const named = new Map(everything.filter((n) => n.teamId).map((n) => [n.teamId!, n.teamName ?? n.teamId!]))
   const items = [...slots].map(([id, tokenName]) => ({
     id,
     label: named.get(id) ?? id,

@@ -44,13 +44,14 @@ export const RELATION_COLOR: Record<Relation, string> = {
   store: '--series-4',
 }
 
-/** A derived line, with everything a reader needs to challenge it. */
+/**
+ * A derived line, with what it stands for kept on it. `through` is empty for
+ * an external, which is drawn as itself — there was nothing to collapse.
+ */
 export type ServiceEdge = GraphEdge & {
   relation: Relation
-  /** The topics, endpoints or stores this line stands for. */
+  /** The topics, endpoints or stores this line stands for, and their kinds. */
   through: { id: string; kind: string }[]
-  /** The real edges underneath, so the inspector can still cite them. */
-  underlying: string[]
 }
 
 const OUT: Record<Relation, string[]> = {
@@ -101,25 +102,18 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
   }
 
   const direct: ServiceEdge[] = []
-  const edgeAt = new Map<string, string[]>()
 
   for (const e of data.edges) {
     // A service talking to something outside the estate has no far side to
     // collapse into, so it survives as itself.
     if (isService(e.from) && isExternal(e.to)) {
-      direct.push({ ...e, relation: relationOf(e.kind) ?? 'call', through: [], underlying: [e.id] })
+      direct.push({ ...e, relation: relationOf(e.kind) ?? 'call', through: [] })
       continue
     }
     if (!isService(e.from)) continue
     for (const rel of RELATIONS) {
-      if (OUT[rel].includes(e.kind)) {
-        bag(producers, e.to, rel).add(e.from)
-        edgeAt.set(`${e.from}|${e.to}`, [...(edgeAt.get(`${e.from}|${e.to}`) ?? []), e.id])
-      }
-      if (IN[rel].includes(e.kind)) {
-        bag(consumers, e.to, rel).add(e.from)
-        edgeAt.set(`${e.from}|${e.to}`, [...(edgeAt.get(`${e.from}|${e.to}`) ?? []), e.id])
-      }
+      if (OUT[rel].includes(e.kind)) bag(producers, e.to, rel).add(e.from)
+      if (IN[rel].includes(e.kind)) bag(consumers, e.to, rel).add(e.from)
     }
   }
 
@@ -135,10 +129,8 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
           const id = `${a}|${rel}|${to}`
           const prior = lines.get(id)
           const through = { id: mid, kind: byId.get(mid)?.kind ?? 'unknown' }
-          const under = [...(edgeAt.get(`${a}|${mid}`) ?? []), ...(edgeAt.get(`${to}|${mid}`) ?? [])]
           if (prior) {
             if (!prior.through.some((t) => t.id === mid)) prior.through.push(through)
-            for (const u of under) if (!prior.underlying.includes(u)) prior.underlying.push(u)
             continue
           }
           lines.set(id, {
@@ -154,7 +146,6 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
             repo: '',
             relation: rel,
             through: [through],
-            underlying: [...new Set(under)],
           })
         }
       }

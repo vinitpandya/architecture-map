@@ -345,6 +345,56 @@ await setScope('map', null)
   await second.ctx.close()
 }
 
+/* ---- an external is drawn as itself, because there is nothing on the far
+   side to collapse into — and the key still has to own it. It was styled as a
+   scanned edge and left behind when Calls was switched off, which is a key
+   row claiming a line it does not cover. The map page's default scope leaves
+   externals out, so this needs its own. */
+{
+  await setScope('map', {
+    focus: '',
+    depth: '1',
+    kinds: ['service', 'kafka.topic', 'database', 'cache', 'endpoint', 'contract', 'external'],
+    repos: [],
+    includeExternal: true,
+    process: '',
+  })
+  const { ctx, page, problems } = await open('/')
+  await page.waitForSelector('.map-node', { timeout: 30000 })
+  await page.waitForTimeout(1600)
+  const kinds = await kindsOnScreen(page)
+  ok('an external survives the collapse as a node of its own', kinds.includes('ext'), kinds.join(', '))
+
+  const strokes = await page.evaluate(() => {
+    const stroke = (test) => {
+      const el = [...document.querySelectorAll('.react-flow__edge')].find((e) => test(e.getAttribute('data-id')))
+      return el ? getComputedStyle(el.querySelector('path.react-flow__edge-path')).stroke : null
+    }
+    const isDerived = (id) => /\|(event|call|store)\|/.test(id)
+    return { external: stroke((id) => !isDerived(id)), call: stroke((id) => /\|call\|/.test(id)) }
+  })
+  ok(
+    '  …drawn as the call it is, not as a scanned edge',
+    !!strokes.external && strokes.external === strokes.call,
+    `${strokes.external} against ${strokes.call}`
+  )
+
+  const before = (await page.$$('.react-flow__edge')).length
+  const externals = await page.$$eval('.react-flow__edge', (els) =>
+    els.filter((e) => !/\|(event|call|store)\|/.test(e.getAttribute('data-id'))).length
+  )
+  const derivedCalls = await page.$$eval('.react-flow__edge', (els) =>
+    els.filter((e) => /\|call\|/.test(e.getAttribute('data-id'))).length
+  )
+  await page.click('.map-legend .legend-item:has-text("Calls")')
+  await page.waitForTimeout(800)
+  is('  …and goes when the key switches Calls off, with the rest of them',
+    (await page.$$('.react-flow__edge')).length, before - externals - derivedCalls)
+  ok('no console errors with externals on the map', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+  await setScope('map', null)
+}
+
 /* ---- SPEC-PROCESSES.md §10 Phase 11 */
 
 console.log('\nSPEC-PROCESSES.md §10 Phase 11 — processes in the browser')

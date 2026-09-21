@@ -380,9 +380,11 @@ the git log rather than here. Three were judgement calls:
   detail levels does not recolour the estate. A shared store is dotted rather
   than solid because nobody chose it as an interface and it should not look
   like a call.
-- **Externals are not collapsed.** A call to Stripe has nothing on the far side
-  to collapse into, and "who do we depend on outside" is one of the questions
-  the service view is for.
+- **Externals are not collapsed, but they are still calls.** A call to Stripe
+  has nothing on the far side to collapse into, and "who do we depend on
+  outside" is one of the questions the service view is for — so the edge
+  survives as itself. It is still drawn and switched off as the call it is: a
+  key row that claims a kind of line has to cover every line of that kind.
 - **A service nothing connects to is still drawn.** An island is a finding.
 - **The estate opens collapsed, a process map opens whole.** A process's
   components *are* its topics and stores; collapsing them would leave a diagram
