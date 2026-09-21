@@ -16,7 +16,9 @@ handoffs where one team's work ends and another's begins.
 On top of those, the map reads at two detail levels: services with their
 relationships collapsed into one line per pair, or the scan as it was stored.
 Its key is a set of switches, and nodes can be dragged into an arrangement that
-is saved.
+is saved. And the team registry is editable from the Teams page, because a scan
+derives a team from the commit history and an estate therefore arrives with
+teams named after people.
 
 Between B and C a polish pass read the whole result back against the spec and
 found defects on paths the demo data never reaches. That turned out to be the
@@ -37,7 +39,7 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 
 ```bash
 npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 318 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 113 more
+npm run build && npm run verify:ui   # the checks that need a browser — 133 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run prompts                      # rebuild prompts/standalone/ from prompts/ and schema/
@@ -85,6 +87,7 @@ joke.
 | 15 · the read API, /teams, /team, the process cards | Complete, verified |
 | 16 · the map on the process page, colour by team, the widgets | Complete, verified in a browser |
 | map · two detail levels, the key as a switch, drag to arrange | Complete, verified in a browser |
+| teams · rename, merge, and a team on every service | Complete, verified in a browser |
 
 Beyond §13 and §9's lists, two things the shells had not met: node detail renders
 per kind (the topic page — producers against consumers with the version skew
@@ -93,7 +96,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 318 assertions across five stages, all passing.**
+**`npm run verify` — 363 assertions across five stages, all passing.**
 
 *Ingest (26, in-process against a fresh database).* `prompts/standalone/` is in
 sync with the schemas it inlines, carries no unfilled placeholder, and has the
@@ -144,7 +147,7 @@ every placeholder in its body filled — the pack id, the components and the cod
 already taken. `--remove` clears packs,
 processes, the join tables and every process finding.
 
-*Org (119, in-process and over HTTP).* `teamId()` fixes case and separators and
+*Org (164, in-process and over HTTP).* `teamId()` fixes case and separators and
 deliberately does not merge `Trading Team` into `trading`. A service takes its
 own team, a database its owner's, an endpoint its exposer's, a cache its single
 writing team's; an external, a contract, an unproduced topic, a two-writer cache
@@ -161,7 +164,23 @@ demo defects fire exactly once each. `/api/team`, `/api/teams` and
 `/api/handoffs` answer with both ends resolved, `graph?teams=` narrows, and
 searching a team's name finds the team and its processes. A registry with two
 entries meaning one team, a department nothing declares and an entry with no
-usable id reports exactly those three.
+usable id reports exactly those three, and one whose alias is also a team entry,
+or whose alias two teams both claim, reports those too.
+
+The registry is editable and the editing is checked over HTTP. Renaming a team
+the registry never had moves it to the id its name implies, writes it to
+`teams.json` with the old spelling as an alias, registers it, and takes the
+process it owned with it — while a link written before the rename still
+resolves. Renaming onto an existing team is refused with the id it clashed with
+and changes nothing; a rename of an entry whose id its author did not derive
+from the name keeps the id. Merging folds the team away, keeps both spellings so
+a chain of merges loses none, moves the work to the survivor, stops
+`unknown-team` firing — and does not rewrite the pack, which still says
+`risk-ops`. An override spelt as a merged-away name resolves to the survivor.
+Removing the alias un-merges it and the team comes back, unregistered. A key the
+editor does not understand — at the top level and on the entry being edited —
+survives a write, and a `teams.json` whose `teams` is not a list is refused
+rather than replaced.
 
 *Packs (50, in-process).* The situations the demo estate cannot contain, because
 its packs are well-formed on purpose. A pack whose `pack` field is not a string
@@ -177,7 +196,7 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-**`npm run verify:ui` — 113 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 133 checks in Chromium at 1280×900, all passing.**
 
 The map opens collapsed to services and draws all ten of them, with a key
 naming the three kinds of line. The number of collapsed lines equals the number
@@ -192,6 +211,14 @@ was put after a reload, leaves every other node where the layout put it, and
 
 An external survives the collapse as a node of its own, drawn and switched off
 as the call it is rather than as a scanned edge.
+
+The services grid puts a service in a team, records it as a correction rather
+than a scan, says so on the row, and reverting gives the manifest back. The
+editor states the id a rename will produce and the server agrees with it — which
+is the check that stops the client's copy of `teamId()` drifting from the
+server's. Merging lands on the survivor, keeps both spellings, and removing the
+alias un-merges it. A topic is not offered a team to set, because its team is
+inherited; it gets a link to where the team came from instead.
 
 Two fresh loads of the map put all ten nodes at byte-identical transforms. A
 `kafka.consume` edge's arrow head lands 72px from the service and 275px from the
@@ -381,6 +408,19 @@ blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
   asymmetry is the lesson of this build: every defect found by reading rather
   than running lived on a path the demo data does not reach.** The four Layer A
   findings above are the remaining ones, and they are where to look next.
+- **The registry is now something the server writes.** Both verification
+  suites run against a *copy* of `demo/teams.json` under `data/` for that
+  reason: `verify:ui` renames and merges teams, and pointed at the repo root it
+  would edit whatever real org chart is on the machine. If you add a check that
+  touches teams, check what `TEAMS_FILE` is pointing at first.
+- **A merged team is an alias and nothing else.** No manifest is rewritten and
+  no row is deleted, so every merge is reversible by removing the alias. The
+  corollary is that a spelling the data still uses comes back the moment the
+  alias goes, which is the behaviour you want and a surprise the first time.
+- **`teamId()` is stated twice** — `server/src/teams.js` and
+  `web/src/lib/teams.ts` — so the editor can say what an id will become before
+  the request is sent. The browser check "the server agrees with it" is what
+  holds them together; if you change one, that check is what fails.
 - **`stale-evidence` is not produced**, per SPEC §6 — it is reserved, and nothing
   re-reads the cited lines.
 - **`prompts/scan-pass2-link.md` renders with `{{MANIFESTS}}` still in it.**
@@ -417,7 +457,13 @@ blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
    `process-coverage` widget exist; what is missing is the other direction —
    which processes have gone longest without anybody confirming them. `source.asOf`
    is already stored and the process page already shows its age.
-5. **A saved map arrangement should be shareable.** It is per browser today.
+5. **Team assignment should reach further than a service.** Only a service can
+   be put in a team today, because everything else inherits. The cases that
+   would want their own are a topic two teams publish (deliberately teamless,
+   and `multi-team-topic` says why) and a cache two teams write. Both are real
+   findings rather than gaps, so the right move is probably to let the *finding*
+   be resolved by naming an owner, not to add a free-floating override.
+6. **A saved map arrangement should be shareable.** It is per browser today.
    The obvious shape is a `layout` field on the widget's options, saved with the
    page like everything else on it, with `localStorage` as the per-person
    override. That is also what would let a team agree on one picture of the

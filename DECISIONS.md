@@ -362,6 +362,60 @@ the git log rather than here. Three were judgement calls:
   house style has a table, and a cell that is a link is worth more than a cell
   that is a shade.
 
+## Editing the registry — rename, merge, assign
+
+- **A merge is an alias and nothing else.** `teams.json` gains `aliases`, and
+  everything that reads a team out of the data resolves through them. Nothing is
+  rewritten and nothing is deleted: the manifests still say what the scan found,
+  and the registry now says what that meant. Removing the alias undoes it. This
+  is what `teamId()`'s own comment already argued — *the registry, not a
+  heuristic, is what says one name was meant to be another* — made writable. The
+  alternative, writing a team override onto every affected node, misses
+  processes (which carry `owner`, not a node) and un-merges itself the next time
+  the old name is scanned.
+- **A rename moves the id only when the id came from the name.** `john-smith`
+  called "John Smith" is an id derived from a name, so renaming it to "Payments"
+  moves it to `payments` and keeps `john-smith` as an alias. A hand-written entry
+  whose author gave `platform` the name "Platform Engineering" has already said
+  the two are not the same thing, so it keeps its id. The editor states which
+  will happen before the request is sent, because an id is what every link,
+  filter and saved view joins on.
+- **Renaming onto an existing team is refused, not silently merged.** The editor
+  offers the merge instead. A rename that quietly folded two teams together is a
+  merge nobody asked for.
+- **`teamId()` is stated twice, and a browser check holds the two together.**
+  The editor cannot say what the id will become without the rule, and a round
+  trip per keystroke to ask the server is worse than a second statement of a
+  four-line rule that SPEC-ORG §2 publishes as a contract. `verify:ui` renames a
+  team and asserts that what the client predicted is what the server did.
+- **The server writes `teams.json`, and carries through what it does not
+  understand.** Temporary file, atomic rename, unknown keys preserved: somebody
+  hand-editing the registry and somebody renaming a team on the Teams page are
+  editing the same file. A file that exists and does not parse — or whose `teams`
+  is not a list — is never written, because the edit would be applied to `{}` and
+  everything in it would be lost.
+- **An absent registry is created by the first edit, and the editor says so.**
+  From then on every other team is reported as unregistered. That is the point of
+  having a registry, and it is still a surprise if nothing warns you.
+- **Assigning a service to a team needed no new mechanism.** `overrides` with
+  `field='team'` already existed and `resolveTeams()` already gave it precedence
+  over the manifest; what was missing was anywhere to write one. It is now on the
+  node page beside the description, and in bulk on the Teams page — which is the
+  screen for the morning after a forty-repo scan.
+- **Only a service is offered a team.** A topic's comes from its producer and a
+  store's from its owner, so an override on one of those would show a correction
+  on the page while every derived column went on saying the other thing. An
+  inherited team gets a link to where it came from instead.
+- **`teamVia` is a field, not an inference.** `scan`, `inherited`, `override` or
+  nothing. Without it there is no visible difference between a team the scan
+  found and a team a person typed, and "revert to the scan" is a button that
+  cannot say what it would undo.
+- **Both verification suites now run against a *copy* of `demo/teams.json`.**
+  The registry became writable, and `verify:ui` renames and merges teams in it:
+  pointed at the repo root it would edit whatever real org chart is on the
+  machine, and pointed at the fixture it would edit the thing it is asserting
+  against.
+
 ## The map's two detail levels
 
 - **The collapse is derived on the client and never stored.** Service → service

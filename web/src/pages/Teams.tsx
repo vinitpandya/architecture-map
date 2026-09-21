@@ -1,9 +1,12 @@
-import { Link } from 'react-router-dom'
-import { type Department, type Team } from '../lib/api'
+import { useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { type Department, type GraphNode, type Team } from '../lib/api'
 import { useQuery, useScope } from '../lib/scope'
 import { Card, Empty } from '../components/ui'
 import { DataGrid } from '../components/DataGrid'
-import { teamHref } from '../lib/nodes'
+import { TeamEditor } from '../components/TeamEditor'
+import { nodeHref, teamHref } from '../lib/nodes'
+import { assignTeam } from '../lib/teams'
 import { full } from '../lib/format'
 
 /**
@@ -19,7 +22,9 @@ export function TeamsPage() {
     departments: Department[]
     teams: Team[]
   }>('/teams')
-  const { status } = useScope()
+  const { status, reload } = useScope()
+  const navigate = useNavigate()
+  const [editing, setEditing] = useState<Team | null>(null)
   if (!data) return null
 
   const unregistered = data.teams.filter((t) => !t.registered)
@@ -51,9 +56,10 @@ export function TeamsPage() {
           sub="These teams are whatever the manifests and the packs happen to say"
         >
           <p className="muted" style={{ fontSize: 13, margin: 0 }}>
-            Copy <code>teams.example.json</code> to <code>teams.json</code> to give each team a
-            canonical id, a display name and a department. Until then nothing can tell a new team
-            from a misspelt one, which is why none of them is reported below.
+            Copy <code>teams.example.json</code> to <code>teams.json</code>, or press Edit on any
+            team below and save — both give each team a canonical id, a display name and a
+            department. Until there is one, nothing can tell a new team from a misspelt one, which
+            is why none of them is reported below.
           </p>
         </Card>
       )}
@@ -82,12 +88,15 @@ export function TeamsPage() {
           </p>
           <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
             {unregistered.map((t) => (
-              <Link key={t.id} to={teamHref(t.id)} className="pill">
-                {t.name}
+              <span key={t.id} className="pill">
+                <Link to={teamHref(t.id)}>{t.name}</Link>
                 <span className="muted" style={{ fontSize: 11 }}>
                   {t.source === 'process' ? 'a pack names it' : 'a manifest names it'}
                 </span>
-              </Link>
+                <button type="button" className="ghost" onClick={() => setEditing(t)}>
+                  Name it
+                </button>
+              </span>
             ))}
           </div>
         </Card>
@@ -110,16 +119,147 @@ export function TeamsPage() {
               title={dept?.name ?? 'No department'}
               sub={dept?.description ?? (id ? undefined : 'Not in the registry, so not placed anywhere')}
             >
-              <TeamGrid teams={teams} storageKey={`teams-${id || 'none'}`} />
+              <TeamGrid teams={teams} storageKey={`teams-${id || 'none'}`} onEdit={setEditing} />
             </Card>
           )
         })
+      )}
+
+      {data.teams.length > 0 && <ServicesCard teams={data.teams} />}
+
+      {editing && (
+        <TeamEditor
+          team={editing}
+          teams={data.teams}
+          departments={data.departments}
+          configured={data.configured}
+          onClose={() => setEditing(null)}
+          onSaved={(id) => {
+            setEditing(null)
+            // Everything downstream of a team is derived from the registry —
+            // the map's colours, the filter row, every handoff's cross_team —
+            // so this is a reload of the whole app's data, not of one card.
+            reload()
+            if (id !== editing.id) navigate(teamHref(id))
+          }}
+        />
       )}
     </div>
   )
 }
 
-function TeamGrid({ teams, storageKey }: { teams: Team[]; storageKey: string }) {
+/**
+ * Which service belongs to whom, in one place.
+ *
+ * This is the screen for the morning after a forty-repo scan, when every team
+ * is a person's name and half the services guessed wrong. A change here is an
+ * `overrides` row, which ingest never reads or writes — the same separation
+ * that lets a node's description survive a re-scan.
+ */
+function ServicesCard({ teams }: { teams: Team[] }) {
+  const { data } = useQuery<{ nodes: GraphNode[] }>('/nodes', { kinds: 'service', limit: '1000' })
+  const { reload } = useScope()
+  const [busy, setBusy] = useState<string | null>(null)
+  const services = data?.nodes ?? []
+
+  const set = async (node: GraphNode, team: string | null) => {
+    setBusy(node.id)
+    try {
+      await assignTeam(node.id, team)
+      reload()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Card
+      title={`Services and their teams (${services.length})`}
+      sub="A team set here outranks the manifest, and a re-scan cannot undo it"
+    >
+      {!services.length ? (
+        <Empty title="No services yet" />
+      ) : (
+        <DataGrid
+          rows={services}
+          rowKey={(n) => n.id}
+          storageKey="services-teams"
+          maxHeight={520}
+          columns={[
+            {
+              key: 'name',
+              label: 'Service',
+              wide: true,
+              value: (n) => n.name,
+              render: (n) => <Link to={nodeHref(n.id)}>{n.name}</Link>,
+            },
+            {
+              key: 'repo',
+              label: 'Repo',
+              value: (n) => n.ownerRepo ?? '',
+              render: (n) => (n.ownerRepo ? <code>{n.ownerRepo}</code> : <span className="muted">—</span>),
+            },
+            {
+              key: 'team',
+              label: 'Team',
+              // Sorts and groups on the resolved team, which is what you would
+              // want to group by: every service of one team together.
+              value: (n) => n.teamName ?? n.teamId ?? '',
+              render: (n) => (
+                <select
+                  aria-label={`Team for ${n.name}`}
+                  disabled={busy === n.id}
+                  value={n.teamId ?? ''}
+                  onChange={(e) => void set(n, e.target.value ? teams.find((t) => t.id === e.target.value)!.name : '')}
+                >
+                  <option value="">No team</option>
+                  {teams.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              ),
+            },
+            {
+              key: 'via',
+              label: 'From',
+              value: (n) => n.teamVia ?? '',
+              render: (n) =>
+                n.teamVia === 'override' ? (
+                  <span className="row" style={{ gap: 6, alignItems: 'baseline' }}>
+                    <span className="pill">corrected</span>
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={busy === n.id}
+                      onClick={() => void set(n, null)}
+                    >
+                      Revert to the scan
+                    </button>
+                  </span>
+                ) : n.teamVia === 'scan' ? (
+                  <span className="muted" title="service.team in the manifest">the manifest</span>
+                ) : (
+                  <span className="muted">—</span>
+                ),
+            },
+          ]}
+        />
+      )}
+    </Card>
+  )
+}
+
+function TeamGrid({
+  teams,
+  storageKey,
+  onEdit,
+}: {
+  teams: Team[]
+  storageKey: string
+  onEdit: (team: Team) => void
+}) {
   return (
     <DataGrid
       rows={teams}
@@ -138,6 +278,11 @@ function TeamGrid({ teams, storageKey }: { teams: Team[]; storageKey: string }) 
               {!t.registered && (
                 <span className="pill bad" title="Not in teams.json">
                   unregistered
+                </span>
+              )}
+              {t.aliases.length > 0 && (
+                <span className="pill" title={`Also: ${t.aliases.join(', ')}`}>
+                  +{t.aliases.length}
                 </span>
               )}
             </span>
@@ -176,6 +321,18 @@ function TeamGrid({ teams, storageKey }: { teams: Team[]; storageKey: string }) 
           label: 'Contact',
           value: (t) => t.contact ?? '',
           render: (t) => (t.contact ? <code>{t.contact}</code> : <span className="muted">—</span>),
+        },
+        {
+          key: 'edit',
+          label: '',
+          sortable: false,
+          groupable: false,
+          value: () => '',
+          render: (t) => (
+            <button type="button" className="ghost" onClick={() => onEdit(t)}>
+              Edit
+            </button>
+          ),
         },
       ]}
     />

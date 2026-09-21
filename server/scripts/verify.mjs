@@ -43,6 +43,13 @@ const ok = (name, condition, detail) => (condition ? pass(name) : fail(name, det
 if (!stage) {
   const tmp = path.join(ROOT, 'data', 'verify')
   fs.rmSync(tmp, { recursive: true, force: true })
+  // A copy of the committed fixture, never the fixture itself and never
+  // whatever registry this machine happens to have at the repo root. A stage
+  // must not depend on local state, and since the registry became writable
+  // a stage must not be able to edit the fixture it is asserting against.
+  fs.mkdirSync(tmp, { recursive: true })
+  const registry = path.join(tmp, 'teams.json')
+  fs.copyFileSync(path.join(ROOT, 'demo', 'teams.json'), registry)
   let bad = 0
   for (const s of ['ingest', 'estate', 'processes', 'packs', 'org']) {
     const res = spawnSync(process.execPath, [fileURLToPath(import.meta.url), `--stage=${s}`], {
@@ -51,9 +58,7 @@ if (!stage) {
         ...process.env,
         DATA_DIR: path.join(tmp, s),
         INBOX_DIR: path.join(tmp, s, 'inbox'),
-        // The committed fixture, never whatever registry this machine happens
-        // to have at the repo root — a stage must not depend on local state.
-        TEAMS_FILE: path.join(ROOT, 'demo', 'teams.json'),
+        TEAMS_FILE: registry,
       },
     })
     if (res.status !== 0) bad++
@@ -1543,6 +1548,146 @@ if (stage === 'org') {
     is('POST /api/relink answers with what it rebuilt', relinked.teams, 8)
     is('  …and the handoff count', relinked.handoffs, 9)
 
+    /* ──── §2: the registry is editable, because a scan names teams after
+       people. Every one of these writes TEAMS_FILE, so the file is snapshotted
+       first and restored at the end — the rest of this stage asserts against
+       the demo registry and must not inherit what these left behind. */
+    {
+      const registry = process.env.TEAMS_FILE
+      const before = fs.readFileSync(registry, 'utf8')
+      const put = async (body) => {
+        const res = await fetch(`${base}/team`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        return { status: res.status, body: await res.json() }
+      }
+      const file = () => JSON.parse(fs.readFileSync(registry, 'utf8'))
+      const entry = (id) => file().teams.find((t) => t.id === id)
+
+      /* naming a team the data invented. `risk-ops` is derived from its name,
+         so the id follows the rename and the old spelling is kept. */
+      const named = await put({ id: 'risk-ops', name: 'Risk Operations', department: 'Trading Platform', contact: '#risk' })
+      is('PUT /api/team renames a team the registry never had', named.status, 200)
+      is('  …answering with the id it ended up at', named.body.id, 'risk-operations')
+      is('  …which is written to teams.json', entry('risk-operations')?.name, 'Risk Operations')
+      is('  …keeping the old spelling as an alias', entry('risk-operations')?.aliases?.join(), 'risk-ops')
+      is('  …under the department that was typed', entry('risk-operations')?.department, 'trading-platform')
+      is('  …and it is registered now', (await get('/teams')).body.teams.find((t) => t.id === 'risk-operations')?.registered, true)
+      is('  …with the old id gone from the list', (await get('/teams')).body.teams.some((t) => t.id === 'risk-ops'), false)
+      is('  …though a link written before the rename still resolves', (await get('/team?id=risk-ops')).body.team?.id, 'risk-operations')
+      // The pack still says "Risk Ops" and the alias is what makes that this team.
+      is('  …and the process it owns came with it', (await get('/team?id=risk-operations')).body.processes.length, 1)
+
+      /* an existing department is matched, not duplicated */
+      is('a department that already exists is not created twice', file().departments.length, 2)
+
+      /* renaming onto an existing team is a merge nobody asked for */
+      const onto = await put({ id: 'risk-operations', name: 'Trading' })
+      is('renaming onto an existing team is refused', onto.status, 409)
+      is('  …naming the team it clashed with', onto.body.conflict, 'trading')
+      is('  …and changing nothing', entry('risk-operations')?.name, 'Risk Operations')
+
+      /* An id that was not derived from its name stays put. Such an entry can
+         only be hand-written — the editor never produces one — so it is
+         hand-written here, which is also the case the registry has to survive:
+         a person editing the file and a person editing the page are editing
+         the same thing. */
+      {
+        const hand = file()
+        hand.teams = hand.teams.map((t) => (t.id === 'platform' ? { ...t, name: 'Platform Engineering' } : t))
+        fs.writeFileSync(registry, JSON.stringify(hand, null, 2))
+        await fetch(`${base}/relink`, { method: 'POST' })
+        await put({ id: 'platform', name: 'Platform Eng' })
+        is('a rename keeps an id its author did not derive from the name', entry('platform')?.name, 'Platform Eng')
+        is('  …and writes no alias, because nothing moved', entry('platform')?.aliases, undefined)
+      }
+
+      /* the merge, and what it does to the counts */
+      const tradingBefore = (await get('/teams')).body.teams.find((t) => t.id === 'trading')
+      const merge = await (async () => {
+        const res = await fetch(`${base}/team/merge`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: 'risk-operations', into: 'trading' }),
+        })
+        return { status: res.status, body: await res.json() }
+      })()
+      is('POST /api/team/merge folds one team into another', merge.status, 200)
+      const after = (await get('/teams')).body
+      is('  …and the absorbed team is gone from the list', after.teams.some((t) => t.id === 'risk-operations'), false)
+      is('  …with both spellings kept, so a chain of merges loses none',
+        after.teams.find((t) => t.id === 'trading')?.aliases.join(), 'risk-operations,risk-ops')
+      is('  …and the work it owned counted under the survivor',
+        after.teams.find((t) => t.id === 'trading')?.processes, tradingBefore.processes + 1)
+      is('  …with nothing left unregistered', after.teams.filter((t) => !t.registered).length, 0)
+      is('  …so unknown-team stops firing', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'unknown-team'`), 0)
+      // The pack still says what it said. The alias is the only thing that
+      // makes it mean Trading, which is why removing the alias undoes it.
+      is('  …and the pack was not rewritten',
+        n(`SELECT COUNT(*) n FROM processes WHERE owner = 'risk-ops'`), 1)
+      is('a merge cannot be into itself', (await (await fetch(`${base}/team/merge`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: 'trading', into: 'trading' }),
+      })).json()).error !== undefined, true)
+
+      /* an override written in a merged-away spelling still lands */
+      await fetch(`${base}/override`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subjectKind: 'node', subjectId: 'svc:gateway-api', field: 'team', value: 'Risk Ops' }),
+      })
+      is('a team override spelt as an alias resolves to the survivor', teamOf('svc:gateway-api'), 'trading')
+      is('  …and the node says the team was corrected rather than scanned',
+        (await get('/node?id=svc%3Agateway-api')).body.node.teamVia, 'override')
+      await fetch(`${base}/override?subjectKind=node&subjectId=svc:gateway-api&field=team`, { method: 'DELETE' })
+      is('  …and reverting gives the manifest back', teamOf('svc:gateway-api'), 'platform')
+      is('  …saying so', (await get('/node?id=svc%3Agateway-api')).body.node.teamVia, 'scan')
+
+      /* the undo */
+      const undo = await fetch(`${base}/team/alias?alias=risk-ops`, { method: 'DELETE' })
+      is('DELETE /api/team/alias un-merges', undo.status, 200)
+      is('  …and the team comes back wherever the data still spells it that way',
+        (await get('/teams')).body.teams.some((t) => t.id === 'risk-ops'), true)
+      is('  …as unregistered again', (await get('/teams')).body.teams.find((t) => t.id === 'risk-ops')?.registered, false)
+      is('  …while the alias the merge did not touch is still held',
+        (await get('/teams')).body.teams.find((t) => t.id === 'trading')?.aliases.join(), 'risk-operations')
+      is('removing an alias nothing holds is a 404',
+        (await fetch(`${base}/team/alias?alias=nothing`, { method: 'DELETE' })).status, 404)
+
+      /* editing a team nobody has named is a typo, not a new team */
+      is('editing an unknown team is a 404', (await put({ id: 'invented', name: 'Invented' })).status, 404)
+
+      /* Every key the editor did not recognise survives a write. Somebody
+         hand-editing teams.json and somebody renaming a team on the Teams page
+         are editing the same file, and neither may silently drop the other's
+         work — so a write carries through what it does not understand. */
+      {
+        const hand = file()
+        hand.$comment = 'a note somebody left'
+        hand.teams = hand.teams.map((t) => (t.id === 'data' ? { ...t, rota: 'fortnightly' } : t))
+        fs.writeFileSync(registry, JSON.stringify(hand, null, 2))
+        await fetch(`${base}/relink`, { method: 'POST' })
+        await put({ id: 'data', contact: '#data-platform' })
+        is('a top-level key the editor does not know survives a write', file().$comment, 'a note somebody left')
+        is('  …and one on the entry being edited', entry('data')?.rota, 'fortnightly')
+        is('  …which still got the edit', entry('data')?.contact, '#data-platform')
+      }
+
+      /* a registry that parses but is the wrong shape is never written over */
+      {
+        fs.writeFileSync(registry, JSON.stringify({ teams: { trading: 'Trading' } }))
+        const refused = await put({ id: 'trading', name: 'Trading' })
+        is('a teams.json whose teams is not a list is refused rather than replaced', refused.status, 409)
+        ok('  …leaving the file alone', fs.readFileSync(registry, 'utf8').includes('"trading"'))
+      }
+
+      fs.writeFileSync(registry, before)
+      await fetch(`${base}/relink`, { method: 'POST' })
+      is('restoring the registry restores the estate', teamOf('svc:order-service'), 'trading')
+    }
+
     server.close()
   }
 
@@ -1562,7 +1707,13 @@ if (stage === 'org') {
       JSON.stringify({
         departments: good.departments,
         teams: [
-          ...good.teams,
+          ...good.teams.map((t) =>
+            // `wallet` is a team entry of its own, so ledger cannot also have
+            // it as an alias; `ghost` is claimed by two entries.
+            t.id === 'ledger' ? { ...t, aliases: ['wallet', 'ghost', 'Ledger'] }
+              : t.id === 'payments' ? { ...t, aliases: ['ghost'] }
+              : t
+          ),
           { id: 'Trading', name: 'Trading Renamed', department: 'trading-platfrom' },
           { name: 'No id at all' },
         ],
@@ -1574,17 +1725,27 @@ if (stage === 'org') {
         '--input-type=module',
         '-e',
         `const { rebuildTeams, registryProblems } = await import('${path.join(ROOT, 'server', 'src', 'teams.js')}')
+         const { db } = await import('${path.join(ROOT, 'server', 'src', 'db.js')}')
          rebuildTeams()
-         console.log(JSON.stringify(registryProblems()))`,
+         console.log(JSON.stringify({
+           problems: registryProblems(),
+           aliases: db.prepare('SELECT alias, team_id FROM team_aliases ORDER BY alias').all(),
+         }))`,
       ],
       { encoding: 'utf8', env: { ...process.env, TEAMS_FILE: broken } }
     )
-    const found = JSON.parse(probe.stdout.trim().split('\n').pop() || '[]')
+    const { problems: found, aliases } = JSON.parse(probe.stdout.trim().split('\n').pop() || '{}')
     const kinds = found.map((p) => p.kind).sort()
     is('two entries meaning one team is reported', kinds.filter((k) => k === 'duplicate-team').length, 1)
     is('  …a department nothing declares is reported', kinds.filter((k) => k === 'unknown-department').length, 1)
     is('  …and an entry with no usable id is reported', kinds.filter((k) => k === 'no-id').length, 1)
-    is('  …and nothing else is', found.length, 3)
+    is('an alias that is also a team entry is reported', kinds.filter((k) => k === 'alias-is-a-team').length, 1)
+    is('  …and the entry wins', aliases.some((a) => a.alias === 'wallet'), false)
+    is('two teams claiming one alias is reported', kinds.filter((k) => k === 'duplicate-alias').length, 1)
+    is('  …and it stays with the first to claim it', aliases.find((a) => a.alias === 'ghost')?.team_id, 'ledger')
+    is('an entry aliasing its own id is not a problem', kinds.filter((k) => k === 'self-alias').length, 0)
+    is('  …and writes no row', aliases.some((a) => a.alias === 'ledger'), false)
+    is('  …and nothing else is', found.length, 5)
   }
 
   /* ---- removal takes Layer C with it */

@@ -102,14 +102,58 @@ a manifest, because it describes the organisation rather than the code.
   "teams": [
     { "id": "trading", "name": "Trading", "department": "trading-platform",
       "description": "Quotes, orders, matching and settlement.",
-      "contact": "#meridian-trading" }
+      "contact": "#meridian-trading",
+      "aliases": ["trading-team", "j-smith"] }
   ]
 }
 ```
 
 `id` is the canonical team id and the thing everything joins on. `department` is
 optional and references a `departments[].id`. `description` and `contact` are for
-the team page.
+the team page. `aliases` is optional and is covered below.
+
+### Aliases, and the registry as something you edit
+
+A scan derives a team from whatever the commit history says, so an estate
+arrives with teams named after people and the same team spelt four ways. That
+has to be fixable, and it has to be fixable **once** — not in forty manifests,
+and not again after the next scan.
+
+`aliases` is a list of ids that mean this team and are not a team of their own.
+Everything that reads a team *out of the data* — a manifest's `service.team`, a
+pack's `owner`, a human's `overrides` row — resolves `teamId()` through the
+aliases before joining. A spelling listed here never gets a `teams` row, never
+reaches `/api/teams`, and never fires `unknown-team`.
+
+**A merge is an alias and nothing else.** Nothing is rewritten and nothing is
+deleted: the manifests still say what the scan found, and the registry now says
+what that meant. Deleting the alias undoes it, and the team comes back wherever
+the data still spells it that way. This is what `teamId()`'s own rule already
+implies — *the registry, not a heuristic, is what says one name was meant to be
+another* — made writable.
+
+**A rename may move the id, and only when the id came from the name.** `id` is
+derived from the name for a team the registry has never seen, so renaming
+`john-smith` to "Payments" moves it to `payments` and keeps `john-smith` as an
+alias. An entry whose author deliberately gave `platform` the name "Platform
+Engineering" has already said the two are not the same thing, so that one keeps
+its id. The editor says which will happen before the request is sent.
+
+**Alias rules, checked like everything else in the file.** An alias that is also
+a team entry's id is the registry contradicting itself: the entry wins and a
+problem is reported. The same alias on two teams stays with the first — unlike a
+duplicate *entry*, where the later wins, because an entry is a statement about
+one team and the last edit is the current one, while a second team claiming
+somebody else's alias is a team taking what it was not given. An entry aliasing
+its own id is a no-op, not a mistake.
+
+**The server writes this file.** Through a temporary file and an atomic rename,
+carrying every key it did not recognise through untouched — somebody hand-editing
+`teams.json` and somebody renaming a team on the Teams page are editing the same
+file, and neither may silently drop the other's work. A file that exists and is
+not readable JSON is never written: the edit would be applied to `{}` and
+everything in it would be lost, so the request is refused and says so. An absent
+file is fine, and writing one is how a deployment gets its first registry.
 
 **The registry checks itself.** `teamId()` collapsing two spellings into one
 team is the point of it, but two *entries* meaning one team is a mistake in the
@@ -183,11 +227,21 @@ CREATE TABLE IF NOT EXISTS teams (
   registered    INTEGER NOT NULL DEFAULT 0, -- 1 = in teams.json, 0 = seen in data only
   source        TEXT NOT NULL DEFAULT 'process'  -- registry | component | process
 );
+
+-- A spelling that means a team rather than a team of its own. Rebuilt whole
+-- beside `teams`, from `teams.json` alone: nothing here is derived and nothing
+-- may be inferred into it.
+CREATE TABLE IF NOT EXISTS team_aliases (
+  alias   TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE
+);
 ```
 
 `registered` is the whole point of the table. A team that appears in the data but
 not in the registry still gets a row, so every screen can name it — it is simply
-marked as not registered, which is what `unknown-team` reports.
+marked as not registered, which is what `unknown-team` reports. A team that is
+only an *alias* gets no row at all, which is what makes a merge look like a
+merge rather than like two teams one of which owns nothing.
 
 ```sql
 -- ───────────────────────────── derived team on everything, by the link pass
@@ -498,12 +552,40 @@ processes.
 Ids and codes are query parameters, never path segments.
 
 **`GET /api/teams`** — every team, registered or not, with `{id, name,
-department, description, contact, registered}` and counts: components, processes,
+department, description, contact, registered, aliases}` and counts: components, processes,
 handoffs out, handoffs in, teams depended on. Plus `departments` and
 `configured: false` when there is no `teams.json`, exactly as `/api/repos` does.
 
 **`GET /api/team?id=`** — one team: the team, its components, its processes, the
-teams it reaches and how, and its handoffs in both directions.
+teams it reaches and how, and its handoffs in both directions. `id` resolves
+through the aliases, so a link, a bookmark or a saved filter written before a
+merge still lands on the team that absorbed it.
+
+**`PUT /api/team`** — `{id, name?, department?, description?, contact?}`.
+Upserts the registry entry, creating one for a team that only the data knew
+about. A `department` that names nothing yet is created. Answers `{id, renamed}`
+with the id the team ended up at, which may not be the one it started with; a
+name that is already another team's is refused with `409` and the id it clashed
+with, because a rename that quietly folded two teams together would be a merge
+nobody asked for.
+
+**`POST /api/team/merge`** — `{from, into}`. `into` gains `from`'s id as an
+alias, and `from`'s aliases too, so a chain of merges loses nothing halfway
+along. `from`'s entry is removed. Both ends resolve through the aliases, so
+merging into an already-merged team lands on the survivor.
+
+**`DELETE /api/team/alias?alias=`** — removes one alias wherever it is held.
+This is the undo for a merge.
+
+All three write `teams.json` and then run the link pass, for the reason §4
+already gives for an override: the pass reads the registry and every derived
+team column comes out of the pass.
+
+**`GET /api/nodes`** and **`GET /api/node`** carry `teamVia`: `scan` when the
+manifest named a team, `inherited` when it came from whatever owns the node,
+`override` when somebody corrected it, and `null` for none. Without it there is
+no visible difference between a team the scan found and a team a person typed,
+and "revert to the scan" is a button that cannot say what it would undo.
 
 **`GET /api/handoffs`** — every `process_links` row, with
 `?crossTeam=true|false`, `?team=`, `?code=` and `?support=` filters, each end

@@ -1,5 +1,5 @@
 {
-  "$comment": "Copy to teams.json and edit. The map works without this file — teams are then whatever the manifests and packs say, and nothing is reported as unregistered. What this adds is a canonical id per team, so 'Trading' and 'trading' are one team rather than two, and a department to group them by.",
+  "$comment": "Copy to teams.json and edit, or edit a team on the Teams page and let the app write this file for you. The map works without it — teams are then whatever the manifests and packs say, and nothing is reported as unregistered. What this adds is a canonical id per team, so 'Trading' and 'trading' are one team rather than two, a department to group them by, and 'aliases' for the spellings that mean this team and are not a team of their own.",
   "departments": [
     {
       "id": "trading-platform",
@@ -18,7 +18,12 @@
       "name": "Trading",
       "department": "trading-platform",
       "description": "Quotes, orders, matching and settlement.",
-      "contact": "#meridian-trading"
+      "contact": "#meridian-trading",
+      "aliases": [
+        "trading-team",
+        "j-smith"
+      ],
+      "$comment": "aliases is how a rename or a merge is recorded. A scan derives a team from the commit history, so an estate arrives with teams named after people; listing the old spelling here folds it in without touching a single manifest, and deleting it again undoes the merge."
     },
     {
       "id": "data",

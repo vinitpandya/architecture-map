@@ -1,10 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, type Evidence, type GraphEdge, type GraphNode, type NodeDetail } from '../lib/api'
+import { api, type Evidence, type GraphEdge, type GraphNode, type NodeDetail, type Team } from '../lib/api'
+import { useQuery, useScope } from '../lib/scope'
 import { Card, Empty } from '../components/ui'
 import { DataGrid, type GridColumn } from '../components/DataGrid'
 import { EvidenceList } from '../components/EvidenceList'
-import { EDGE_LABEL, KIND_LABEL, VIA_LABEL, displayCode, idValue, nodeHref, processHref } from '../lib/nodes'
+import { assignTeam } from '../lib/teams'
+import {
+  EDGE_LABEL,
+  KIND_LABEL,
+  VIA_LABEL,
+  displayCode,
+  idValue,
+  nodeHref,
+  processHref,
+  teamHref,
+} from '../lib/nodes'
 
 /**
  * What a node is, who touches it, and where in the source that is written
@@ -50,7 +61,12 @@ export function NodePage() {
           <p>
             <span className="pill">{KIND_LABEL[node.kind]}</span>{' '}
             {node.ownerRepo ? <>owned by <code>{node.ownerRepo}</code></> : 'no owning repo'}
-            {node.team ? <> · {node.team}</> : null}
+            {node.teamName || node.teamId ? (
+              <>
+                {' '}
+                · <Link to={teamHref(node.teamId!)}>{node.teamName ?? node.teamId}</Link>
+              </>
+            ) : null}
             {node.language ? <> · {node.language}</> : null}
             {node.engine ? <> · {node.engine}</> : null}
           </p>
@@ -67,6 +83,8 @@ export function NodePage() {
       )}
 
       <Description node={node} onSaved={() => setReload((n) => n + 1)} />
+
+      <Owner node={node} onSaved={() => setReload((n) => n + 1)} />
 
       {data.drift.length > 0 && (
         <Card title={`Findings (${data.drift.length})`} sub="What the link pass noticed about this node">
@@ -88,6 +106,71 @@ export function NodePage() {
         <EvidenceList evidence={data.evidence} />
       </Card>
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------ owner */
+
+/**
+ * Who this belongs to, for a service.
+ *
+ * Only a service, because only a service has a team of its own: a topic's
+ * comes from whoever produces it, a store's from whoever owns it, and writing
+ * an override on one of those would show a correction on this page while every
+ * derived column went on saying the other thing. The honest thing to offer on
+ * an inherited team is the link to where it actually comes from.
+ */
+function Owner({ node, onSaved }: { node: GraphNode; onSaved: () => void }) {
+  const { data } = useQuery<{ teams: Team[] }>(node.kind === 'service' ? '/teams' : null)
+  const { reload } = useScope()
+  const [busy, setBusy] = useState(false)
+  if (node.kind !== 'service') return null
+
+  const teams = data?.teams ?? []
+  const set = async (team: string | null) => {
+    setBusy(true)
+    try {
+      await assignTeam(node.id, team)
+      onSaved()
+      // A team decides the map's colours, the filter row and every handoff, so
+      // the whole app's data is stale, not just this page's.
+      reload()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <p className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+      <span className="nav-group-label">Team</span>
+      <select
+        aria-label="Team"
+        disabled={busy || !data}
+        value={node.teamId ?? ''}
+        onChange={(e) => void set(e.target.value ? teams.find((t) => t.id === e.target.value)!.name : '')}
+      >
+        <option value="">No team</option>
+        {teams.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name}
+          </option>
+        ))}
+      </select>
+      {node.teamVia === 'override' ? (
+        <>
+          <span className="pill">corrected</span>
+          <button type="button" className="ghost" disabled={busy} onClick={() => void set(null)}>
+            Revert to the scan
+          </button>
+        </>
+      ) : (
+        <span className="muted" style={{ fontSize: 12 }}>
+          {node.teamVia === 'scan'
+            ? 'From service.team in the manifest. A change here outranks it and survives a re-scan.'
+            : 'The manifest names no team. A change here is a correction the next scan cannot undo.'}
+        </span>
+      )}
+    </p>
   )
 }
 

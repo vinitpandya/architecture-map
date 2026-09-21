@@ -3,7 +3,13 @@ import path from 'node:path'
 import express from 'express'
 import { ROOT, INBOX_DIR } from './config.js'
 import { db, getConfig, setConfig, hasData } from './db.js'
-import { registryConfigured, registryProblems, teamId } from './teams.js'
+import {
+  editableRegistry,
+  registryConfigured,
+  registryProblems,
+  teamId,
+  writeRegistry,
+} from './teams.js'
 import { defaultPageLayout, instantiateLayout, templateFor } from './pageTemplates.js'
 
 export const router = express.Router()
@@ -54,6 +60,10 @@ function applyNodeOverrides(node, map) {
     name: o.name ?? node.name,
     description: o.description ?? node.description,
     team: o.team ?? node.team,
+    // A correction has to be visible as one. Without this the only difference
+    // between a team the scan found and a team somebody typed is invisible,
+    // and "revert to the scan" is a button that cannot say what it would undo.
+    teamVia: o.team !== undefined && o.team !== null ? 'override' : node.teamVia,
     hidden: o.hidden === 'true',
     confirmed: o.confirmed === 'true',
   }
@@ -75,6 +85,9 @@ const nodeRow = (r) => ({
   team: r.team,
   teamId: r.team_id ?? null,
   teamName: r.team_name ?? null,
+  /* Where this node's team came from: the manifest said so, it was inherited
+     from whatever owns it, or nothing. `applyNodeOverrides` adds the fourth. */
+  teamVia: r.team ? 'scan' : r.team_id ? 'inherited' : null,
   ownerRepo: r.owner_repo,
   orphan: !!r.orphan,
   degree: r.degree ?? undefined,
@@ -209,9 +222,9 @@ router.get('/nodes', wrap(async (req, res) => {
 
   const rows = db
     .prepare(
-      `SELECT n.*,
+      `SELECT n.*, t.name AS team_name,
               (SELECT COUNT(*) FROM edges e WHERE e.from_id = n.id OR e.to_id = n.id) AS degree
-       FROM nodes n
+       FROM nodes n LEFT JOIN teams t ON t.id = n.team_id
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
        ORDER BY n.kind, n.name
        LIMIT ?`
@@ -1072,6 +1085,9 @@ const teamRow = (r) => ({
   // Which of the three things produced the id. A team whose only source is a
   // pack is named in a document and owns nothing in the estate.
   source: r.source,
+  // Every other spelling that resolves here. A merge is a claim somebody made
+  // and it has to be visible, or the counts on this page are unexplainable.
+  aliases: db.prepare('SELECT alias FROM team_aliases WHERE team_id = ? ORDER BY alias').all(r.id).map((a) => a.alias),
   components: r.components ?? 0,
   processes: r.processes ?? 0,
   handoffsOut: r.handoffs_out ?? 0,
@@ -1105,7 +1121,10 @@ router.get('/teams', wrap(async (req, res) => {
 }))
 
 router.get('/team', wrap(async (req, res) => {
-  const id = teamId(one(req.query.id))
+  const asked = teamId(one(req.query.id))
+  // Through the aliases, so a link, a bookmark or a filter value written
+  // before a merge still lands on the team that absorbed it.
+  const id = db.prepare('SELECT team_id FROM team_aliases WHERE alias = ?').get(asked)?.team_id ?? asked
   const row = db.prepare(`${TEAM_SELECT} WHERE t.id = ?`).get(id)
   if (!row) return res.status(404).json({ error: 'No such team' })
 
@@ -1145,6 +1164,160 @@ router.get('/team', wrap(async (req, res) => {
       )
       .all(id),
   })
+}))
+
+/* ──────────────────────────────────── editing the registry
+
+   A scan derives a team from whatever the commit history says, which is how an
+   estate ends up with a team named after a person and the same team spelt four
+   ways. Renaming and merging fix that once, in `teams.json`, rather than
+   repeatedly in every manifest — and neither writes to a manifest, so the next
+   scan cannot undo either.
+
+   All three write the file and run the link pass, for the reason §4 already
+   gives for an override: the pass reads the registry, and every derived team
+   column comes out of the pass. Writing the file and stopping would leave the
+   Teams page correct and the map, the filter and every handoff wrong.
+*/
+
+/** A team as the registry should hold it, created from what is known if absent. */
+function registryEntry(reg, id, fallbackName) {
+  let entry = reg.teams.find((t) => teamId(t?.id) === id)
+  if (!entry) {
+    entry = { id, name: fallbackName ?? id }
+    reg.teams.push(entry)
+  }
+  return entry
+}
+
+/** Through the aliases, so an operation naming a merged-away id still lands. */
+const throughAliases = (id) =>
+  db.prepare('SELECT team_id FROM team_aliases WHERE alias = ?').get(id)?.team_id ?? id
+
+const teamById = (id) => db.prepare('SELECT id, name FROM teams WHERE id = ?').get(id)
+
+/**
+ * Rename a team, and set its department, description and contact.
+ *
+ * The id follows the name only when the id came from the name in the first
+ * place. `john-smith` called "John Smith" renamed to "Payments" becomes
+ * `payments` and answers to `john-smith`; a registry entry whose author
+ * deliberately gave `platform` the name "Platform Engineering" keeps `platform`,
+ * because they have already said the two are not the same thing. The response
+ * carries the resulting id either way, and so does the editor before you save.
+ */
+router.put('/team', wrap(async (req, res) => {
+  const { id: rawId, name, department, description, contact } = req.body ?? {}
+  const id = throughAliases(teamId(rawId))
+  if (!id) return res.status(400).json({ error: 'id must be a non-empty string' })
+  const team = teamById(id)
+  if (!team) return res.status(404).json({ error: `No team "${id}". Editing one nobody has named is a typo, not a new team.` })
+
+  const { reg, error } = editableRegistry()
+  if (error) return res.status(409).json({ error })
+
+  const entry = registryEntry(reg, id, team.name)
+  const nextName = typeof name === 'string' && name.trim() ? name.trim() : String(entry.name ?? team.name)
+  // Only a deliberate change of name moves anything, and only for a team whose
+  // id was derived from its name.
+  const derivedId = id === teamId(team.name)
+  const nextId = derivedId && nextName !== team.name ? teamId(nextName) : id
+  if (!nextId) return res.status(400).json({ error: 'That name normalises to nothing.' })
+  if (nextId !== id && teamById(nextId)) {
+    return res.status(409).json({
+      error: `"${nextName}" is already a team. Merge into it rather than renaming onto it — a rename that quietly folded two teams together would be a merge nobody asked for.`,
+      conflict: nextId,
+    })
+  }
+
+  entry.name = nextName
+  if (nextId !== id) {
+    entry.id = nextId
+    // The spelling everything in the data still uses.
+    entry.aliases = [...new Set([...(Array.isArray(entry.aliases) ? entry.aliases : []), id])]
+  }
+
+  if (department !== undefined) {
+    const raw = String(department ?? '').trim()
+    if (!raw) delete entry.department
+    else {
+      const depId = teamId(raw)
+      // A department typed rather than picked is a department being created.
+      // Both its id and its display name are accepted here, which is why this
+      // goes through teamId() rather than matching the string.
+      if (!reg.departments.some((d) => teamId(d?.id) === depId)) {
+        reg.departments.push({ id: depId, name: raw })
+      }
+      entry.department = depId
+    }
+  }
+  for (const [field, value] of [['description', description], ['contact', contact]]) {
+    if (value === undefined) continue
+    const text = String(value ?? '').trim()
+    if (text) entry[field] = text
+    else delete entry[field]
+  }
+
+  writeRegistry(reg)
+  await relink()
+  res.json({ ok: true, id: nextId, renamed: nextId !== id })
+}))
+
+/**
+ * Fold one team into another. The survivor gains the other's id as an alias,
+ * and its aliases too, so a chain of merges does not lose a spelling halfway
+ * along. Nothing is rewritten and nothing is deleted from the estate: the
+ * manifests still say what the scan found, and the registry now says what that
+ * meant. Removing the alias undoes it.
+ */
+router.post('/team/merge', wrap(async (req, res) => {
+  const from = throughAliases(teamId(req.body?.from))
+  const into = throughAliases(teamId(req.body?.into))
+  if (!from || !into) return res.status(400).json({ error: 'from and into must both be team ids' })
+  if (from === into) return res.status(400).json({ error: 'A team cannot be merged into itself.' })
+  const a = teamById(from)
+  const b = teamById(into)
+  if (!a) return res.status(404).json({ error: `No team "${from}"` })
+  if (!b) return res.status(404).json({ error: `No team "${into}"` })
+
+  const { reg, error } = editableRegistry()
+  if (error) return res.status(409).json({ error })
+
+  const gone = reg.teams.find((t) => teamId(t?.id) === from)
+  const survivor = registryEntry(reg, into, b.name)
+  survivor.aliases = [
+    ...new Set([
+      ...(Array.isArray(survivor.aliases) ? survivor.aliases : []),
+      from,
+      ...(Array.isArray(gone?.aliases) ? gone.aliases : []),
+    ]),
+  ].filter((x) => teamId(x) && teamId(x) !== into)
+  reg.teams = reg.teams.filter((t) => teamId(t?.id) !== from)
+
+  writeRegistry(reg)
+  await relink()
+  res.json({ ok: true, id: into, absorbed: a.name })
+}))
+
+/** Undo a merge: the alias becomes a team of its own again, if the data still
+ *  spells anything that way. */
+router.delete('/team/alias', wrap(async (req, res) => {
+  const alias = teamId(one(req.query.alias))
+  if (!alias) return res.status(400).json({ error: 'alias must be a non-empty string' })
+  const row = db.prepare('SELECT team_id FROM team_aliases WHERE alias = ?').get(alias)
+  if (!row) return res.status(404).json({ error: `Nothing is aliased as "${alias}"` })
+
+  const { reg, error } = editableRegistry()
+  if (error) return res.status(409).json({ error })
+  for (const t of reg.teams) {
+    if (!Array.isArray(t.aliases)) continue
+    t.aliases = t.aliases.filter((x) => teamId(x) !== alias)
+    if (!t.aliases.length) delete t.aliases
+  }
+
+  writeRegistry(reg)
+  await relink()
+  res.json({ ok: true, id: row.team_id })
 }))
 
 /**

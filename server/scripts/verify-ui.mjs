@@ -86,7 +86,14 @@ const freePort = () =>
 /* ─────────────────────────────────────────────────────── a throwaway estate */
 
 fs.rmSync(DATA_DIR, { recursive: true, force: true })
-const env = { ...process.env, DATA_DIR, INBOX_DIR: path.join(DATA_DIR, 'inbox') }
+fs.mkdirSync(DATA_DIR, { recursive: true })
+// A copy of the committed fixture. The registry is writable from the Teams
+// page now, and these checks rename and merge teams in it — against the repo
+// root's `teams.json` that would edit whoever's actual org chart is on this
+// machine, and against `demo/teams.json` it would edit the fixture.
+const REGISTRY = path.join(DATA_DIR, 'teams.json')
+fs.copyFileSync(path.join(ROOT, 'demo', 'teams.json'), REGISTRY)
+const env = { ...process.env, DATA_DIR, INBOX_DIR: path.join(DATA_DIR, 'inbox'), TEAMS_FILE: REGISTRY }
 const seeded = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs')], { env, encoding: 'utf8' })
 if (seeded.status !== 0) {
   console.error(`seed:demo failed\n${seeded.stdout}${seeded.stderr}`)
@@ -743,6 +750,107 @@ for (const code of ['1', '2.1', '2.3.5']) {
   const text = await page.evaluate(() => document.body.innerText)
   is('an unregistered team is marked on the teams page', text.includes('unregistered'), true)
   is('  …and the page says why it matters', text.includes('not in the registry'), true)
+  await ctx.close()
+}
+
+/* ---- SPEC-ORG §2: the registry is editable, because a scan names teams after
+   whoever is in the commit history. Everything here writes the throwaway
+   registry copied above, never the one at the repo root. */
+{
+  const { ctx, page, problems } = await open('/teams')
+  await page.waitForSelector('select[aria-label="Team for Gateway API"]', { timeout: 20000 })
+  await page.waitForTimeout(500)
+
+  /* ---- a service's team, from the grid */
+  const teamOf = async (id) => (await api(`/node?id=${encodeURIComponent(id)}`)).node
+  await page.selectOption('select[aria-label="Team for Gateway API"]', 'ledger')
+  await page.waitForTimeout(2200)
+  const moved = await teamOf('svc:gateway-api')
+  is('the services grid puts a service in a team', moved.teamId, 'ledger')
+  is('  …recording it as a correction rather than a scan', moved.teamVia, 'override')
+  ok(
+    '  …and says so on the row',
+    await page.$$eval('tr', (rows) =>
+      [...rows].some((r) => r.textContent.includes('Gateway API') && r.textContent.includes('corrected'))
+    )
+  )
+  await page.click('tr:has-text("Gateway API") button:has-text("Revert to the scan")')
+  await page.waitForTimeout(2200)
+  is('  …and reverting gives the manifest back', (await teamOf('svc:gateway-api')).teamId, 'platform')
+
+  /* ---- renaming, and the id the editor promised.
+
+     `teamIdOf` on the client states SPEC-ORG §2's rule a second time so the
+     editor can say what the id will become before the request goes. This is
+     the check that stops the two drifting apart. */
+  await page.click('button:has-text("Name it")')
+  await page.waitForSelector('.modal', { timeout: 5000 })
+  await page.fill('.modal input[value="risk-ops"]', 'Risk Operations')
+  await page.waitForTimeout(200)
+  const promised = await page.$eval('.modal p', (e) => e.textContent)
+  ok('the editor says what the id will become', promised.includes('risk-operations'), promised.trim())
+  await page.click('.modal button:has-text("Save")')
+  await page.waitForTimeout(2500)
+  is('  …and the server agrees with it', new URL(page.url()).searchParams.get('id'), 'risk-operations')
+  is('  …landing on the renamed team', await page.$eval('h1', (e) => e.textContent.trim()), 'Risk Operations')
+  ok(
+    '  …which says what it also answers to',
+    (await page.evaluate(() => document.body.innerText)).includes('risk-ops')
+  )
+  is('  …and is registered now', (await api('/teams')).teams.find((t) => t.id === 'risk-operations')?.registered, true)
+
+  /* ---- merging, from the same editor */
+  await page.click('button:has-text("Edit team")')
+  await page.waitForSelector('.modal select[aria-label="Merge into"]', { timeout: 5000 })
+  await page.selectOption('.modal select[aria-label="Merge into"]', 'trading')
+  await page.waitForTimeout(200)
+  await page.click('.modal button:has-text("Merge Risk Operations into Trading")')
+  await page.waitForTimeout(2500)
+  is('merging lands on the surviving team', await page.$eval('h1', (e) => e.textContent.trim()), 'Trading')
+  const trading = (await api('/teams')).teams.find((t) => t.id === 'trading')
+  is('  …which keeps both spellings', trading?.aliases.join(), 'risk-operations,risk-ops')
+  is('  …and the absorbed team is gone', (await api('/teams')).teams.some((t) => t.id === 'risk-operations'), false)
+
+  /* ---- and the undo */
+  await page.click('button:has-text("Edit team")')
+  await page.waitForSelector('.modal', { timeout: 5000 })
+  await page.click('.modal button[aria-label="Stop treating risk-ops as this team"]')
+  await page.waitForTimeout(2500)
+  is('removing an alias un-merges it', (await api('/teams')).teams.some((t) => t.id === 'risk-ops'), true)
+
+  ok('no console errors while editing teams', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+/* ---- the same correction, one service at a time, on the node page */
+{
+  const { ctx, page, problems } = await open('/node?id=svc%3Awallet-service')
+  await page.waitForSelector('select[aria-label="Team"]', { timeout: 15000 })
+  is('a service page offers its team', await page.$eval('select[aria-label="Team"]', (e) => e.value), 'wallet')
+  await page.selectOption('select[aria-label="Team"]', 'ledger')
+  await page.waitForTimeout(2200)
+  is('  …and changing it takes', (await api('/node?id=svc%3Awallet-service')).node.teamId, 'ledger')
+  await page.click('button:has-text("Revert to the scan")')
+  await page.waitForTimeout(2200)
+  is('  …and reverting restores the scan', (await api('/node?id=svc%3Awallet-service')).node.teamId, 'wallet')
+  ok('no console errors on the node page', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+/* ---- a topic has no team of its own to set, and says where its came from */
+{
+  const { ctx, page } = await open('/node?id=topic%3Aorders.matched.v1')
+  await page.waitForSelector('h1', { timeout: 15000 })
+  await page.waitForTimeout(400)
+  is(
+    'an inherited team is not offered as something to set',
+    (await page.$$('select[aria-label="Team"]')).length,
+    0
+  )
+  ok(
+    '  …but the team it inherited is a link',
+    await page.$$eval('a', (els) => els.some((e) => e.getAttribute('href')?.startsWith('/team?id=')))
+  )
   await ctx.close()
 }
 

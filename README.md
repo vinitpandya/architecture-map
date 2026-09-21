@@ -62,6 +62,8 @@ npm run build && npm start           # production build, UI and API on one port
 | **Process map** | The hierarchy beside the map, the parts of whichever process is selected, and what no documented process accounts for. |
 | **Health** | Drift findings, unresolved references, orphans, quarantined manifests, coverage. |
 | **Processes** | The L1/L2/L3 tree. Click through to a process for its parts in order, the components it runs through, and where the claim came from. |
+| **Teams and handoffs** | Who is responsible, by department. Where one team's work ends and another's begins, and which teams depend on which. |
+| **Teams** | Every team the registry and the data know about, editable, plus every service and the team it belongs to. |
 | **Search** | Names, ids, descriptions — and the evidence snippets, so `@KafkaListener` or a table name finds the code. |
 | **Scan** | The repository list, the rendered scan prompt to paste into Claude, and the inbox. |
 | **Manifests** | The ingest log for both kinds — scan manifests and process packs — with quarantined rows expanding to their validation errors. |
@@ -129,6 +131,29 @@ component the topology does not have means either the scan missed something or
 the document has gone stale. A process describing a call that exists in no
 repository means the same. Nothing else in the estate can catch either, and it
 only works because a pack is never allowed to create the thing it is missing.
+
+## Teams
+
+A team is an attribute of the things on the map, never a member of it: the
+estate holds facts found in code, and who is accountable for a service is an
+org fact. Teams come from two places — `service.team` in a manifest and `owner`
+on a process — and `teams.json` is what turns those strings into an
+organisation, giving each team a canonical id, a display name and a department.
+The app works without it and says so.
+
+**The registry is editable from the Teams page.** A scan derives a team from
+whatever is in the commit history, so an estate typically arrives with teams
+named after people and the same team spelt four ways. Renaming one moves it to
+the id its new name implies and keeps the old spelling as an alias; merging two
+records the loser's id as an alias of the survivor. Either way nothing is
+rewritten — the manifests still say what the scan found, the registry says what
+that meant, and deleting the alias undoes it. The edits land in `teams.json`, a
+plain file you can diff, commit and hand-edit; anything in it the editor does
+not recognise is carried through untouched.
+
+**A service's team can be corrected too**, on the node page or in bulk on the
+Teams page. That is an `overrides` row, which ingest never reads or writes, so a
+re-scan cannot undo it — the same separation that lets a description survive.
 
 ## Mapping your own estate
 

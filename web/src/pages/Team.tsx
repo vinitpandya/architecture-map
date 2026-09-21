@@ -1,6 +1,8 @@
-import { Link, useSearchParams } from 'react-router-dom'
-import { type Handoff, type TeamDetail } from '../lib/api'
-import { useQuery } from '../lib/scope'
+import { useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { type Department, type Handoff, type Team, type TeamDetail } from '../lib/api'
+import { useQuery, useScope } from '../lib/scope'
+import { TeamEditor } from '../components/TeamEditor'
 import { Card, Empty } from '../components/ui'
 import { DataGrid } from '../components/DataGrid'
 import { KIND_LABEL, displayCode, idValue, nodeHref, processHref, teamHref } from '../lib/nodes'
@@ -16,6 +18,12 @@ export function TeamPage() {
   const [params] = useSearchParams()
   const id = params.get('id') ?? ''
   const { data, error } = useQuery<TeamDetail>(id ? '/team' : null, { id })
+  // The editor needs the other teams to merge into and the departments to
+  // choose from, and neither is on this endpoint — /team is one team.
+  const { data: all } = useQuery<{ teams: Team[]; departments: Department[]; configured: boolean }>('/teams')
+  const { reload } = useScope()
+  const navigate = useNavigate()
+  const [editing, setEditing] = useState(false)
 
   if (!id) return <div className="page"><Empty title="No team named" /></div>
   if (error)
@@ -56,8 +64,41 @@ export function TeamPage() {
                 : 'Named by the data rather than the registry, so there is nothing to describe it.')}
           </p>
         </div>
-        {team.contact && <code className="pill">{team.contact}</code>}
+        <div className="row" style={{ gap: 10, alignItems: 'baseline' }}>
+          {team.contact && <code className="pill">{team.contact}</code>}
+          <button type="button" className="ghost" onClick={() => setEditing(true)}>
+            Edit team
+          </button>
+        </div>
       </div>
+
+      {team.aliases.length > 0 && (
+        <p className="muted" style={{ fontSize: 13, margin: '-6px 0 0' }}>
+          Also answers to{' '}
+          {team.aliases.map((a, i) => (
+            <span key={a}>
+              {i > 0 && ', '}
+              <code>{a}</code>
+            </span>
+          ))}{' '}
+          — renamed or merged, so anything in the data still spelt that way is counted here.
+        </p>
+      )}
+
+      {editing && all && (
+        <TeamEditor
+          team={team}
+          teams={all.teams}
+          departments={all.departments}
+          configured={all.configured}
+          onClose={() => setEditing(false)}
+          onSaved={(next) => {
+            setEditing(false)
+            reload()
+            if (next !== team.id) navigate(teamHref(next))
+          }}
+        />
+      )}
 
       {!team.registered && (
         <Card title="Where this team came from" sub="It is not in the registry">

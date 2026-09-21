@@ -1,6 +1,6 @@
 import { db } from './db.js'
 import { linkId } from './ids.js'
-import { rebuildTeams, registryConfigured, teamId } from './teams.js'
+import { aliasMap, canonicalTeam, rebuildTeams, registryConfigured } from './teams.js'
 
 /**
  * The link pass. Entirely deterministic — no LLM, no heuristic merging, no
@@ -112,6 +112,13 @@ const run = db.transaction((now) => {
 function resolveTeams() {
   db.prepare('UPDATE nodes SET team_id = NULL').run()
 
+  // Everything below reads a team *out of the data* — a manifest's
+  // `service.team`, a pack's `owner`, a human's override — so everything below
+  // goes through the registry's aliases. A merge that held on the Teams page
+  // and nowhere else would be no merge at all. Read once: this is asked per
+  // node and per process.
+  const aliases = aliasMap()
+
   // A human correction outranks the scan, per SPEC.md §15.4.
   const overridden = new Map(
     db
@@ -142,7 +149,7 @@ function resolveTeams() {
 
   const teamOfService = new Map()
   for (const n of db.prepare(`SELECT id FROM nodes WHERE kind = 'service'`).all()) {
-    const id = teamId(overridden.get(n.id) ?? declaredTeam.get(n.id))
+    const id = canonicalTeam(overridden.get(n.id) ?? declaredTeam.get(n.id), aliases)
     if (id) teamOfService.set(n.id, id)
   }
 
@@ -195,7 +202,7 @@ function resolveTeams() {
     if (n.kind === 'service') {
       id = teamOfService.get(n.id) ?? null
     } else {
-      id = teamId(overridden.get(n.id)) || only(claimTeams.get(n.id)) || only(writerTeams.get(n.id))
+      id = canonicalTeam(overridden.get(n.id), aliases) || only(claimTeams.get(n.id)) || only(writerTeams.get(n.id))
     }
     if (id) set.run(id, n.id)
   }
@@ -210,7 +217,7 @@ function resolveTeams() {
   db.prepare(`UPDATE processes SET team_id = NULL, team_via = NULL`).run()
   const setProc = db.prepare('UPDATE processes SET team_id = ?, team_via = ? WHERE id = ?')
   const procs = db.prepare('SELECT id, code, owner FROM processes ORDER BY sort_key').all()
-  const own = new Map(procs.map((p) => [p.id, teamId(p.owner) || null]))
+  const own = new Map(procs.map((p) => [p.id, canonicalTeam(p.owner, aliases) || null]))
   for (const p of procs) {
     if (own.get(p.id)) {
       setProc.run(own.get(p.id), 'owner', p.id)

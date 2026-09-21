@@ -78,6 +78,8 @@ export type GraphNode = {
    *  exposer. `team` is what the scan wrote; this is what joins. */
   teamId?: string | null
   teamName?: string | null
+  /** Where the team came from: the manifest, an owner, or a human correction. */
+  teamVia?: 'scan' | 'inherited' | 'override' | null
   degree?: number
   hidden?: boolean
   confirmed?: boolean
@@ -282,6 +284,8 @@ export type Team = {
   registered: boolean
   /** The most authoritative thing that produced the id. */
   source: 'registry' | 'component' | 'process'
+  /** Every other spelling that resolves here, from a rename or a merge. */
+  aliases: string[]
   components: number
   processes: number
   handoffsOut: number

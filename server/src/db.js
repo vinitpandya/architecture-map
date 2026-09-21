@@ -267,6 +267,18 @@ CREATE TABLE IF NOT EXISTS teams (
 );
 CREATE INDEX IF NOT EXISTS teams_department ON teams (department_id);
 
+-- A spelling that means a team rather than a team of its own. Declared in
+-- teams.json, rebuilt whole beside the teams table, and the reason a merge is
+-- reversible: the manifests still say what the scan found, and this says what
+-- it meant. Nothing here is derived and nothing may be inferred into it --
+-- the registry, never a heuristic, is what says one name was meant to be
+-- another.
+CREATE TABLE IF NOT EXISTS team_aliases (
+  alias   TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS team_aliases_team ON team_aliases (team_id);
+
 -- ────────────────── handoffs between processes, derived and declared alike.
 -- Rebuilt whole by the link pass, like every other join in this file.
 
