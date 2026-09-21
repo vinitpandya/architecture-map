@@ -13,6 +13,11 @@ people, and cross-checked against Layer A, which is where its value is.
 process and every component, from a registry rather than free text, and the
 handoffs where one team's work ends and another's begins.
 
+On top of those, the map reads at two detail levels: services with their
+relationships collapsed into one line per pair, or the scan as it was stored.
+Its key is a set of switches, and nodes can be dragged into an arrangement that
+is saved.
+
 Between B and C a polish pass read the whole result back against the spec and
 found defects on paths the demo data never reaches. That turned out to be the
 most productive thing in the build, and it is why §"Nothing is failing" below is
@@ -32,7 +37,7 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 
 ```bash
 npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 318 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 93 more
+npm run build && npm run verify:ui   # the checks that need a browser — 109 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run prompts                      # rebuild prompts/standalone/ from prompts/ and schema/
@@ -79,6 +84,7 @@ joke.
 | 14 · the demo registry, declarations and defects | Complete, verified |
 | 15 · the read API, /teams, /team, the process cards | Complete, verified |
 | 16 · the map on the process page, colour by team, the widgets | Complete, verified in a browser |
+| map · two detail levels, the key as a switch, drag to arrange | Complete, verified in a browser |
 
 Beyond §13 and §9's lists, two things the shells had not met: node detail renders
 per kind (the topic page — producers against consumers with the version skew
@@ -171,9 +177,20 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-**`npm run verify:ui` — 93 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 109 checks in Chromium at 1280×900, all passing.**
 
-Two fresh loads of the map put all 35 nodes at byte-identical transforms. A
+The map opens collapsed to services and draws all ten of them, with a key
+naming the three kinds of line. The number of collapsed lines equals the number
+of service pairs derivable from the topology the *other* detail level draws —
+counted from what is on screen, so the filter row cannot make the two disagree.
+Switching Events off in the key removes those lines and leaves the row there to
+switch back on; switching it on restores exactly the previous count. Clicking a
+collapsed line names what it runs through. The key itself switches off and back
+on. Everything puts the topics and stores back. A node drags, is still where it
+was put after a reload, leaves every other node where the layout put it, and
+`Reset layout` hands it back — after which the control goes away.
+
+Two fresh loads of the map put all ten nodes at byte-identical transforms. A
 `kafka.consume` edge's arrow head lands 72px from the service and 275px from the
 topic. A plain unforced click on a node fills the inspector. Selecting process
 2.1 shows exactly the 8 components `/api/process` reports. The mermaid diagram
@@ -332,11 +349,25 @@ blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
 - **`packs.mjs` keeps structure and prose apart on purpose.** The structure is
   what the verification asserts; the prose is what the screens are designed
   against. Editing one should not risk the other.
-- **The whole-estate map is dense and small.** 35 nodes laid out left to right is
-  a wide, short graph, so `fitView` zooms out and leaves vertical space. It is
-  correct and deterministic; the readable views are a focused one, a process, or
-  full screen. A `minZoom` on `fitView` is where to start if you want a better
-  default, accepting that the estate then no longer fits on one screen.
+- **The map's default view is the collapsed one, and the collapse is derived
+  per render in `web/src/graph/collapse.ts`.** Nothing it produces is stored, and
+  nothing stored depends on it: counts, search and drift all read the scanned
+  edges. If you add an edge kind, add it to `OUT`/`IN` there or it will simply
+  not appear at service level — silently, because a kind that collapses to
+  nothing is indistinguishable from one nobody uses.
+- **elk's layers wrap past an aspect ratio of 1.7.** An estate is mostly one
+  long dependency chain, so a single run of layers gives a ribbon — 1968×214 at
+  service level on the demo estate, which `fitView` renders as a row of specks.
+  Wrapping folds it to 1226×715 for the same input. Still deterministic, and a
+  graph that is already squarer comes out unchanged, so the option is a no-op
+  for a focused view or a small process.
+- **A hand-placed node wins over the layout, for as long as it is saved.** The
+  arrangement lives in `localStorage` under
+  `architecture-map.layout.<map>.<detail>` and the layout engine places only
+  what is not in it. Two consequences: a saved arrangement survives a re-scan
+  that adds nodes (the new ones are laid out around it), and a map whose
+  arrangement was saved before a big ingest can look stale until somebody hits
+  `Reset layout`. Nothing warns about that yet.
 - **Four findings are implemented but produce nothing on the demo data** —
   `near-miss`, `no-consumer`, `orphan-endpoint` and `multiple-owners`, because
   the estate does not contain those situations. The cheapest way to check one is
@@ -383,4 +414,8 @@ blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
    `process-coverage` widget exist; what is missing is the other direction —
    which processes have gone longest without anybody confirming them. `source.asOf`
    is already stored and the process page already shows its age.
-5. **A better default map view.** See the density note above.
+5. **A saved map arrangement should be shareable.** It is per browser today.
+   The obvious shape is a `layout` field on the widget's options, saved with the
+   page like everything else on it, with `localStorage` as the per-person
+   override. That is also what would let a team agree on one picture of the
+   estate rather than each drawing their own.
