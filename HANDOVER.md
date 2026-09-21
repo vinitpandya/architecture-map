@@ -37,7 +37,7 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 
 ```bash
 npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 318 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 109 more
+npm run build && npm run verify:ui   # the checks that need a browser — 113 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run prompts                      # rebuild prompts/standalone/ from prompts/ and schema/
@@ -177,7 +177,7 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-**`npm run verify:ui` — 109 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 113 checks in Chromium at 1280×900, all passing.**
 
 The map opens collapsed to services and draws all ten of them, with a key
 naming the three kinds of line. The number of collapsed lines equals the number
@@ -189,6 +189,9 @@ collapsed line names what it runs through. The key itself switches off and back
 on. Everything puts the topics and stores back. A node drags, is still where it
 was put after a reload, leaves every other node where the layout put it, and
 `Reset layout` hands it back — after which the control goes away.
+
+An external survives the collapse as a node of its own, drawn and switched off
+as the call it is rather than as a scanned edge.
 
 Two fresh loads of the map put all ten nodes at byte-identical transforms. A
 `kafka.consume` edge's arrow head lands 72px from the service and 275px from the
