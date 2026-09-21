@@ -42,8 +42,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 318 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 150 more
+npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 385 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 179 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run prompts                      # rebuild prompts/standalone/ from prompts/ and schema/
@@ -212,7 +212,7 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-**`npm run verify:ui` — 150 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 179 checks in Chromium at 1280×900, all passing.**
 
 The map opens collapsed to services and draws all ten of them, with a key
 naming the three kinds of line. The number of collapsed lines equals the number
@@ -227,6 +227,18 @@ was put after a reload, leaves every other node where the layout put it, and
 
 An external survives the collapse as a node of its own, drawn and switched off
 as the call it is rather than as a scanned edge.
+
+Isolating is offered only once something is selected. One hop leaves exactly
+the node and its neighbours — checked against the graph the map is drawing,
+not by eye — two hops reach further, and two hops from a topic reach the
+services on the other side of it, which is what the feature was built for. The
+way back is on the canvas and taking it puts the map back. Teams draws a
+labelled box per team and Columns a counted column per kind, both still drawing
+every component the compact layout drew; every service in the Columns
+arrangement is centred in the same column to within a pixel. The chord draws an
+arc per service and a ribbon per service-to-service line, its key switches a
+relation off like the map's does, hovering an arc says how much goes each way,
+and clicking one opens it in the inspector.
 
 A level 1 offers all five diagrams; a stage with one team, no handoffs and
 nothing below it offers the two it can draw. The flowchart opens on the trigger
