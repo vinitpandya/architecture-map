@@ -157,8 +157,14 @@
   flex-direction: column;
   justify-content: center;
   overflow: hidden;
-  cursor: pointer;
+  /* Nodes are draggable, so the pointer has to say so; grabbing is handled by
+     React Flow's own .dragging class on the wrapper. */
+  cursor: grab;
   transition: opacity 120ms ease;
+}
+
+.react-flow__node.dragging .map-node {
+  cursor: grabbing;
 }
 
 .map-node.topic {
@@ -242,6 +248,69 @@
 .map-legend .legend {
   margin: 0;
   gap: 8px;
+}
+
+/* The key is a stack of controls now, so it needs a title row to shut it. */
+.map-legend-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.map-legend-head .ghost {
+  padding: 0 2px;
+  line-height: 1;
+}
+
+/* Shut, it is just the way back to itself. */
+.map-legend-shut {
+  padding: 2px 7px;
+}
+
+.map-legend-shut .ghost {
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+/* A switched-off row stays legible — it is a control, not a disabled thing —
+   but reads as off at a glance. */
+.map-legend .legend-item[aria-pressed='false'] {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+
+.map-legend .segmented {
+  align-self: flex-start;
+}
+
+.map-reset {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+/* ------------------------------------------- what a derived line stands for */
+
+.map-through {
+  margin: 8px;
+  padding: 6px 9px;
+  max-width: 260px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-1) 94%, transparent);
+  border: 1px solid var(--border);
+}
+
+.map-through-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.map-through-list li {
+  margin-bottom: 2px;
 }
 
 /* ------------------------------------------------------------- inspector */

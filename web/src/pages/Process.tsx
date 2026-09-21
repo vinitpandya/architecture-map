@@ -174,7 +174,7 @@ export function ProcessPage() {
         title="On the map"
         sub="This process's components and the relationships among them — the shape the sequence diagram cannot show"
       >
-        <MapCanvas height={420} focus="" depth="all" process={process.code} />
+        <MapCanvas height={420} focus="" depth="all" process={process.code} storageKey={`p.${process.code}`} />
       </Card>
 
       <TeamsCard process={process} teams={teams} />

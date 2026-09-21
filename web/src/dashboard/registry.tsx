@@ -528,6 +528,7 @@ function MapBody({ widget }: { widget: WidgetConfig }) {
       focus={pinned || scope.focus}
       depth={pinned ? widget.options.depth || '1' : scope.depth}
       pinned={!!pinned}
+      storageKey={`w.${widget.i}`}
     />
   )
 }
@@ -1051,7 +1052,11 @@ function ProcessMapBody({ widget }: { widget: WidgetConfig }) {
       </Empty>
     )
   // Sized off the widget's grid rows, exactly as the estate map is.
-  return <MapCanvas height={bodyHeight(widget.h)} focus="" depth="all" process={code} />
+  // Keyed on the process too: this widget follows the filter row, and an
+  // arrangement drawn for one process means nothing on another.
+  return (
+    <MapCanvas height={bodyHeight(widget.h)} focus="" depth="all" process={code} storageKey={`w.${widget.i}.${code}`} />
+  )
 }
 
 function ProcessHandoffsBody({ widget }: { widget: WidgetConfig }) {

@@ -362,6 +362,48 @@ the git log rather than here. Three were judgement calls:
   house style has a table, and a cell that is a link is worth more than a cell
   that is a shade.
 
+## The map's two detail levels
+
+- **The collapse is derived on the client and never stored.** Service → service
+  is not a fact the scan found; it is an inference from two facts it did find.
+  Writing it to `edges` would make it indistinguishable from a scanned edge and
+  put it in the drift pass, the search index and every count. It lives in
+  `web/src/graph/collapse.ts`, is recomputed per render, and every line keeps
+  the ids it came from so a click can cite them.
+- **Three kinds of relationship, not one and not five.** Events (a topic),
+  calls (an endpoint) and shared stores (a database or cache). `depends.on`
+  and `topic.schema` are deliberately excluded: collapsing shared contracts on
+  the demo estate gives 40 pairs out of a possible 45, which draws a line from
+  everything to everything and says nothing. The three kept give 14, 9 and 6.
+- **Each derived line takes the colour of what it swallowed** — a topic's for
+  an event, an endpoint's for a call, a database's for a store — so switching
+  detail levels does not recolour the estate. A shared store is dotted rather
+  than solid because nobody chose it as an interface and it should not look
+  like a call.
+- **Externals are not collapsed.** A call to Stripe has nothing on the far side
+  to collapse into, and "who do we depend on outside" is one of the questions
+  the service view is for.
+- **A service nothing connects to is still drawn.** An island is a finding.
+- **The estate opens collapsed, a process map opens whole.** A process's
+  components *are* its topics and stores; collapsing them would leave a diagram
+  of two services. The choice is remembered per map.
+- **What the key hides is scoped to the encoding the key is showing.** Hiding a
+  team while colouring by team, then switching to Kind, un-hides it: a control
+  that is hiding something must stay in front of you. The key is also drawn
+  from what the level *could* show rather than what survived the toggles, or a
+  row switched off would vanish with no way back.
+- **Nothing hidden is remembered across a reload.** Detail level and hand-placed
+  nodes are; a hidden kind is not. Coming back to a map with half the estate
+  missing and no memory of having done it is the worst of the three.
+- **An arrangement is per map and per detail level.** Two maps on a page are two
+  maps, and the two levels do not share a node set, so they cannot share an
+  arrangement. `Reset layout` appears only when there is something to reset.
+- **The layers wrap past 1.7:1.** Laid out in one run, the demo estate at
+  service level is 1968×214 — a ribbon of specks in a landscape panel. elk's
+  layered wrapping folds it to 1226×715 for the same input, deterministically,
+  and leaves a graph that is already squarer exactly as it was. Still layered,
+  still never force.
+
 ## Working
 
 - **`npm run verify` was added** — SPEC.md §14 as a runnable check, over HTTP,

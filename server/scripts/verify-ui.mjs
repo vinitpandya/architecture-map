@@ -152,6 +152,18 @@ const nodePositions = (page) =>
     Object.fromEntries(els.map((e) => [e.getAttribute('data-id'), e.style.transform]))
   )
 
+/** The map opens collapsed to services; most of these checks are about the
+ *  scanned topology, which is the other detail level. */
+const showEverything = async (page) => {
+  await page.click('.map-detail button:has-text("Everything")')
+  await page.waitForTimeout(1600)
+}
+
+const kindsOnScreen = (page) =>
+  page.$$eval('.react-flow__node', (els) => [
+    ...new Set(els.map((e) => e.getAttribute('data-id').split(':')[0])),
+  ])
+
 /* ---- SPEC.md §14 Phase 5: the map */
 
 console.log('\nSPEC.md §14 Phase 5 — the map')
@@ -163,6 +175,95 @@ await setScope('map', null)
   const first = await nodePositions(page)
   ok('the map renders', Object.keys(first).length > 0, `${Object.keys(first).length} nodes`)
   ok('no horizontal page scroll at 1280px', await noSideScroll(page))
+
+  /* ---- the service-level view, which is what the map opens on */
+
+  const graph = await api('/graph')
+  const collapsedKinds = await kindsOnScreen(page)
+  ok(
+    'the map opens collapsed to services',
+    collapsedKinds.every((k) => k === 'svc' || k === 'ext'),
+    collapsedKinds.join(', ')
+  )
+  const serviceCount = graph.nodes.filter((n) => n.kind === 'service').length
+  is('  …and draws every service, including any nothing connects to',
+    (await page.$$('.react-flow__node')).length, serviceCount)
+  const relationKey = await page.$$eval('.map-legend .legend-item', (els) => els.map((e) => e.textContent.trim()))
+  ok(
+    '  …with a key naming what the lines stand for',
+    ['Events', 'Calls', 'Shared stores'].every((l) => relationKey.includes(l)),
+    relationKey.join(', ')
+  )
+
+  // Every collapsed line has to be derivable from two scanned edges, so the
+  // count is checkable rather than a matter of taste. It is derived below,
+  // from the topology this same map draws at the other detail level — the
+  // filter row decides what is in the graph at all, and both views obey it.
+  const collapsedEdges = (await page.$$('.react-flow__edge')).length
+
+  // The key is a control, not a caption.
+  const drawn = () => page.$$eval('.react-flow__edge', (els) => els.length)
+  const withEvents = await drawn()
+  await page.click('.map-legend .legend-item:has-text("Events")')
+  await page.waitForTimeout(700)
+  const withoutEvents = await drawn()
+  ok('switching Events off in the key removes those lines', withoutEvents < withEvents,
+    `${withEvents} → ${withoutEvents}`)
+  ok('  …and the row stays in the key so it can be switched back on',
+    (await page.$$('.map-legend .legend-item:has-text("Events")')).length === 1)
+  await page.click('.map-legend .legend-item:has-text("Events")')
+  await page.waitForTimeout(700)
+  is('  …and switching it back on restores them', await drawn(), withEvents)
+
+  // A derived line must be able to say what it collapsed.
+  const derivedId = await page.$$eval('.react-flow__edge', (els) =>
+    els.map((e) => e.getAttribute('data-id')).find((id) => /\|(event|call|store)\|/.test(id))
+  )
+  await page.click(`.react-flow__edge[data-id="${derivedId}"] .react-flow__edge-interaction`, { force: true })
+  await page.waitForSelector('.map-through', { timeout: 5000 })
+  const through = await page.$$eval('.map-through-list a', (els) => els.map((e) => e.textContent))
+  ok('clicking a collapsed line says what it runs through', through.length > 0, through.join(', '))
+  await page.click('.map-through [aria-label="Close"]')
+
+  // The key itself.
+  await page.click('.map-legend [aria-label="Hide the key"]')
+  await page.waitForTimeout(300)
+  is('the key can be switched off', (await page.$$('.map-legend .legend-item')).length, 0)
+  await page.click('.map-legend [aria-label="Show the key"]')
+  await page.waitForTimeout(300)
+  ok('  …and back on', (await page.$$('.map-legend .legend-item')).length > 0)
+
+  await showEverything(page)
+  const fullKinds = await kindsOnScreen(page)
+  ok(
+    'Everything puts the topics and stores back',
+    fullKinds.includes('topic') && fullKinds.includes('db'),
+    fullKinds.join(', ')
+  )
+
+  const shownNodes = await page.$$eval('.react-flow__node', (els) => els.map((e) => e.getAttribute('data-id')))
+  const shownEdges = await page.$$eval('.react-flow__edge', (els) => els.map((e) => e.getAttribute('data-id')))
+  const expectedPairs = (() => {
+    const OUT = { event: ['kafka.produce'], call: ['http.call'], store: ['db.write', 'db.owns', 'cache.write'] }
+    const IN = { event: ['kafka.consume'], call: ['http.expose'], store: ['db.read', 'cache.read'] }
+    const on = new Set(shownNodes)
+    const kind = Object.fromEntries(graph.nodes.map((n) => [n.id, n.kind]))
+    const edges = graph.edges.filter((e) => shownEdges.includes(e.id))
+    const pairs = new Set()
+    for (const rel of ['event', 'call', 'store']) {
+      for (const a of edges.filter((e) => OUT[rel].includes(e.kind) && kind[e.from] === 'service')) {
+        for (const b of edges.filter((e) => IN[rel].includes(e.kind) && e.to === a.to && e.from !== a.from)) {
+          if (on.has(a.from) && on.has(b.from)) pairs.add(`${a.from}|${rel}|${b.from}`)
+        }
+      }
+    }
+    // An external has nothing on the far side to collapse into, so its edge
+    // survives as itself.
+    for (const e of edges) if (kind[e.to] === 'external') pairs.add(e.id)
+    return pairs.size
+  })()
+  is('  …and the service view drew one line per pair of services per relationship',
+    collapsedEdges, expectedPairs)
 
   const arrow = await page.evaluate(async () => {
     const g = await (await fetch('/api/graph')).json()
@@ -207,6 +308,40 @@ await setScope('map', null)
     moved.length === 0,
     moved.length ? `${moved.length} moved` : `${Object.keys(again).length} nodes identical`
   )
+
+  /* ---- dragging, which is the point of the saved arrangement */
+
+  const before = await nodePositions(second.page)
+  const target = await second.page.$('.react-flow__node[data-id^="svc:"]')
+  const box = await target.boundingBox()
+  await second.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await second.page.mouse.down()
+  await second.page.mouse.move(box.x + box.width / 2 + 150, box.y + box.height / 2 + 110, { steps: 12 })
+  await second.page.mouse.up()
+  await second.page.waitForTimeout(800)
+  const after = await nodePositions(second.page)
+  const dragged = Object.keys(before).filter((id) => before[id] !== after[id])
+  is('a node can be dragged', dragged.length, 1)
+
+  await second.page.reload({ waitUntil: 'networkidle' })
+  await second.page.waitForSelector('.map-node', { timeout: 30000 })
+  await second.page.waitForTimeout(1800)
+  const reloaded = await nodePositions(second.page)
+  ok(
+    '  …and is still where it was put after a reload',
+    dragged.every((id) => reloaded[id] === after[id]),
+    dragged.map((id) => `${id}: ${after[id]}`).join(', ')
+  )
+  ok('  …while every other node stayed where the layout put it',
+    Object.keys(before).filter((id) => !dragged.includes(id)).every((id) => reloaded[id] === before[id]))
+
+  await second.page.click('.map-reset')
+  await second.page.waitForTimeout(1200)
+  const reset = await nodePositions(second.page)
+  ok('Reset layout puts it back where the layout wanted it',
+    dragged.every((id) => reset[id] === before[id]))
+  is('  …and the Reset control goes away with nothing left to reset',
+    (await second.page.$$('.map-reset')).length, 0)
   await second.ctx.close()
 }
 
@@ -226,6 +361,7 @@ console.log('\nSPEC-PROCESSES.md §10 Phase 11 — processes in the browser')
   const { ctx, page, problems } = await open('/')
   await page.waitForSelector('.map-node', { timeout: 30000 })
   await page.waitForTimeout(1400)
+  await showEverything(page)
   is(
     'the map shows exactly the process’s components',
     (await page.$$('.react-flow__node')).length,

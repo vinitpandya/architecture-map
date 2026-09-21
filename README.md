@@ -55,7 +55,7 @@ npm run build && npm start           # production build, UI and API on one port
 
 | Page | |
 |---|---|
-| **Map** | The estate as a graph. Focus, depth, kinds and repos across the top; a node inspector on the right. Click to select, double-click to re-focus — the back button undoes it. |
+| **Map** | The estate as a graph, at either of two detail levels. Focus, depth, kinds and repos across the top; a node inspector on the right. Click to select, double-click to re-focus — the back button undoes it. |
 | **Estate** | Counts, the service and topic lists, and what has been scanned. |
 | **Messaging** | Topics, and producers against consumers for whichever one is in focus. |
 | **Contracts** | Who binds which version of what, and where they diverge. |
@@ -72,6 +72,29 @@ Clicking anything lands on a detail page for that node, which is shaped by what
 the node is: producers and consumers for a topic, owner/writers/readers for a
 database, every binding version for a contract — and, on all of them, the
 business processes that run through it.
+
+### Two detail levels
+
+The map opens at **Services**: every service, with one line per pair for each
+kind of relationship between them — an event through a Kafka topic, a call
+through an endpoint, a shared database or cache. The topics and stores
+themselves are collapsed into the line they carry, so ten services read as ten
+services rather than as forty boxes. Click a line and it says what it runs
+through, with a link to each one.
+
+**Everything** puts them back: the scan exactly as it was stored.
+
+The collapse is derived for display and never written down — service → service
+is an inference from two scanned facts, not a fact the scan found — so nothing
+counted, searched or checked for drift is affected by which level you are
+looking at.
+
+The key doubles as a set of switches: turn off shared stores, or databases, or
+a whole team, and the map redraws without them. It can also be shut away
+entirely. Nodes drag, snap to a grid and stay where you put them — per map and
+per detail level, with a `Reset layout` to hand it back to the layout engine.
+
+### A process on the map
 
 Pick a process in the filter row and the map draws only that process: every
 service, endpoint, cache and topic it runs through, across every repository.
