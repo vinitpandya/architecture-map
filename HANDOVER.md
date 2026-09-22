@@ -590,10 +590,17 @@ committed, being a throwaway.
   it before dragging, and why it can be shut at all. Both panels are width
   capped for the same reason: uncapped, the key reached across a narrow card
   and sat on top of whatever the map was saying in the other corner.
-- **The chord's geometry is in `web/src/graph/chord.ts`, written rather than
-  imported.** It is pure and deterministic; `Chord.tsx` is only the drawing. An
-  arc is sized by out *and* in together, which is where it departs from d3's
-  default and the reason a service everybody calls still gets an arc.
+- **The chord's geometry is in `web/src/graph/chordLayout.ts`, written rather
+  than imported.** It is pure and deterministic; `Chord.tsx` is only the
+  drawing. An arc is sized by out *and* in together, which is where it departs
+  from d3's default and the reason a service everybody calls still gets an arc.
+  It is *not* called `chord.ts`, and must not be: a resolver on a
+  case-insensitive filesystem tries `.ts` before `.tsx`, so `./Chord` answered
+  with `chord.ts` and the app rendered a blank screen on every Mac while
+  building and verifying cleanly on Linux. The `map` stage now fails on any two
+  modules under `web/src`, `server/src` or `server/scripts` whose names differ
+  only in case — it is the one class of defect this repository's own machine
+  cannot reproduce.
 - **`next` is the departures from the numbering, not the sequence.** A process
   with no `next` falls through to the next sibling exactly as it always did, so
   every pack written before this draws the same straight line. If you add a

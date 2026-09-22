@@ -13,6 +13,12 @@ import { collapseToServices, isDerived, type Relation } from './collapse'
  * What it draws is the same relation the map's Services view draws — an event
  * through a topic, a call through an endpoint, a shared store — so the two
  * cannot disagree about what a connection is.
+ *
+ * Named `chordLayout` rather than `chord` because `Chord.tsx` renders it, and
+ * a resolver on a case-insensitive filesystem answers `./Chord` with this file
+ * — `.ts` is tried before `.tsx` — leaving the import with no `Chord` in it.
+ * On Linux the two names never meet, so this is invisible until somebody opens
+ * the repository on a Mac and gets a blank screen.
  */
 
 export type ChordArc = {

@@ -617,6 +617,13 @@ the git log rather than here. Three were judgement calls:
 - **An accepted finding is greyed and moved to the end, not hidden.** Hiding it
   would move a count for a reason the reader cannot see, and it has not stopped
   being true.
+- **The chord layout module is `chordLayout.ts`, not `chord.ts`.** Beside
+  `Chord.tsx` the two names are one import specifier on a case-insensitive
+  filesystem, and `.ts` is tried first, so `./Chord` resolved to the geometry
+  and the app rendered nothing on a Mac. Renaming the module is the fix rather
+  than adding an extension to the import, because the next file added beside
+  them would hit it again — which is also why the `map` stage now refuses any
+  two modules that differ only in case.
 - **The `map` verification stage imports the app's own TypeScript.** Node reads
   `.ts` directly but not Vite's extensionless imports, so the stage registers a
   resolver hook for its own process rather than putting `.ts` suffixes through

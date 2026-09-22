@@ -2090,6 +2090,39 @@ if (stage === 'map') {
     },
   })
 
+  /* ---- two modules a case-insensitive filesystem cannot tell apart.
+
+     `Chord.tsx` and `chord.ts` are distinct files on Linux and the same
+     import specifier on a Mac: a resolver tries `.ts` before `.tsx`, so
+     `./Chord` answered with `chord.ts`, the `Chord` export was not there, and
+     the whole app rendered a blank screen. It built, and both suites passed,
+     because the machine they ran on has a case-sensitive filesystem.
+
+     Nothing else here can catch that, so this does: no two files in a
+     directory may share a name that differs only in case, extension aside. */
+  {
+    const roots = ['web/src', 'server/src', 'server/scripts']
+    const clashes = []
+    const walk = (dir) => {
+      const seen = new Map()
+      for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          walk(path.join(dir, entry.name))
+          continue
+        }
+        const base = entry.name.replace(/\.[^.]+$/, '').toLowerCase()
+        if (seen.has(base)) clashes.push(`${dir}/${seen.get(base)} <-> ${dir}/${entry.name}`)
+        else seen.set(base, entry.name)
+      }
+    }
+    for (const r of roots) walk(r)
+    ok(
+      'no two modules differ only in case, which a Mac cannot resolve',
+      clashes.length === 0,
+      clashes.join(' | ')
+    )
+  }
+
   console.log('\nThe service view — collapse, and where it stops')
   const { collapseToServices } = await import('../../web/src/graph/collapse.ts')
 

@@ -3,7 +3,7 @@ import type { GraphData } from '../lib/api'
 import { useMeasure } from '../components/ui'
 import { KIND_COLOR, NO_TEAM_COLOR } from '../lib/nodes'
 import { RELATION_COLOR, RELATION_LABEL } from './collapse'
-import { arcPath, chordLayout, point, ribbonPath } from './chord'
+import { arcPath, chordLayout, point, ribbonPath } from './chordLayout'
 
 /**
  * Who talks to whom, as a circle.
