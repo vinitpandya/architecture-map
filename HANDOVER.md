@@ -51,6 +51,7 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```bash
 npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 452 assertions
 npm run build && npm run verify:ui   # the checks that need a browser — 191 more
+npm run verify:dev                   # the 11 that only fail in dev mode
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run prompts                      # rebuild prompts/standalone/ from prompts/ and schema/
@@ -254,6 +255,18 @@ And the handoff diagram's rollup collapse: one crossing reported at three
 depths draws once and at the depth that happens; two far ends over one topic
 draw twice; a leaf crossing is not swallowed by a rollup over the same topic;
 a verbatim duplicate draws once rather than never.
+
+**`npm run verify:dev` — 11 checks, one per page, all passing.**
+
+The other two suites drive the production build, which is the right thing to
+assert about but is not what anybody runs while working. React only warns
+about a render loop in development, and `<StrictMode>` only double-invokes
+renders, effects and memo factories there — which is exactly what turns an
+unstable `useMemo` dependency from a wasted recomputation into a component
+that re-renders until React gives up. A map that did that shipped green
+through 452 server assertions and 191 browser checks, because neither of them
+runs the build that says so. This one opens every page against `npm run dev`
+and fails on any console error.
 
 **`npm run verify:ui` — 191 checks in Chromium at 1280×900, all passing.**
 
@@ -615,6 +628,12 @@ committed, being a throwaway.
   lives in `available()` in `web/src/graph/processDiagrams.ts` and it shares
   `laneSplit()` with the lane generator on purpose — the two answering
   differently is how you get a tab that renders one lane.
+- **A green `verify` and `verify:ui` do not mean the dev server is clean.**
+  Both drive the production build. React's render-loop warning and
+  StrictMode's double-invocation are development-only, so a component that
+  re-renders itself for ever is invisible to them — that is exactly how one
+  shipped. `npm run verify:dev` is the one that catches it, and it is worth
+  running before saying a UI change is done.
 - **`verify:ui` serves `web/dist`, not your source.** It is the production
   build it drives, so a change to `web/src` that has not been rebuilt is
   silently not under test — the suite runs green against the previous bundle

@@ -17,6 +17,7 @@
     "seed:demo": "node server/scripts/seed-demo.mjs",
     "verify": "node server/scripts/verify.mjs",
     "verify:ui": "node server/scripts/verify-ui.mjs",
+    "verify:dev": "node server/scripts/verify-dev.mjs",
     "prompts": "node server/scripts/build-prompts.mjs"
   },
   "devDependencies": {

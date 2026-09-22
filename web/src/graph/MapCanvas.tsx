@@ -94,6 +94,10 @@ type Surface = 'map' | 'chord'
  * lines to read, which is a different moment from deciding what the map covers.
  */
 const HOPS = [0, 1, 2, Infinity] as const
+
+/** One array for "nothing yet", so an absent graph is not a new dependency
+ *  on every render. */
+const EMPTY_NODES: GraphNode[] = []
 type Hops = (typeof HOPS)[number]
 
 const HOP_LABEL = (h: Hops) => (h === 0 ? 'Off' : h === Infinity ? 'All' : String(h))
@@ -221,8 +225,16 @@ export function MapCanvas({
   const flow = useRef<ReactFlowInstance | null>(null)
   const urlFocus = useRef<string | null>(null)
 
-  const all = data?.nodes ?? []
-  const teamSlot = useMemo(() => teamColours(all.map((n) => n.teamId)), [all])
+  const all = useMemo(() => data?.nodes ?? EMPTY_NODES, [data])
+  /* Keyed on the teams themselves rather than on the array holding them. The
+     array is a fresh `[]` on every render before the graph arrives, and React
+     18's StrictMode re-runs a memo's factory to prove it is pure — either way
+     an identity dep here re-made this Map on every render, and `computed`
+     below takes it as a dependency, so `setRfNodes` ran on every render and
+     asked for another one. That is the loop. */
+  const teamKey = all.map((n) => n.teamId ?? '').join('\u0000')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const teamSlot = useMemo(() => teamColours(all.map((n) => n.teamId)), [teamKey])
 
   // What is actually drawn: the collapse, then whatever the key has switched
   // off. Hiding a kind removes its nodes and every line that ran through one.

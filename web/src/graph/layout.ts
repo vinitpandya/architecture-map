@@ -249,6 +249,21 @@ export async function layoutGraph(
   let laid: ElkNode
   try {
     laid = await Promise.race([elk().then((e) => e.layout(graph)), deadline])
+  } catch (err) {
+    /* A worker that has failed once is never asked again.
+     *
+     * elk is Java compiled to JavaScript and keeps module-level state, so a
+     * run that threw — a stack overflow above all, which is how it fails on a
+     * graph too dense for it — leaves that state half-finished. The next
+     * layout on the same worker then dies somewhere unrelated and much harder
+     * to read: reading a field off an undefined progress monitor, say, which
+     * says nothing about the graph that actually caused it.
+     *
+     * The deadline already throws its worker away. This is the same rule for
+     * the other way a layout ends: whatever went wrong, the next map gets a
+     * worker that has never seen it. */
+    discardEngine()
+    throw err
   } finally {
     clearTimeout(timer)
   }

@@ -617,6 +617,20 @@ the git log rather than here. Three were judgement calls:
 - **An accepted finding is greyed and moved to the end, not hidden.** Hiding it
   would move a count for a reason the reader cannot see, and it has not stopped
   being true.
+- **A memo whose dependency is an array gets a key instead.** `teamSlot` took
+  `data?.nodes ?? []` as its dependency: a fresh `[]` before the graph
+  arrives, and re-made anyway by StrictMode's double-invocation. `computed`
+  depends on it and an effect pushes `computed` into state, so the map
+  re-rendered itself until React gave up. It is keyed on the team ids joined
+  into a string now — identity deps are only safe when the identity is.
+- **A failed elk worker is thrown away, not reused.** elk is Java compiled to
+  JavaScript with module-level state; a run that threw leaves it half-finished
+  and the next layout dies somewhere unrelated. The deadline already discarded
+  its worker; every other failure now does too.
+- **There is a third verification suite, for development mode only.** The
+  other two drive the production build, where React does not warn about render
+  loops and StrictMode does not double-invoke. That is not a gap worth living
+  with when the dev server is what the app is actually used in.
 - **A team is displayed from the registry, never from the manifest.** The
   services list showed `service.team` verbatim, so it read `wallet` where the
   registry says `Wallet` and went on saying it after the team was merged into
