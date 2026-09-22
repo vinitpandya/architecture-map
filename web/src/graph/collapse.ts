@@ -161,15 +161,66 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
     }
   }
 
+  /**
+   * Whether an intermediary has a service missing from one of its ends.
+   *
+   * This is the difference between a relationship that cannot be collapsed
+   * and one that has nothing to collapse. A service that writes and reads its
+   * own database is both ends of it: no line is drawn because there is no
+   * second service, and that is correct — it is a detail of one service, and
+   * the full view is one control away. An endpoint somebody calls and nobody
+   * exposes is a different thing entirely: the far end is *absent*, and
+   * collapsing it deletes the call.
+   */
+  const missingAnEnd = (mid: string) => {
+    const rels = new Set<Relation>([
+      ...(producers.get(mid)?.keys() ?? []),
+      ...(consumers.get(mid)?.keys() ?? []),
+    ])
+    for (const rel of rels) {
+      if (!producers.get(mid)?.get(rel)?.size || !consumers.get(mid)?.get(rel)?.size) return true
+    }
+    return false
+  }
+
+  /*
+   * And which cannot be collapsed at all, which is the more common case and
+   * was the more damaging one.
+   *
+   * Collapsing an intermediary needs a service at each end. An endpoint that
+   * somebody calls and nobody scanned exposes has only one end — which is
+   * what a real estate is full of, because a caller names an endpoint from a
+   * hostname and rarely spells it the way the provider does. That is exactly
+   * what `orphan-endpoint` and `near-miss` are findings about.
+   *
+   * Collapsed, such a thing produced no line and was then dropped as a node
+   * too, so the call simply was not on the map: a service's whole REST
+   * surface could be missing with nothing to say so. The same silence hid a
+   * topic nobody consumes and one nobody produces.
+   *
+   * So an intermediary with an end missing is kept as itself, and the scan's
+   * own edge to it is drawn. The line is a real one and wears its relation's
+   * colour, so a call that goes nowhere looks like a call that goes nowhere
+   * rather than like nothing at all.
+   */
+  const stranded = new Set<string>()
+  for (const mid of new Set([...producers.keys(), ...consumers.keys()])) {
+    if (isService(mid) || isExternal(mid) || hubs.has(mid)) continue
+    if (missingAnEnd(mid)) stranded.add(mid)
+  }
+
+  /** Every intermediary the map keeps as a node rather than as a line. */
+  const asNodes = new Set([...hubs, ...stranded])
+
   const keep = data.nodes.filter(
-    (n) => n.kind === 'service' || n.kind === 'external' || hubs.has(n.id)
+    (n) => n.kind === 'service' || n.kind === 'external' || asNodes.has(n.id)
   )
   const kept = new Set(keep.map((n) => n.id))
 
   // One line per (from, to, relation), listing everything it stands for.
   const lines = new Map<string, ServiceEdge>()
   for (const [mid, byRel] of producers) {
-    if (hubs.has(mid)) continue
+    if (asNodes.has(mid)) continue
     for (const [rel, from] of byRel) {
       for (const [to, inbound] of consumers.get(mid)?.get(rel) ?? []) {
         if (!from.size) continue
@@ -212,13 +263,14 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
     }
   }
 
-  /* A hub is on the map as itself, so what reaches it is the scan's own
-     edges — a real kind, a real confidence, a real repo — rather than
-     anything derived. `through` is empty for the same reason it is empty for
-     an external: nothing was collapsed into this line. */
+  /* An intermediary kept as itself — a hub, or one that could not be
+     collapsed — has the scan's own edges drawn to it: a real kind, a real
+     confidence, a real repo, rather than anything derived. `through` is empty
+     for the same reason it is empty for an external: nothing was collapsed
+     into this line. */
   const spokes: ServiceEdge[] = []
-  for (const e of hubs.size ? data.edges : []) {
-    if (!hubs.has(e.from) && !hubs.has(e.to)) continue
+  for (const e of asNodes.size ? data.edges : []) {
+    if (!asNodes.has(e.from) && !asNodes.has(e.to)) continue
     if (!kept.has(e.from) || !kept.has(e.to)) continue
     const rel = relationOf(e.kind)
     if (!rel) continue

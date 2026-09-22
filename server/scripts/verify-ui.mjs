@@ -158,6 +158,74 @@ const setScope = (slug, scope) =>
  *  nodes as well, and none of these checks is ever asking about those. */
 const MAP_NODE = '.react-flow__node:not(:has(.map-group))'
 
+const OUT_KIND = { event: ['kafka.produce'], call: ['http.call'], store: ['db.write', 'db.owns', 'cache.write'] }
+const IN_KIND = { event: ['kafka.consume'], call: ['http.expose'], store: ['db.read', 'cache.read'] }
+
+/**
+ * What the service view should hold, worked out from the graph rather than
+ * read off the screen — so the check can disagree with the implementation.
+ *
+ * Collapsing an intermediary needs a service at each end. One with an end
+ * missing — an endpoint somebody calls and nobody exposes, a topic nobody
+ * produces — cannot be collapsed and is kept as a node, because collapsing it
+ * would delete the relationship rather than summarise it. One that only its
+ * own service touches is collapsed away as before: that is a detail of one
+ * service, not traffic between two.
+ */
+function serviceViewOf(graph, edgeIds) {
+  const kind = Object.fromEntries(graph.nodes.map((n) => [n.id, n.kind]))
+  const edges = edgeIds ? graph.edges.filter((e) => edgeIds.includes(e.id)) : graph.edges
+  const ends = new Map() // mid -> rel -> { from: Set, to: Set }
+  const at = (mid, rel) => {
+    if (!ends.has(mid)) ends.set(mid, new Map())
+    if (!ends.get(mid).has(rel)) ends.get(mid).set(rel, { from: new Set(), to: new Set() })
+    return ends.get(mid).get(rel)
+  }
+  for (const e of edges) {
+    if (kind[e.from] !== 'service') continue
+    for (const rel of ['event', 'call', 'store']) {
+      if (OUT_KIND[rel].includes(e.kind)) at(e.to, rel).from.add(e.from)
+      if (IN_KIND[rel].includes(e.kind)) at(e.to, rel).to.add(e.from)
+    }
+  }
+  const asNodes = new Set()
+  for (const [mid, byRel] of ends) {
+    if (kind[mid] === 'service' || kind[mid] === 'external') continue
+    for (const [, side] of byRel) {
+      const hub = side.from.size > 1 && side.to.size > 1 && side.from.size * side.to.size > 12
+      if (hub || !side.from.size || !side.to.size) asNodes.add(mid)
+    }
+  }
+  /* Every service, whether or not anything connects to it — an island is a
+     finding, not a rendering accident. Externals only where a line on screen
+     reaches one, because the filter row decides whether they are in the graph
+     at all and this has to describe the same graph the map was given. */
+  const touched = new Set(edges.flatMap((e) => [e.from, e.to]))
+  const nodes = new Set([
+    ...graph.nodes.filter((n) => n.kind === 'service').map((n) => n.id),
+    ...graph.nodes.filter((n) => n.kind === 'external' && touched.has(n.id)).map((n) => n.id),
+    ...asNodes,
+  ])
+  const lines = new Set()
+  for (const [mid, byRel] of ends) {
+    if (asNodes.has(mid)) continue
+    for (const [rel, side] of byRel) {
+      for (const a of side.from) for (const b of side.to) if (a !== b) lines.add(`${a}|${rel}|${b}`)
+    }
+  }
+  for (const e of edges) {
+    // What reaches a kept intermediary, and what leaves for an external, are
+    // the scan's own edges rather than anything derived.
+    const relational = ['event', 'call', 'store'].some(
+      (r) => OUT_KIND[r].includes(e.kind) || IN_KIND[r].includes(e.kind)
+    )
+    if (!relational) continue
+    if (kind[e.to] === 'external' && kind[e.from] === 'service') lines.add(e.id)
+    else if ((asNodes.has(e.from) || asNodes.has(e.to)) && nodes.has(e.from) && nodes.has(e.to)) lines.add(e.id)
+  }
+  return { nodes, asNodes, lines: lines.size }
+}
+
 const nodePositions = (page) =>
   page.$$eval(MAP_NODE, (els) =>
     Object.fromEntries(els.map((e) => [e.getAttribute('data-id'), e.style.transform]))
@@ -190,15 +258,27 @@ await setScope('map', null)
   /* ---- the service-level view, which is what the map opens on */
 
   const graph = await api('/graph')
-  const collapsedKinds = await kindsOnScreen(page)
+  const onScreen = await page.$$eval(MAP_NODE, (els) => els.map((e) => e.getAttribute('data-id')))
+  const drawnIds = await page.$$eval('.react-flow__edge', (els) => els.map((e) => e.getAttribute('data-id')))
+  const expected = serviceViewOf(graph, drawnIds)
+  is('the map opens collapsed to services', onScreen.length, expected.nodes.size)
   ok(
-    'the map opens collapsed to services',
-    collapsedKinds.every((k) => k === 'svc' || k === 'ext'),
-    collapsedKinds.join(', ')
+    '  …drawing every service, including any nothing connects to',
+    graph.nodes.filter((n) => n.kind === 'service').every((n) => onScreen.includes(n.id)),
+    graph.nodes.filter((n) => n.kind === 'service' && !onScreen.includes(n.id)).map((n) => n.id).join(', ')
   )
-  const serviceCount = graph.nodes.filter((n) => n.kind === 'service').length
-  is('  …and draws every service, including any nothing connects to',
-    (await page.$$(MAP_NODE)).length, serviceCount)
+  /* And the intermediaries that could not be collapsed, which is the whole of
+     a service's REST surface when nothing scanned exposes what it calls. */
+  ok(
+    '  …and any intermediary with an end missing, rather than deleting the line',
+    [...expected.asNodes].every((id) => onScreen.includes(id)),
+    [...expected.asNodes].filter((id) => !onScreen.includes(id)).join(', ') || `${expected.asNodes.size} of them`
+  )
+  ok(
+    '  …while one only its own service touches is still collapsed away',
+    onScreen.every((id) => expected.nodes.has(id)),
+    onScreen.filter((id) => !expected.nodes.has(id)).join(', ')
+  )
   const relationKey = await page.$$eval('.map-legend .legend-item', (els) => els.map((e) => e.textContent.trim()))
   ok(
     '  …with a key naming what the lines stand for',
@@ -323,29 +403,8 @@ await setScope('map', null)
     )
   }
 
-  const shownNodes = await page.$$eval(MAP_NODE, (els) => els.map((e) => e.getAttribute('data-id')))
-  const shownEdges = await page.$$eval('.react-flow__edge', (els) => els.map((e) => e.getAttribute('data-id')))
-  const expectedPairs = (() => {
-    const OUT = { event: ['kafka.produce'], call: ['http.call'], store: ['db.write', 'db.owns', 'cache.write'] }
-    const IN = { event: ['kafka.consume'], call: ['http.expose'], store: ['db.read', 'cache.read'] }
-    const on = new Set(shownNodes)
-    const kind = Object.fromEntries(graph.nodes.map((n) => [n.id, n.kind]))
-    const edges = graph.edges.filter((e) => shownEdges.includes(e.id))
-    const pairs = new Set()
-    for (const rel of ['event', 'call', 'store']) {
-      for (const a of edges.filter((e) => OUT[rel].includes(e.kind) && kind[e.from] === 'service')) {
-        for (const b of edges.filter((e) => IN[rel].includes(e.kind) && e.to === a.to && e.from !== a.from)) {
-          if (on.has(a.from) && on.has(b.from)) pairs.add(`${a.from}|${rel}|${b.from}`)
-        }
-      }
-    }
-    // An external has nothing on the far side to collapse into, so its edge
-    // survives as itself.
-    for (const e of edges) if (kind[e.to] === 'external') pairs.add(e.id)
-    return pairs.size
-  })()
   is('  …and the service view drew one line per pair of services per relationship',
-    collapsedEdges, expectedPairs)
+    collapsedEdges, serviceViewOf(graph, await page.$$eval('.react-flow__edge', (els) => els.map((e) => e.getAttribute('data-id')))).lines)
 
   const arrow = await page.evaluate(async () => {
     const g = await (await fetch('/api/graph')).json()
@@ -564,11 +623,16 @@ await setScope('map', null)
   await page.click('.map-surface button:has-text("Chord")')
   await page.waitForTimeout(1600)
 
-  const services = (await api('/graph')).nodes.filter((n) => n.kind === 'service').length
-  /* Two bands per arc, not one: what the service sends and what it receives.
-     That split is what makes the circle directional without spending a colour
-     — the relation already has the colour — so it is the count that matters. */
-  is('the chord draws two bands per service', (await page.$$('.chord-arc')).length, services * 2)
+  /* An arc for everything the service view keeps — the services, the
+     externals, and any intermediary that could not be collapsed — and two
+     bands on each, what it sends and what it receives. The split is what
+     makes the circle directional without spending a colour, since the
+     relation already has the colour, so it is the count that matters. */
+  const chordGraph = await api('/graph')
+  const arcNodes = serviceViewOf(chordGraph).nodes.size
+  const bands = (await page.$$('.chord-arc')).length
+  ok('the chord draws two bands per arc', bands % 2 === 0 && bands / 2 <= arcNodes, `${bands / 2} arcs of at most ${arcNodes}`)
+  ok('  …one per service that connects to anything', bands / 2 >= chordGraph.nodes.filter((n) => n.kind === 'service').length, `${bands / 2}`)
   const labels = await page.$$eval('.chord-label', (els) => els.map((e) => e.textContent ?? ''))
   ok('  …labelled', labels.includes('Order Service'), labels.join(', '))
   const ribbons = (await page.$$('.chord-ribbons path')).length
@@ -654,17 +718,21 @@ await setScope('map', null)
     `${strokes.external} against ${strokes.call}`
   )
 
-  const before = (await page.$$('.react-flow__edge')).length
-  const externals = await page.$$eval('.react-flow__edge', (els) =>
-    els.filter((e) => !/\|(event|call|store)\|/.test(e.getAttribute('data-id'))).length
-  )
-  const derivedCalls = await page.$$eval('.react-flow__edge', (els) =>
-    els.filter((e) => /\|call\|/.test(e.getAttribute('data-id'))).length
-  )
+  /* Every line the key calls a Call, whether it was derived from two edges or
+     is a scanned one to an external or to an endpoint nobody exposes. Counted
+     by what each line actually is rather than by whether its id looks
+     derived, which stopped being the same question once an uncollapsible
+     intermediary started keeping its own edges. */
+  const shownIds = await page.$$eval('.react-flow__edge', (els) => els.map((e) => e.getAttribute('data-id')))
+  const byId = Object.fromEntries((await api('/graph')).edges.map((e) => [e.id, e]))
+  const callLines = shownIds.filter(
+    (id) => /\|call\|/.test(id) || ['http.call', 'http.expose'].includes(byId[id]?.kind)
+  ).length
+  ok('  …and Calls is a line type the key can switch', callLines > 0, `${callLines} of ${shownIds.length}`)
   await page.click('.map-legend .legend-item:has-text("Calls")')
   await page.waitForTimeout(800)
-  is('  …and goes when the key switches Calls off, with the rest of them',
-    (await page.$$('.react-flow__edge')).length, before - externals - derivedCalls)
+  is('  …taking every call with it, derived or scanned',
+    (await page.$$('.react-flow__edge')).length, shownIds.length - callLines)
   ok('no console errors with externals on the map', problems.length === 0, problems.join(' | '))
   await ctx.close()
   await setScope('map', null)

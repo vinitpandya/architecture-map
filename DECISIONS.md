@@ -617,6 +617,20 @@ the git log rather than here. Three were judgement calls:
 - **An accepted finding is greyed and moved to the end, not hidden.** Hiding it
   would move a count for a reason the reader cannot see, and it has not stopped
   being true.
+- **An intermediary with an end missing is kept; one only its own service
+  touches is still collapsed away.** Collapsing needs a service at each end.
+  An endpoint somebody calls and nobody scanned exposes has one end, so
+  collapsing it produced no line and then dropped the endpoint too — a
+  service's entire REST surface could be absent from the Services view with
+  nothing to say so, which is what a real estate is full of and what
+  `orphan-endpoint` and `near-miss` are findings about. Those are kept now,
+  drawn with the scan's own edge in their relation's colour.
+  A database a service writes and reads by itself is a different case: both
+  ends are present and the only reason no line is drawn is that there is no
+  second service. Collapsing that away is the point of the view, not a loss —
+  and keeping it added six nodes to the demo estate's Services view for no
+  fact about who talks to whom, which is how the rule got narrowed from "no
+  line" to "an end missing".
 - **A line on the map joins the side of each box that faces the other one.**
   Every node carried one target handle on its left and one source on its
   right, so a line to something above, below or behind had to leave the right

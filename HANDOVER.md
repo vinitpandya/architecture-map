@@ -49,8 +49,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 452 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 199 more
+npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 462 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 203 more
 npm run verify:dev                   # the 11 that only fail in dev mode
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
@@ -110,7 +110,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 452 assertions across six stages, all passing.**
+**`npm run verify` — 462 assertions across six stages, all passing.**
 
 *Ingest (26, in-process against a fresh database).* `prompts/standalone/` is in
 sync with the schemas it inlines, carries no unfilled placeholder, and has the
@@ -237,7 +237,7 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-*The service view (29, no database at all).* The one part of the map that can
+*The service view (39, no database at all).* The one part of the map that can
 be checked without a browser, and the part most worth checking as an estate
 grows: whether collapsing an intermediary is still telling the truth. Node
 reads `web/src/graph/collapse.ts` and `processDiagrams.ts` directly, so these
@@ -268,7 +268,7 @@ through 452 server assertions and 191 browser checks, because neither of them
 runs the build that says so. This one opens every page against `npm run dev`
 and fails on any console error.
 
-**`npm run verify:ui` — 199 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 203 checks in Chromium at 1280×900, all passing.**
 
 A finding says how long it has been true rather than "just now", names the team
 that should look at it, and can be accepted with a reason and reopened again —
@@ -603,6 +603,13 @@ committed, being a throwaway.
   it before dragging, and why it can be shut at all. Both panels are width
   capped for the same reason: uncapped, the key reached across a narrow card
   and sat on top of whatever the map was saying in the other corner.
+- **The Services view keeps what it cannot collapse.** An endpoint called but
+  not exposed, a topic nobody produces — the far end is absent, so there is no
+  line to derive, and dropping them silently deleted the relationship. They
+  are nodes now, with the scanned edge drawn to them. The narrower rule
+  matters: a thing only one service touches, like its own database, is still
+  collapsed away, or every service would drag its private store onto a view
+  that exists to show traffic between services.
 - **Map nodes have a handle on all four sides, and MapCanvas picks the pair.**
   If you add a node kind, it gets them from `Shell` and needs nothing. If you
   add an edge, `sideFacing` decides where it lands — and it is measured

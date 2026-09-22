@@ -2227,6 +2227,55 @@ if (stage === 'map') {
     is('  …and taking the better route, not the worse', twoRoutes[0].confidence, 'high')
   }
 
+  /* ---- an intermediary with an end missing is kept, not deleted.
+
+     Collapsing needs a service at each end. A real estate is full of calls
+     where only one end was scanned — a caller names an endpoint from a
+     hostname and rarely spells it the way the provider does, which is what
+     `orphan-endpoint` and `near-miss` are findings about — and collapsing
+     those produced no line and then dropped the endpoint too, so a service's
+     whole REST surface could be missing from the map with nothing to say so. */
+  {
+    const ep = { id: 'api:payments/POST /v1/charges', kind: 'endpoint', name: 'POST /v1/charges' }
+    const call = (from) => ({ id: `call|${from}`, from: `svc:${from}`, to: ep.id, kind: 'http.call', confidence: 'high' })
+    const expose = (by) => ({ id: `expose|${by}`, from: `svc:${by}`, to: ep.id, kind: 'http.expose', confidence: 'high' })
+
+    const unanswered = collapseToServices({
+      nodes: [svc('checkout'), svc('payments'), ep],
+      edges: [call('checkout')],
+    })
+    is('a call nobody answers is still on the map', unanswered.edges.length, 1)
+    is('  …as a call, so it wears the endpoint\'s colour', unanswered.edges[0].relation, 'call')
+    is('  …reaching the endpoint itself, which is kept', unanswered.nodes.some((n) => n.id === ep.id), true)
+    is('  …and it is the scanned edge, not a derived one', unanswered.edges[0].through.length, 0)
+
+    const answered = collapseToServices({
+      nodes: [svc('checkout'), svc('payments'), ep],
+      edges: [call('checkout'), expose('payments')],
+    })
+    is('a call somebody answers still collapses to one line', answered.edges.length, 1)
+    is('  …between the two services', `${answered.edges[0].from}>${answered.edges[0].to}`, 'svc:checkout>svc:payments')
+    is('  …with the endpoint collapsed away', answered.nodes.some((n) => n.id === ep.id), false)
+
+    is(
+      'an endpoint exposed that nobody calls is kept too',
+      collapseToServices({ nodes: [svc('payments'), ep], edges: [expose('payments')] }).edges.length,
+      1
+    )
+
+    /* ---- but a thing only one service touches is not traffic between two,
+       and collapsing it away is the point of this view rather than a loss. */
+    const own = collapseToServices({
+      nodes: [svc('ledger'), { id: 'db:postgres/ledger', kind: 'database', name: 'ledger' }],
+      edges: [
+        { id: 'w', from: 'svc:ledger', to: 'db:postgres/ledger', kind: 'db.write', confidence: 'high' },
+        { id: 'r', from: 'svc:ledger', to: 'db:postgres/ledger', kind: 'db.read', confidence: 'high' },
+      ],
+    })
+    is('a database only its owner reads and writes is collapsed away', own.nodes.length, 1)
+    is('  …drawing no line, because there is no second service', own.edges.length, 0)
+  }
+
   /* ---- the boundary itself, so the constant cannot drift unnoticed. Three
      by four is twelve lines and collapses; three by five is fifteen and does
      not. */
