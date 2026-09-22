@@ -208,6 +208,7 @@ router.get('/status', wrap(async (req, res) => {
 router.get('/nodes', wrap(async (req, res) => {
   const kinds = list(req.query.kinds)
   const repos = list(req.query.repos)
+  const teams = list(req.query.teams)
   const where = []
   const args = []
   if (kinds.length) {
@@ -217,6 +218,13 @@ router.get('/nodes', wrap(async (req, res) => {
   if (repos.length) {
     where.push(`n.owner_repo IN (${repos.map(() => '?').join(',')})`)
     args.push(...repos)
+  }
+  /* A teamless node is dropped by a team filter rather than kept, the same
+     way /graph drops it: "show me trading's estate" should not hand back
+     everything nobody owns. */
+  if (teams.length) {
+    where.push(`n.team_id IN (${teams.map(() => '?').join(',')})`)
+    args.push(...teams)
   }
   if (req.query.includeExternal === 'false') where.push(`n.orphan = 0 AND n.kind != 'external'`)
 
@@ -337,13 +345,45 @@ function bindingsFor(row, viaContract, into) {
 
 router.get('/edges', wrap(async (req, res) => {
   const kinds = list(req.query.kinds)
+  const repos = list(req.query.repos)
+  const teams = list(req.query.teams)
+  const where = []
+  const args = []
+  if (kinds.length) {
+    where.push(`e.kind IN (${kinds.map(() => '?').join(',')})`)
+    args.push(...kinds)
+  }
+  // An edge's repo is the manifest that declared it, which is the repo whose
+  // code actually contains the call — not either endpoint's owner.
+  if (repos.length) {
+    where.push(`e.repo IN (${repos.map(() => '?').join(',')})`)
+    args.push(...repos)
+  }
+  /* A connection belongs to a team if either end does. Requiring both would
+     hide exactly the rows worth looking at: a line that leaves the team is
+     the whole reason to filter by one. */
+  if (teams.length) {
+    where.push(
+      `EXISTS (SELECT 1 FROM nodes n
+               WHERE n.id IN (e.from_id, e.to_id)
+                 AND n.team_id IN (${teams.map(() => '?').join(',')}))`
+    )
+    args.push(...teams)
+  }
+  if (req.query.includeExternal === 'false') {
+    where.push(
+      `NOT EXISTS (SELECT 1 FROM nodes n
+                   WHERE n.id IN (e.from_id, e.to_id)
+                     AND (n.orphan = 1 OR n.kind = 'external'))`
+    )
+  }
   const rows = db
     .prepare(
-      `SELECT * FROM edges
-       ${kinds.length ? `WHERE kind IN (${kinds.map(() => '?').join(',')})` : ''}
-       ORDER BY from_id, kind LIMIT ?`
+      `SELECT e.* FROM edges e
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY e.from_id, e.kind LIMIT ?`
     )
-    .all(...kinds, Number(req.query.limit) || 500)
+    .all(...args, Number(req.query.limit) || 500)
   res.json({ edges: rows.map(edgeRow) })
 }))
 
@@ -412,28 +452,70 @@ router.get('/drift', wrap(async (req, res) => {
   // Through list(), so asking for two kinds is an IN rather than a bind error.
   const kinds = list(req.query.kind)
   const severities = list(req.query.severity)
+  const repos = list(req.query.repos)
+  const teams = list(req.query.teams)
   if (kinds.length) {
-    where.push(`kind IN (${kinds.map(() => '?').join(',')})`)
+    where.push(`d.kind IN (${kinds.map(() => '?').join(',')})`)
     args.push(...kinds)
   }
   if (severities.length) {
-    where.push(`severity IN (${severities.map(() => '?').join(',')})`)
+    where.push(`d.severity IN (${severities.map(() => '?').join(',')})`)
     args.push(...severities)
+  }
+  /* A finding is filtered by whatever it is about. Not every subject is a
+     node — a process or a team has no repo and no owner_repo to match — so
+     these filters drop what they cannot place, which is the same thing the
+     filter row means everywhere else: show me this team's, not show me this
+     team's plus everything unattributable. */
+  if (repos.length) {
+    where.push(
+      `EXISTS (SELECT 1 FROM nodes n
+               WHERE n.id = d.subject_id AND n.owner_repo IN (${repos.map(() => '?').join(',')}))`
+    )
+    args.push(...repos)
+  }
+  if (teams.length) {
+    where.push(
+      `EXISTS (SELECT 1 FROM nodes n
+               WHERE n.id = d.subject_id AND n.team_id IN (${teams.map(() => '?').join(',')}))`
+    )
+    args.push(...teams)
   }
   const rows = db
     .prepare(
-      `SELECT * FROM drift ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY severity DESC, kind, subject_id LIMIT ?`
+      `SELECT d.* FROM drift d ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY d.severity DESC, d.kind, d.subject_id LIMIT ?`
     )
     .all(...args, Number(req.query.limit) || 500)
   res.json({ findings: rows.map((r) => ({ ...r, data: parse(r.data, null) })) })
 }))
 
 router.get('/unresolved', wrap(async (req, res) => {
+  const repos = list(req.query.repos)
+  const teams = list(req.query.teams)
+  const where = []
+  const args = []
+  if (repos.length) {
+    where.push(`u.repo IN (${repos.map(() => '?').join(',')})`)
+    args.push(...repos)
+  }
+  /* An expectation that never resolved has no node to carry a team, so the
+     team comes from the repo that wrote it down — which is the team that
+     would have to go and look. */
+  if (teams.length) {
+    where.push(
+      `EXISTS (SELECT 1 FROM nodes n
+               WHERE n.owner_repo = u.repo AND n.team_id IN (${teams.map(() => '?').join(',')}))`
+    )
+    args.push(...teams)
+  }
   res.json({
     unresolved: db
-      .prepare('SELECT * FROM unresolved ORDER BY repo, expected LIMIT ?')
-      .all(Number(req.query.limit) || 500),
+      .prepare(
+        `SELECT u.* FROM unresolved u ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+         ORDER BY u.repo, u.expected LIMIT ?`
+      )
+      .all(...args, Number(req.query.limit) || 500),
   })
 }))
 

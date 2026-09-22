@@ -376,6 +376,108 @@ if (stage === 'estate') {
   )
   is('the estate is unchanged by the re-ingest', (await get('/status')).body.counts.services, 10)
 
+  /* ---- the filter row means the same thing on every screen.
+
+     `teams` and `repos` are sent with every request the app makes, and were
+     read by /graph alone: picking a team narrowed the map and left the
+     service list, the connection list, the findings and the unresolved rows
+     showing the whole estate. A filter that silently does nothing is worse
+     than one that is missing, because the screen looks like an answer. */
+  {
+    const repo = 'order-service'
+    const q = (p) => get(p).then((r) => r.body)
+
+    const allNodes = (await q('/nodes?limit=1000')).nodes
+    const repoNodes = (await q(`/nodes?limit=1000&repos=${repo}`)).nodes
+    ok('/nodes narrows to a repo', repoNodes.length > 0 && repoNodes.length < allNodes.length, String(repoNodes.length))
+
+    const allEdges = (await q('/edges?limit=2000')).edges
+    const repoEdges = (await q(`/edges?limit=2000&repos=${repo}`)).edges
+    ok('/edges narrows to a repo', repoEdges.length > 0 && repoEdges.length < allEdges.length, String(repoEdges.length))
+    is('  …to the repo that declared the line', repoEdges.every((e) => e.repo === repo), true)
+    is(
+      '  …which is the manifest that saw the call, not either end\'s owner',
+      repoEdges.length,
+      db.prepare('SELECT COUNT(*) n FROM edges WHERE repo = ?').get(repo).n
+    )
+
+    const withExternals = (await q('/edges?limit=2000')).edges.length
+    const withoutExternals = (await q('/edges?limit=2000&includeExternal=false')).edges.length
+    ok('/edges can drop what leaves the estate', withoutExternals < withExternals, `${withoutExternals} of ${withExternals}`)
+
+    const allUnresolved = (await q('/unresolved?limit=1000')).unresolved
+    const repoUnresolved = (await q(`/unresolved?limit=1000&repos=${repo}`)).unresolved
+    ok(
+      '/unresolved narrows to a repo',
+      repoUnresolved.length < allUnresolved.length,
+      `${repoUnresolved.length} of ${allUnresolved.length}`
+    )
+    is('  …to that repo\'s expectations', repoUnresolved.every((u) => u.repo === repo), true)
+  }
+
+  /* ---- a version migration is not a spelling mistake.
+
+     near-miss used to strip a trailing version suffix before comparing, so
+     `orders.matched.v1` and `orders.matched.v2` normalised alike and the
+     estate reported its own v2 rollout as one topic spelt two ways. The demo
+     estate happens to carry no two-version pair, which is why this went
+     unseen; so the pair is ingested here on purpose. */
+  {
+    const { normaliseId } = await import('../src/link.js')
+    const { linkPass } = await import('../src/link.js')
+    is(
+      'two spellings of one topic still normalise together',
+      normaliseId('topic:users.created.v2') === normaliseId('topic:UsersCreatedV2'),
+      true
+    )
+    is(
+      '  …but two versions of one topic do not',
+      normaliseId('topic:orders.matched.v1') === normaliseId('topic:orders.matched.v2'),
+      false
+    )
+
+    const topicNode = (v) => ({
+      id: `topic:shipments.dispatched.${v}`,
+      kind: 'kafka.topic',
+      name: `shipments.dispatched.${v}`,
+      evidence: [{ file: 'src/Topics.kt', line: 3, snippet: `const val T = "shipments.dispatched.${v}"` }],
+    })
+    ingestManifest(
+      {
+        schemaVersion: 1,
+        repo: 'migrating-service',
+        commit: 'deadbee',
+        branch: 'main',
+        scannedAt: '2026-09-22T00:00:00Z',
+        producer: { kind: 'parser', tool: 'verify/1' },
+        service: { id: 'svc:migrating-service', name: 'Migrating Service', language: 'kotlin' },
+        nodes: [topicNode('v1'), topicNode('v2')],
+        edges: ['v1', 'v2'].map((v) => ({
+          from: 'svc:migrating-service',
+          to: `topic:shipments.dispatched.${v}`,
+          kind: 'kafka.produce',
+          confidence: 'high',
+          evidence: [{ file: 'src/Publisher.kt', line: 7, snippet: `kafka.send(T_${v.toUpperCase()}, e)` }],
+        })),
+        unresolved: [],
+      },
+      'migrating-service.json'
+    )
+    linkPass()
+    is(
+      'a service publishing v1 and v2 of one topic is not a near miss',
+      db
+        .prepare(`SELECT COUNT(*) n FROM drift WHERE kind = 'near-miss' AND subject_id LIKE 'topic:shipments.dispatched%'`)
+        .get().n,
+      0
+    )
+    is(
+      '  …and both versions are on the map, which is where the migration shows',
+      db.prepare(`SELECT COUNT(*) n FROM nodes WHERE id LIKE 'topic:shipments.dispatched%'`).get().n,
+      2
+    )
+  }
+
   server.close()
   done()
 }
@@ -1823,6 +1925,66 @@ if (stage === 'org') {
     is('  …and nothing else is', found.length, 5)
   }
 
+  /* ---- the team filter, where teams are real.
+
+     `teams` rides on every request the app makes and was read by /graph
+     alone, so picking a team narrowed the map and left the service list, the
+     connection list and the findings showing the whole estate. This is the
+     stage that has teams resolved on more than the one service a manifest
+     names outright, so it is where the filter can actually be caught. */
+  {
+    const express = (await import('express')).default
+    const { router } = await import('../src/routes.js')
+    const app = express()
+    app.use('/api', router)
+    const server = app.listen(0)
+    await new Promise((r) => server.once('listening', r))
+    const base = `http://127.0.0.1:${server.address().port}/api`
+    const q = async (p) => (await fetch(`${base}${p}`)).json()
+
+    const team = 'trading'
+    const owner = new Map(db.prepare('SELECT id, team_id FROM nodes').all().map((r) => [r.id, r.team_id]))
+
+    const allNodes = (await q('/nodes?limit=1000')).nodes
+    const mine = (await q(`/nodes?limit=1000&teams=${team}`)).nodes
+    ok('/nodes narrows to a team', mine.length > 0 && mine.length < allNodes.length, `${mine.length} of ${allNodes.length}`)
+    is('  …to exactly what that team owns', mine.length, n(`SELECT COUNT(*) n FROM nodes WHERE team_id = '${team}'`))
+    is('  …and a teamless node is dropped, not kept', mine.every((x) => x.teamId === team), true)
+
+    const allEdges = (await q('/edges?limit=2000')).edges
+    const mineEdges = (await q(`/edges?limit=2000&teams=${team}`)).edges
+    ok('/edges narrows to a team', mineEdges.length > 0 && mineEdges.length < allEdges.length, `${mineEdges.length} of ${allEdges.length}`)
+    is(
+      '  …keeping a line with either end in it, because a line that leaves the team is the point',
+      mineEdges.every((e) => owner.get(e.from) === team || owner.get(e.to) === team),
+      true
+    )
+    ok(
+      '  …including at least one that does leave it',
+      mineEdges.some((e) => owner.get(e.from) !== owner.get(e.to)),
+      'every line stayed inside the team'
+    )
+
+    /* Findings are filtered by whoever owns what they are about. Most of the
+       demo estate's findings are about something with no team — a contract
+       is nobody's, a topic nobody produces has nothing to inherit, and a
+       process-* finding is not about a node at all — so the team that does
+       own one is found here rather than assumed. */
+    const allFindings = (await q('/drift?limit=1000')).findings
+    const owning = allFindings.map((f) => owner.get(f.subject_id)).find(Boolean)
+    ok('some finding is about something a team owns', !!owning, 'no finding had an owned subject')
+    const theirs = (await q(`/drift?limit=1000&teams=${owning}`)).findings
+    ok('/drift narrows to that team', theirs.length > 0 && theirs.length < allFindings.length, `${theirs.length} of ${allFindings.length}`)
+    is('  …to findings about something it owns', theirs.every((f) => owner.get(f.subject_id) === owning), true)
+    is(
+      '  …and a team that owns none of them gets none, rather than all of them',
+      (await q('/drift?limit=1000&teams=nobody-at-all')).findings.length,
+      0
+    )
+
+    server.close()
+  }
+
   /* ---- removal takes Layer C with it */
   const removed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs'), '--remove'], {
     encoding: 'utf8',
@@ -1839,7 +2001,6 @@ if (stage === 'org') {
 
   done()
 }
-
 
 /* ──────────────────────────────────────────── stage: map (the service view)
 

@@ -53,15 +53,18 @@ const EDGE_PHRASE = {
 const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`)
 
 /**
- * Two ids are a near miss when they collapse to the same string: case,
- * separators and a trailing version suffix removed. `users.created.v2` and
- * `UsersCreatedV2` are almost certainly the same topic spelt twice.
+ * Two ids are a near miss when they collapse to the same string: case and
+ * separators removed. `users.created.v2` and `UsersCreatedV2` are almost
+ * certainly the same topic spelt twice, and still collapse together here.
+ *
+ * The version suffix is deliberately NOT stripped. Doing so made
+ * `orders.matched.v1` and `orders.matched.v2` normalise alike and reported
+ * them as one topic spelt two ways — which is not a typo, it is a migration,
+ * and it is the single most consequential thing an event-driven estate does.
+ * Telling somebody their v2 rollout is a spelling mistake is worse than
+ * saying nothing: both versions are real nodes and both are on the map.
  */
-export const normaliseId = (id) =>
-  idValue(id)
-    .toLowerCase()
-    .replace(/[._-]/g, '')
-    .replace(/v\d+$/, '')
+export const normaliseId = (id) => idValue(id).toLowerCase().replace(/[._-]/g, '')
 
 export function linkPass(now = new Date().toISOString()) {
   run(now)
