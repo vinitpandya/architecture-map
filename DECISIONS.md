@@ -617,6 +617,13 @@ the git log rather than here. Three were judgement calls:
 - **An accepted finding is greyed and moved to the end, not hidden.** Hiding it
   would move a count for a reason the reader cannot see, and it has not stopped
   being true.
+- **A team is displayed from the registry, never from the manifest.** The
+  services list showed `service.team` verbatim, so it read `wallet` where the
+  registry says `Wallet` and went on saying it after the team was merged into
+  Trading. The process page counted teams the same way, which made it a wrong
+  *number* rather than a wrong label. Everything on screen now reads
+  `teamName ?? teamId`, falling back to the id only where a team is
+  unregistered and genuinely has no other name.
 - **The chord layout module is `chordLayout.ts`, not `chord.ts`.** Beside
   `Chord.tsx` the two names are one import specifier on a case-insensitive
   filesystem, and `.ts` is tried first, so `./Chord` resolved to the geometry

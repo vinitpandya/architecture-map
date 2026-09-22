@@ -1056,6 +1056,11 @@ function Inspector({
 
 function NodeSummary({ detail, onFocus }: { detail: NodeDetail; onFocus?: (id: string) => void }) {
   const { node } = detail
+  /* The resolved team, not `node.team`, which is the string the scan found in
+     the manifest. After a merge or a rename the two disagree, and this is the
+     one the map colours by — the panel and the picture have to say the same
+     thing about the same node. */
+  const team = node.teamName ?? node.teamId
   return (
     <div className="stack" style={{ gap: 10 }}>
       <div>
@@ -1063,7 +1068,7 @@ function NodeSummary({ detail, onFocus }: { detail: NodeDetail; onFocus?: (id: s
         <p className="muted" style={{ fontSize: 12, margin: '3px 0 0' }}>
           <span className="pill">{KIND_LABEL[node.kind]}</span>{' '}
           {node.ownerRepo ? <code>{node.ownerRepo}</code> : 'no owning repo'}
-          {node.team ? ` · ${node.team}` : ''}
+          {team ? ` · ${team}` : ''}
         </p>
       </div>
 

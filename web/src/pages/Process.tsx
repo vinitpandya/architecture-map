@@ -196,9 +196,14 @@ export function ProcessPage() {
         title={`Services involved (${services.length})`}
         sub={
           services.length
-            ? `${new Set(services.map((s) => s.team).filter(Boolean)).size} team${
-                new Set(services.map((s) => s.team).filter(Boolean)).size === 1 ? '' : 's'
-              } across the whole subtree`
+            ? /* Counted on the resolved id, because this is a number rather
+                 than a label: two services whose manifests spell one team two
+                 ways were two teams here until they were counted on what the
+                 registry says they are. */
+              (() => {
+                const teams = new Set(services.map((s) => s.teamId).filter(Boolean)).size
+                return `${teams} team${teams === 1 ? '' : 's'} across the whole subtree`
+              })()
             : undefined
         }
       >

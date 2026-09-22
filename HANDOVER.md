@@ -49,8 +49,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 451 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 185 more
+npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 452 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 191 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run prompts                      # rebuild prompts/standalone/ from prompts/ and schema/
@@ -109,7 +109,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 451 assertions across six stages, all passing.**
+**`npm run verify` — 452 assertions across six stages, all passing.**
 
 *Ingest (26, in-process against a fresh database).* `prompts/standalone/` is in
 sync with the schemas it inlines, carries no unfilled placeholder, and has the
@@ -236,7 +236,7 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-*The service view (28, no database at all).* The one part of the map that can
+*The service view (29, no database at all).* The one part of the map that can
 be checked without a browser, and the part most worth checking as an estate
 grows: whether collapsing an intermediary is still telling the truth. Node
 reads `web/src/graph/collapse.ts` and `processDiagrams.ts` directly, so these
@@ -255,7 +255,7 @@ depths draws once and at the depth that happens; two far ends over one topic
 draw twice; a leaf crossing is not swallowed by a rollup over the same topic;
 a verbatim duplicate draws once rather than never.
 
-**`npm run verify:ui` — 185 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 191 checks in Chromium at 1280×900, all passing.**
 
 A finding says how long it has been true rather than "just now", names the team
 that should look at it, and can be accepted with a reason and reopened again —
@@ -627,6 +627,15 @@ committed, being a throwaway.
   *working* database rather than a throwaway one, because `DATA_DIR` is set by
   the orchestrator — it will ingest the fixtures into your estate. Use
   `npm run verify` unless you know you want that.
+- **Render the RESOLVED team, never `node.team`.** `team` is the string the
+  scan found in a manifest; `teamId`/`teamName` are what the registry resolves
+  it to, and they are what the map colours by, what the filters join on and
+  what a merge, a rename or a hand-assignment move. Three screens printed the
+  raw one — the services list, the map inspector and the process page's team
+  count — so a merged team kept its old name and two spellings of one team
+  counted as two. The merge check that existed could not catch it, because it
+  merges `risk-ops`, which is a *process* owner and belongs to no service; the
+  one that does now merges Wallet into Trading on purpose.
 - **The registry is now something the server writes.** Both verification
   suites run against a *copy* of `demo/teams.json` under `data/` for that
   reason: `verify:ui` renames and merges teams, and pointed at the repo root it

@@ -1129,6 +1129,82 @@ for (const code of ['1', '2.1', '2.3.5']) {
   await ctx.close()
 }
 
+/* ---- what a merge does to every screen that names a team.
+
+   The merge above is of a team no service belongs to — `risk-ops` is a process
+   owner — so it could never have caught this: the services list, the map's
+   inspector and the process page's team count were all printing `node.team`,
+   the string the SCAN found in the manifest, rather than the team the registry
+   resolves it to. A merge, a rename and a hand-assignment all move the second
+   and leave the first alone, so every one of them showed the old name. Wallet
+   is merged into Trading here precisely because services belong to it. */
+{
+  const merge = (from, into) =>
+    fetch(`${BASE}/api/team/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, into }),
+    })
+  const unmerge = (alias) =>
+    fetch(`${BASE}/api/team/alias?alias=${encodeURIComponent(alias)}`, { method: 'DELETE' })
+
+  /** The Team cell the services list shows for one service. */
+  const teamCellFor = async (page, service) =>
+    page.evaluate((name) => {
+      for (const row of document.querySelectorAll('tbody tr')) {
+        const cells = [...row.querySelectorAll('td')].map((c) => c.innerText.trim())
+        if (cells[0] === name) return cells[1]
+      }
+      return null
+    }, service)
+
+  const { ctx, page, problems } = await open(`/d/${pageId('estate')}`)
+  await page.waitForSelector('tbody tr', { timeout: 20000 })
+  is('the services list names a service\'s team', await teamCellFor(page, 'Wallet Service'), 'Wallet')
+
+  await merge('wallet', 'trading')
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForSelector('tbody tr', { timeout: 20000 })
+  is(
+    '  …and after a merge it names the surviving one, not the manifest\'s',
+    await teamCellFor(page, 'Wallet Service'),
+    'Trading'
+  )
+
+  /* The SELECTED option, not the page text: every team is an option in that
+     dropdown, so "is Trading on the page" is true however broken it is. */
+  const inspector = await open('/node?id=svc%3Awallet-service')
+  await inspector.page.waitForSelector('select[aria-label="Team"]', { timeout: 15000 })
+  is(
+    '  …as does the node page\'s team control',
+    await inspector.page.$eval('select[aria-label="Team"]', (e) => e.value),
+    'trading'
+  )
+  await inspector.ctx.close()
+
+  /* Un-merging gives the service its own team back, but not its entry in the
+     registry — a merge folds that away and removing the alias does not write
+     it again. So the team returns unregistered, with no display name, and the
+     id is the only name there is. That is the honest thing to show, and the
+     assertion says so rather than expecting a name nothing holds. */
+  await unmerge('wallet')
+  is(
+    '  …and un-merging gives the service its own team back',
+    (await api('/teams')).teams.find((t) => t.id === 'wallet')?.registered,
+    false
+  )
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForSelector('tbody tr', { timeout: 20000 })
+  is(
+    '  …named by its id, because an unregistered team has no other name',
+    await teamCellFor(page, 'Wallet Service'),
+    'wallet'
+  )
+
+  ok('no console errors across the merge', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
 /* ---- the same correction, one service at a time, on the node page */
 {
   const { ctx, page, problems } = await open('/node?id=svc%3Awallet-service')

@@ -573,7 +573,17 @@ function NodeListBody({ widget }: { widget: WidgetConfig }) {
       columns={[
         { key: 'name', label: 'Name', value: (n) => n.name, render: (n) => <NodeLink id={n.id} label={n.name} /> },
         ...(kind === 'service'
-          ? [{ key: 'team', label: 'Team', value: (n: GraphNode) => n.team ?? '' }]
+          ? [
+              {
+                key: 'team',
+                label: 'Team',
+                // The RESOLVED team, not `n.team`, which is the string the
+                // scan found in the manifest. After a merge or a rename the
+                // two disagree, and the one the rest of the app joins on —
+                // and colours the map by — is this one.
+                value: (n: GraphNode) => n.teamName ?? n.teamId ?? '',
+              },
+            ]
           : []),
         { key: 'ownerRepo', label: 'Owner', value: (n) => n.ownerRepo ?? '' },
         { key: 'degree', label: 'Links', align: 'right' as const, value: (n) => n.degree ?? 0 },
