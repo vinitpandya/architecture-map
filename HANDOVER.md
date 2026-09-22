@@ -50,7 +50,7 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 
 ```bash
 npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 452 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 191 more
+npm run build && npm run verify:ui   # the checks that need a browser — 195 more
 npm run verify:dev                   # the 11 that only fail in dev mode
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
@@ -268,7 +268,7 @@ through 452 server assertions and 191 browser checks, because neither of them
 runs the build that says so. This one opens every page against `npm run dev`
 and fails on any console error.
 
-**`npm run verify:ui` — 191 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 195 checks in Chromium at 1280×900, all passing.**
 
 A finding says how long it has been true rather than "just now", names the team
 that should look at it, and can be accepted with a reason and reopened again —
@@ -603,6 +603,12 @@ committed, being a throwaway.
   it before dragging, and why it can be shut at all. Both panels are width
   capped for the same reason: uncapped, the key reached across a narrow card
   and sat on top of whatever the map was saying in the other corner.
+- **The chord is directional, and it spends shape on it rather than colour.**
+  A ribbon's colour is the relationship — event, call, shared store — and the
+  key reads off that, so direction is the arc split (solid sends, pale
+  receives) plus an arrowhead at the end each ribbon arrives at. The split was
+  free: the layout already allocated every arc's outgoing slices before its
+  incoming ones, so the angle was there to be drawn.
 - **The chord's geometry is in `web/src/graph/chordLayout.ts`, written rather
   than imported.** It is pure and deterministic; `Chord.tsx` is only the
   drawing. An arc is sized by out *and* in together, which is where it departs

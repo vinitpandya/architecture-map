@@ -617,6 +617,20 @@ the git log rather than here. Three were judgement calls:
 - **An accepted finding is greyed and moved to the end, not hidden.** Hiding it
   would move a count for a reason the reader cannot see, and it has not stopped
   being true.
+- **The chord shows direction as a shape, because colour is already spoken
+  for.** A ribbon's colour says what the relationship is — an event, a call, a
+  shared store — and the key reads off that, so direction had to go somewhere
+  else. Each arc is drawn as two bands, what the service sends and then what
+  it receives, which the layout had already implied by allocating outgoing
+  slices first; and each ribbon carries an arrowhead at the end it arrives at.
+  A hairline ribbon gets no head: an arrowhead wider than the ribbon under it
+  would be a decoration claiming to be data.
+- **The chord's caption is positioned out of the flow.** It was a flex sibling
+  of the circle, so a caption that wrapped to three lines and then to one as
+  the mouse crossed a ribbon resized the svg beside it — and the thing being
+  pointed at moved out from under the pointer. It has a fixed band now, and
+  the circle is sized for the room it is actually getting rather than for the
+  whole widget.
 - **A memo whose dependency is an array gets a key instead.** `teamSlot` took
   `data?.nodes ?? []` as its dependency: a fresh `[]` before the graph
   arrives, and re-made anyway by StrictMode's double-invocation. `computed`

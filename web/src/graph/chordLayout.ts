@@ -33,6 +33,16 @@ export type ChordArc = {
   in: number
   a0: number
   a1: number
+  /**
+   * Where what this service sends ends and what it receives begins.
+   *
+   * The ribbons were already allocated outgoing-first, so this angle was
+   * implicit in the geometry; naming it lets the arc be drawn as two bands and
+   * makes the circle directional without spending a colour on it. Equal to
+   * `a0` for a service that only receives, and to `a1` for one that only
+   * sends.
+   */
+  aOut: number
 }
 
 export type ChordRibbon = {
@@ -144,6 +154,7 @@ export function chordLayout(data: GraphData, hidden: Set<string> = new Set()): C
       in: into[i],
       a0,
       a1,
+      aOut: a0 + out[i] * scale,
     })
     cursor = a1 + GAP
   })
@@ -215,4 +226,28 @@ export function ribbonPath(r: number, s0: number, s1: number, t0: number, t1: nu
     `Q0 0 ${sa.x} ${sa.y}` +
     'Z'
   )
+}
+
+/**
+ * The arrowhead at a ribbon's far end, or null where there is no room for one.
+ *
+ * Direction cannot be a colour here: the ribbons already spend colour on what
+ * the relationship is — an event, a call, a shared store — and the key reads
+ * off that. So it is a shape. The head sits just inside the ring, pointing at
+ * the arc it lands on, and it is drawn in the ribbon's own colour so it reads
+ * as that ribbon's end rather than as a mark of its own.
+ *
+ * A hairline ribbon gets none. An arrowhead wider than the ribbon carrying it
+ * would be a decoration claiming to be data.
+ */
+export function arrowHead(r: number, t0: number, t1: number, size = 7) {
+  const span = (t1 - t0) * r
+  if (span < 3) return null
+  const mid = (t0 + t1) / 2
+  // Never wider than the footprint it belongs to, so it cannot overstate it.
+  const half = Math.min((t1 - t0) / 2, size / r)
+  const tip = point(r, mid)
+  const a = point(r - size, mid - half)
+  const b = point(r - size, mid + half)
+  return `M${tip.x} ${tip.y}L${a.x} ${a.y}L${b.x} ${b.y}Z`
 }

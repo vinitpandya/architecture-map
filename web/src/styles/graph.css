@@ -342,6 +342,21 @@
   width: 100%;
 }
 
+/* The note is taken out of the flow and given a band of its own. In the flow
+   it was a flex sibling of the circle, so a caption that wrapped to three
+   lines and then to one as the mouse crossed a ribbon resized the svg beside
+   it — and the circle jumped every time. Now the band is the same height
+   whatever it says, and the svg never hears about it. */
+.chord {
+  position: relative;
+  /* Local to the chord rather than a theme token: it is the height of one
+     caption, not a value anything else in the app has an opinion about.
+     Chord.tsx holds the same number as NOTE_BAND, because the circle is sized
+     in script and has to know what room it is not getting. */
+  --chord-note-band: 52px;
+  padding-bottom: var(--chord-note-band);
+}
+
 .chord svg {
   flex: 1 1 auto;
   min-height: 0;
@@ -363,17 +378,26 @@
   cursor: pointer;
 }
 
-/* The one line under the circle that says what the reader is looking at, and
-   turns into the hovered ribbon's own sentence. Fixed height, so the diagram
-   does not jump every time the mouse crosses a ribbon. */
+/* The line under the circle that says what the reader is looking at, and
+   turns into the hovered ribbon's own sentence. */
 .chord-note {
-  flex: 0 0 auto;
-  margin: 0;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--chord-note-band);
+  margin: 0 auto;
   padding: 0 16px 6px;
   max-width: 720px;
-  min-height: 34px;
   font-size: 12px;
+  line-height: 1.35;
   text-align: center;
+  /* Deaf to the mouse: it sits over the bottom of the circle, and a caption
+     that swallowed a hover would make the thing it describes unreachable. */
+  pointer-events: none;
 }
 
 /* The box an arrangement draws round a team or a column. Painted behind

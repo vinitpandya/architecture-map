@@ -494,7 +494,10 @@ await setScope('map', null)
   await page.waitForTimeout(1600)
 
   const services = (await api('/graph')).nodes.filter((n) => n.kind === 'service').length
-  is('the chord draws an arc per service', (await page.$$('.chord-arc')).length, services)
+  /* Two bands per arc, not one: what the service sends and what it receives.
+     That split is what makes the circle directional without spending a colour
+     — the relation already has the colour — so it is the count that matters. */
+  is('the chord draws two bands per service', (await page.$$('.chord-arc')).length, services * 2)
   const labels = await page.$$eval('.chord-label', (els) => els.map((e) => e.textContent ?? ''))
   ok('  …labelled', labels.includes('Order Service'), labels.join(', '))
   const ribbons = (await page.$$('.chord-ribbons path')).length
@@ -510,10 +513,30 @@ await setScope('map', null)
   await page.click('.map-legend .legend-item:has-text("Shared stores")')
   await page.waitForTimeout(900)
 
+  /* ---- direction, which is the whole point of the arrowheads */
+  const heads = (await page.$$('.chord-heads path')).length
+  ok('every ribbon wide enough to carry one has an arrowhead', heads > 0 && heads <= ribbons, `${heads} of ${ribbons}`)
+  const sends = await page.$$eval('.chord-arc title', (els) => els.map((e) => e.textContent ?? ''))
+  ok('  …and each arc says which band is which', sends.some((t) => / sends \d+$/.test(t)) && sends.some((t) => / receives \d+$/.test(t)), sends[0])
+
+  /* ---- and the circle holds still while the caption underneath changes.
+
+     The note was a flex sibling of the svg, so a caption that wrapped to three
+     lines and then to one as the mouse crossed a ribbon resized the circle
+     beside it, and the thing being pointed at moved out from under the
+     pointer. It is out of the flow now, in a band of its own. */
+  const svgHeight = () => page.$eval('.chord svg', (e) => Math.round(e.getBoundingClientRect().height))
+  const idle = await svgHeight()
+  await page.locator('.chord-ribbons path').first().hover({ force: true })
+  await page.waitForTimeout(600)
+  const hovering = await svgHeight()
+  is('the circle does not resize when the caption does', hovering, idle)
+  ok('  …and the caption did change', (await page.$eval('.chord-note', (e) => e.textContent ?? '')).includes('→'))
+
   await page.hover('.chord-label:has-text("Ledger Service")')
   await page.waitForTimeout(700)
   const note = await page.$eval('.chord-note', (e) => e.textContent ?? '')
-  ok('hovering an arc says how much goes each way', /\d+ out, \d+ in/.test(note), note.trim().slice(0, 90))
+  ok('hovering an arc says how much goes each way', /sends \d+, receives \d+/.test(note), note.trim().slice(0, 90))
   await page.click('.chord-label:has-text("Ledger Service")')
   await page.waitForTimeout(1200)
   is('clicking one opens it in the inspector',

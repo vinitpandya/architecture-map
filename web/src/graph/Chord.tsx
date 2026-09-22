@@ -3,7 +3,7 @@ import type { GraphData } from '../lib/api'
 import { useMeasure } from '../components/ui'
 import { KIND_COLOR, NO_TEAM_COLOR } from '../lib/nodes'
 import { RELATION_COLOR, RELATION_LABEL } from './collapse'
-import { arcPath, chordLayout, point, ribbonPath } from './chordLayout'
+import { arcPath, arrowHead, chordLayout, point, ribbonPath } from './chordLayout'
 
 /**
  * Who talks to whom, as a circle.
@@ -21,6 +21,16 @@ import { arcPath, chordLayout, point, ribbonPath } from './chordLayout'
 
 /** Past this many services the labels come off; the arcs stay. */
 const LABEL_BUDGET = 44
+
+/**
+ * The strip the caption gets, which the circle does not.
+ *
+ * It matches `--chord-note-band` in graph.css and has to: the note is
+ * positioned out of the flow so that its wrapping cannot resize the circle,
+ * which means the circle has to be told how much room it is not getting.
+ * Taken from the prop rather than measured, so the two never race.
+ */
+const NOTE_BAND = 52
 
 export function Chord({
   data,
@@ -44,7 +54,7 @@ export function Chord({
   const [hover, setHover] = useState<string | null>(null)
   const layout = useMemo(() => chordLayout(data, hiddenRelations), [data, hiddenRelations])
 
-  const size = Math.max(180, Math.min(width || 0, height) - 24)
+  const size = Math.max(180, Math.min(width || 0, height - NOTE_BAND) - 24)
   // The ring, less whatever the labels need outside it.
   const outer = size / 2 - (layout.arcs.length <= LABEL_BUDGET ? 104 : 16)
   const inner = Math.max(12, outer - 11)
@@ -90,7 +100,7 @@ export function Chord({
     <div ref={ref} className="chord" style={{ height }}>
       <svg
         width="100%"
-        height={height}
+        height={Math.max(180, height - NOTE_BAND)}
         viewBox={`${-size / 2} ${-size / 2} ${size} ${size}`}
         role="img"
         aria-label={`${layout.arcs.length} services and the traffic between them`}
@@ -119,6 +129,25 @@ export function Chord({
           })}
         </g>
 
+        {/* The heads last, so a ribbon crossing another does not bury the one
+            thing that says which way it goes. Drawn firmer than the ribbon
+            they belong to — a translucent arrowhead is not an arrowhead. */}
+        <g className="chord-heads" aria-hidden="true">
+          {layout.ribbons.map((r) => {
+            const d = arrowHead(inner, r.t0, r.t1)
+            if (!d) return null
+            const direct = !lit || r.from === lit || r.to === lit
+            return (
+              <path
+                key={`${r.id}|head`}
+                d={d}
+                fill={`var(${RELATION_COLOR[r.relation]})`}
+                fillOpacity={lit && !direct ? 0.05 : 0.92}
+              />
+            )
+          })}
+        </g>
+
         <g className="chord-arcs">
           {layout.arcs.map((a) => {
             const on = !near || near.has(a.id)
@@ -136,14 +165,29 @@ export function Chord({
                 onMouseEnter={() => setHover(a.id)}
                 onMouseLeave={() => setHover(null)}
               >
+                {/* Two bands, not one. The ribbons were always allocated
+                    outgoing-first, so the arc already had a point where what
+                    this service sends ends and what it receives begins — and
+                    drawing it makes every ribbon on the circle directional
+                    without spending a colour, which the relation already has.
+                    The solid band sends; the pale one receives. */}
                 <path
-                  d={arcPath(inner, outer, a.a0, a.a1)}
+                  d={arcPath(inner, outer, a.a0, a.aOut)}
                   fill={arcColour(a)}
-                  fillOpacity={a.id === selected ? 1 : 0.78}
+                  fillOpacity={a.id === selected ? 1 : 0.82}
                   className="chord-arc"
                   onClick={() => onSelect(a.id)}
                 >
-                  <title>{`${a.name} · ${a.out} out, ${a.in} in`}</title>
+                  <title>{`${a.name} sends ${a.out}`}</title>
+                </path>
+                <path
+                  d={arcPath(inner, outer, a.aOut, a.a1)}
+                  fill={arcColour(a)}
+                  fillOpacity={a.id === selected ? 0.5 : 0.34}
+                  className="chord-arc"
+                  onClick={() => onSelect(a.id)}
+                >
+                  <title>{`${a.name} receives ${a.in}`}</title>
                 </path>
                 {layout.arcs.length <= LABEL_BUDGET && (
                   <text
@@ -175,14 +219,13 @@ export function Chord({
           </>
         ) : focused ? (
           <>
-            <strong>{focused.name}</strong> — {focused.out} out, {focused.in} in. Click it to open it
-            in the inspector, or hover a ribbon for what carries it.
+            <strong>{focused.name}</strong> — sends {focused.out}, receives {focused.in}. Click it
+            to open it in the inspector, or hover a ribbon for what carries it.
           </>
         ) : (
           <>
-            An arc is everything that happens at one service, sent and received together, and the
-            arcs are ordered by team — a bundle crossing the circle crosses a boundary. Hover a
-            ribbon to see which way it goes and what carries it.
+            Solid sends, pale receives, and every ribbon points at the end it arrives at. Arcs
+            are ordered by team, so a bundle crossing the circle crosses a boundary.
             {layout.arcs.length > LABEL_BUDGET && ` Labels are off above ${LABEL_BUDGET} services.`}
           </>
         )}
