@@ -59,8 +59,12 @@ const GAP = 0.022
  */
 export function chordLayout(data: GraphData, hidden: Set<string> = new Set()): ChordLayout {
   const collapsed = collapseToServices(data)
+  /* Whatever the service view kept gets an arc: the services and externals,
+     and any intermediary too busy to collapse. A shared bus is precisely what
+     a chord should show as one arc half the estate touches, rather than as a
+     ribbon between every pair that happens to touch it. */
   const arcNodes = collapsed.nodes
-    .filter((n) => n.kind === 'service' || n.kind === 'external')
+    .slice()
     .sort(
       (a, b) =>
         (a.teamName ?? a.teamId ?? '￿').localeCompare(b.teamName ?? b.teamId ?? '￿') ||

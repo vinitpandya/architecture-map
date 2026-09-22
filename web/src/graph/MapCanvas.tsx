@@ -25,7 +25,7 @@ import {
   type NodeKind,
 } from '../lib/api'
 import { useQuery, useScope } from '../lib/scope'
-import { Empty, Legend, useThemeVersion } from '../components/ui'
+import { Banner, Empty, Legend, useThemeVersion } from '../components/ui'
 import {
   EDGE_LABEL,
   KIND_COLOR,
@@ -41,6 +41,8 @@ import {
 import {
   ARRANGEMENT_LABEL,
   ARRANGEMENT_SUB,
+  LAYOUT_DEADLINE_SECONDS,
+  isLayoutTooBig,
   layoutGraph,
   layoutKey,
   nodeSize,
@@ -175,6 +177,8 @@ export function MapCanvas({
     return ARRANGEMENTS.includes(saved) ? saved : 'compact'
   })
   const [laidOut, setLaidOut] = useState('')
+  /** Why the last layout produced nothing, if it produced nothing. */
+  const [failed, setFailed] = useState<{ title: string; hint: string } | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [zoomedOut, setZoomedOut] = useState(false)
   const [open, setOpen] = useState(() => localStorage.getItem(INSPECTOR_KEY) !== 'closed')
@@ -287,13 +291,34 @@ export function MapCanvas({
       return
     }
     let cancelled = false
-    layoutGraph(nodes, edges, arrangement).then((next) => {
-      if (cancelled) return
-      setPositions(next.positions)
-      setGroups(next.groups)
-      setLaidOut(key)
-      requestAnimationFrame(() => flow.current?.fitView({ padding: 0.14, duration: 0 }))
-    })
+    setFailed(null)
+    layoutGraph(nodes, edges, arrangement)
+      .then((next) => {
+        if (cancelled) return
+        setPositions(next.positions)
+        setGroups(next.groups)
+        setFailed(null)
+        setLaidOut(key)
+        requestAnimationFrame(() => flow.current?.fitView({ padding: 0.14, duration: 0 }))
+      })
+      /* Without this the spinner runs for ever and a graph elk could not lay
+         out looks exactly like one it is still laying out. Marking the key as
+         done is what stops it: there is nothing more coming for this graph. */
+      .catch((err: unknown) => {
+        if (cancelled) return
+        setFailed(
+          isLayoutTooBig(err)
+            ? {
+                title: `Too tangled to arrange (${err.nodes} nodes, ${err.edges} lines)`,
+                hint: `Still going after ${LAYOUT_DEADLINE_SECONDS}s, so it was stopped. Narrow it — focus a node, pick a team, or switch to Services — or use Columns, which never needs arranging.`,
+              }
+            : {
+                title: 'That arrangement failed',
+                hint: `${err instanceof Error ? err.message : String(err)} — Columns does not use the same engine and should still draw.`,
+              }
+        )
+        setLaidOut(key)
+      })
     return () => {
       cancelled = true
     }
@@ -606,6 +631,30 @@ export function MapCanvas({
         {(settling || loading) && (
           <div className="map-settling">
             <span className="spinner" />
+          </div>
+        )}
+        {failed && !settling && (
+          <div className="map-settling map-failed">
+            <Banner
+              kind="warn"
+              title={failed.title}
+              actions={
+                arrangement === 'columns' ? undefined : (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      setArrangement('columns')
+                      write(ARRANGE_KEY + storageKey, 'columns')
+                    }}
+                  >
+                    Use Columns
+                  </button>
+                )
+              }
+            >
+              {failed.hint}
+            </Banner>
           </div>
         )}
         <ReactFlow

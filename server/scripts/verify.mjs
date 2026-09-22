@@ -51,7 +51,7 @@ if (!stage) {
   const registry = path.join(tmp, 'teams.json')
   fs.copyFileSync(path.join(ROOT, 'demo', 'teams.json'), registry)
   let bad = 0
-  for (const s of ['ingest', 'estate', 'processes', 'packs', 'org']) {
+  for (const s of ['ingest', 'estate', 'processes', 'packs', 'org', 'map']) {
     const res = spawnSync(process.execPath, [fileURLToPath(import.meta.url), `--stage=${s}`], {
       stdio: 'inherit',
       env: {
@@ -1840,6 +1840,105 @@ if (stage === 'org') {
   done()
 }
 
+
+/* ──────────────────────────────────────────── stage: map (the service view)
+
+   The one piece of the map that can be checked without a browser, and the one
+   that most needs checking: whether collapsing an intermediary is still
+   telling the truth as the estate grows. Node reads the TypeScript directly,
+   so this asserts against the same module the app ships rather than a copy of
+   its rules. Nothing here touches a database. */
+
+if (stage === 'map') {
+  console.log('\nThe service view — collapse, and where it stops')
+  const { collapseToServices } = await import('../../web/src/graph/collapse.ts')
+
+  const svc = (id) => ({ id: `svc:${id}`, kind: 'service', name: id })
+  const produce = (from, topic) => ({ id: `p|${from}|${topic}`, from: `svc:${from}`, to: topic, kind: 'kafka.produce' })
+  const consume = (by, topic) => ({ id: `c|${by}|${topic}`, from: `svc:${by}`, to: topic, kind: 'kafka.consume' })
+  const topic = (id) => ({ id, kind: 'kafka.topic', name: id.replace('topic:', '') })
+
+  /* ---- the ordinary case is unchanged: one publisher, three listeners, and
+     the topic collapses into three lines that each stand for it. */
+  {
+    const out = collapseToServices({
+      nodes: [svc('orders'), svc('a'), svc('b'), svc('c'), topic('topic:orders.matched.v1')],
+      edges: [
+        produce('orders', 'topic:orders.matched.v1'),
+        consume('a', 'topic:orders.matched.v1'),
+        consume('b', 'topic:orders.matched.v1'),
+        consume('c', 'topic:orders.matched.v1'),
+      ],
+    })
+    is('a topic with one publisher collapses', out.edges.length, 3)
+    is('  …leaving the topic off the map', out.nodes.some((n) => n.kind === 'kafka.topic'), false)
+    is('  …and each line says what carried it', out.edges.every((e) => e.through.length === 1), true)
+  }
+
+  /* ---- a fan-out is still all true, however wide: one publisher times nine
+     listeners is nine relationships, not a claim about the listeners. */
+  {
+    const listeners = Array.from({ length: 9 }, (_, i) => `l${i}`)
+    const out = collapseToServices({
+      nodes: [svc('prices'), ...listeners.map(svc), topic('topic:prices.ticked.v1')],
+      edges: [
+        produce('prices', 'topic:prices.ticked.v1'),
+        ...listeners.map((l) => consume(l, 'topic:prices.ticked.v1')),
+      ],
+    })
+    is('a wide fan-out still collapses', out.edges.length, 9)
+    is('  …because p x c never exceeds p + c with one publisher', out.nodes.length, 10)
+  }
+
+  /* ---- and the case this rule exists for. Five publishers and five
+     listeners of one audit topic is ten services sharing a bus. Expanded it
+     asserts twenty-five conversations that nobody scanned; kept, it is the
+     ten edges that were actually found. */
+  {
+    const pub = Array.from({ length: 5 }, (_, i) => `p${i}`)
+    const sub = Array.from({ length: 5 }, (_, i) => `s${i}`)
+    const out = collapseToServices({
+      nodes: [...pub.map(svc), ...sub.map(svc), topic('topic:audit.v1')],
+      edges: [
+        ...pub.map((x) => produce(x, 'topic:audit.v1')),
+        ...sub.map((x) => consume(x, 'topic:audit.v1')),
+      ],
+    })
+    is('a shared bus is not expanded into every pair', out.edges.length, 10)
+    is('  …the topic stays on the map instead', out.nodes.some((n) => n.id === 'topic:audit.v1'), true)
+    is(
+      '  …and what reaches it is the scan\'s own edges, not derived ones',
+      out.edges.every((e) => e.through.length === 0),
+      true
+    )
+    is(
+      '  …every one of which was really scanned',
+      out.edges.every((e) => e.id.startsWith('p|') || e.id.startsWith('c|')),
+      true
+    )
+  }
+
+  /* ---- the boundary itself, so the constant cannot drift unnoticed. Three
+     by four is twelve lines and collapses; three by five is fifteen and does
+     not. */
+  {
+    const run = (publishers, subscribers) => {
+      const pub = Array.from({ length: publishers }, (_, i) => `p${i}`)
+      const sub = Array.from({ length: subscribers }, (_, i) => `s${i}`)
+      return collapseToServices({
+        nodes: [...pub.map(svc), ...sub.map(svc), topic('topic:shared.v1')],
+        edges: [
+          ...pub.map((x) => produce(x, 'topic:shared.v1')),
+          ...sub.map((x) => consume(x, 'topic:shared.v1')),
+        ],
+      })
+    }
+    is('twelve lines is still worth expanding', run(3, 4).edges.length, 12)
+    is('  …and thirteen is not', run(3, 5).nodes.some((n) => n.id === 'topic:shared.v1'), true)
+  }
+
+  done()
+}
 
 function done() {
   console.log(`\n  ${checks - failures}/${checks} checks passed`)

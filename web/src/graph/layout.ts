@@ -1,4 +1,4 @@
-import type { ELK as ElkInstance } from 'elkjs/lib/elk-api'
+import type { ELK as ElkInstance, ElkNode } from 'elkjs/lib/elk-api'
 import type { GraphEdge, GraphNode, NodeKind } from '../lib/api'
 import { KIND_PLURAL, flowDirection } from '../lib/nodes'
 
@@ -13,13 +13,60 @@ import { KIND_PLURAL, flowDirection } from '../lib/nodes'
  * are sorted by id before they go in.
  */
 
-// elk's bundle is larger than the rest of the app put together, so it is
-// fetched the first time a map is laid out rather than on every page load.
+/*
+ * elk runs in a worker, and against a clock.
+ *
+ * Layered layout is not merely slow on a large estate, it is unbounded. A
+ * synthetic estate of 182 nodes with one shared audit topic took 35s in node;
+ * a denser one threw `RangeError: Maximum call stack size exceeded`; the same
+ * graph in Chromium had not finished after a hundred seconds. On the main
+ * thread none of those is a slow map — it is a dead tab, with no spinner, no
+ * cancel and no way back.
+ *
+ * Off the main thread the tab stays alive, and a layout that is never going
+ * to finish can be abandoned. Both matter: the worker alone would still leave
+ * a map that spins for ever. Loading it lazily also keeps elk's bundle — still
+ * larger than the rest of the app put together — off the initial page load.
+ */
 let engine: Promise<ElkInstance> | null = null
 const elk = () => {
-  if (!engine) engine = import('elkjs/lib/elk.bundled.js').then((m) => new m.default())
+  if (!engine) {
+    engine = Promise.all([
+      import('elkjs/lib/elk-api'),
+      import('elkjs/lib/elk-worker.min.js?worker'),
+    ]).then(([api, worker]) => new api.default({ workerFactory: () => new worker.default() }))
+  }
   return engine
 }
+
+/** A worker that blew the deadline is mid-layout and will never answer, so it
+ *  is thrown away rather than reused; the next map builds a fresh one. */
+const discardEngine = () => {
+  const dead = engine
+  engine = null
+  void dead?.then((e) => e.terminateWorker()).catch(() => {})
+}
+
+/**
+ * How long a layout may take before the worker is killed.
+ *
+ * Layered layout's cost follows the graph's shape rather than its size — a
+ * synthetic 122-node estate took 16s where a 152-node one took 12s — so no
+ * node count reliably separates "fine" from "never finishes". A clock does,
+ * and it needs no guess about which graphs are hard. Ten seconds is far
+ * longer than any layout that was going to succeed (the demo estate is under
+ * one) and far shorter than a hang.
+ */
+const DEADLINE_MS = 10_000
+
+const TOO_BIG = 'layout-too-big'
+
+/** Whether a layout was abandoned on the deadline rather than failing outright. */
+export const isLayoutTooBig = (err: unknown): err is Error & { nodes: number; edges: number } =>
+  !!err && typeof err === 'object' && (err as { code?: string }).code === TOO_BIG
+
+/** How long the reader was asked to wait before being told it would not finish. */
+export const LAYOUT_DEADLINE_SECONDS = DEADLINE_MS / 1000
 
 /**
  * Four ways of arranging the same graph, because one arrangement cannot answer
@@ -158,11 +205,19 @@ export async function layoutGraph(
   const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id))
   // Laid out in the direction data flows, not the direction the edge is
   // stored in — a consumer belongs downstream of the topic it reads.
+  /* Only node positions are read back from elk — React Flow draws the lines
+     itself — so a second edge between a pair it has already been given is
+     work with nothing to show for it. A service that owns a database and also
+     writes to it is two scanned edges and one pull. */
+  const paired = new Set<string>()
   const elkEdges = [...edges]
     .sort((a, b) => a.id.localeCompare(b.id))
     .flatMap((e) => {
       const { source, target } = flowDirection(e)
       if (!present.has(source) || !present.has(target)) return []
+      const pair = `${source}\u0000${target}`
+      if (paired.has(pair)) return []
+      paired.add(pair)
       return [{ id: e.id, sources: [source], targets: [target] }]
     })
 
@@ -176,7 +231,27 @@ export async function layoutGraph(
           edges: elkEdges,
         }
 
-  const laid = await (await elk()).layout(graph)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      discardEngine()
+      reject(
+        Object.assign(
+          new Error(
+            `${sorted.length} nodes and ${elkEdges.length} lines did not lay out within ${LAYOUT_DEADLINE_SECONDS}s`
+          ),
+          { code: TOO_BIG, nodes: sorted.length, edges: elkEdges.length }
+        )
+      )
+    }, DEADLINE_MS)
+  })
+
+  let laid: ElkNode
+  try {
+    laid = await Promise.race([elk().then((e) => e.layout(graph)), deadline])
+  } finally {
+    clearTimeout(timer)
+  }
   const positions: Record<string, Position> = {}
   const groups: Group[] = []
   for (const child of laid.children ?? []) {

@@ -67,6 +67,25 @@ const IN: Record<Relation, string[]> = {
 
 export const RELATIONS: Relation[] = ['event', 'call', 'store']
 
+/**
+ * Where collapsing stops telling the truth.
+ *
+ * Collapsing an intermediary asserts a line per producer per consumer, and
+ * that is right for the shape most of them have: one service publishes, a
+ * handful listen. It is wrong for the ones every estate grows — an audit
+ * topic, an outbox, a shared database — where both sides are plural and the
+ * expansion claims a conversation between every pair. Eight producers and
+ * eight consumers is sixteen services sharing a bus, not sixty-four
+ * relationships, and drawing it as sixty-four is a lie that also happens to
+ * be unreadable.
+ *
+ * So past this many lines the intermediary is kept as itself and the scan's
+ * own edges are drawn to it: p + c lines instead of p x c, none of them
+ * invented. Measured on the demo estate the largest expansion is four, so
+ * nothing there crosses this — it exists for the real one.
+ */
+const HUB_LINES = 12
+
 /** `depends.on` and `topic.schema` are bindings, not traffic, and are dropped:
  *  every service depends on nearly every contract, so collapsing them draws a
  *  line from everything to everything and says nothing. */
@@ -87,9 +106,6 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
   const byId = new Map(data.nodes.map((n) => [n.id, n]))
   const isService = (id: string) => byId.get(id)?.kind === 'service'
   const isExternal = (id: string) => byId.get(id)?.kind === 'external'
-
-  const keep = data.nodes.filter((n) => n.kind === 'service' || n.kind === 'external')
-  const kept = new Set(keep.map((n) => n.id))
 
   // Which services sit on each end of each intermediary, per relation.
   const producers = new Map<string, Map<Relation, Set<string>>>()
@@ -117,9 +133,28 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
     }
   }
 
+  /* Which intermediaries are too busy to collapse. Decided per node rather
+     than per relation: a topic drawn as itself for its events and collapsed
+     away for its stores would be half on the map. */
+  const hubs = new Set<string>()
+  for (const [mid, byRel] of producers) {
+    if (isService(mid) || isExternal(mid)) continue
+    for (const [rel, from] of byRel) {
+      const to = consumers.get(mid)?.get(rel)
+      if (!to) continue
+      if (from.size > 1 && to.size > 1 && from.size * to.size > HUB_LINES) hubs.add(mid)
+    }
+  }
+
+  const keep = data.nodes.filter(
+    (n) => n.kind === 'service' || n.kind === 'external' || hubs.has(n.id)
+  )
+  const kept = new Set(keep.map((n) => n.id))
+
   // One line per (from, to, relation), listing everything it stands for.
   const lines = new Map<string, ServiceEdge>()
   for (const [mid, byRel] of producers) {
+    if (hubs.has(mid)) continue
     for (const [rel, from] of byRel) {
       for (const to of consumers.get(mid)?.get(rel) ?? []) {
         if (!from.size) continue
@@ -152,8 +187,21 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
     }
   }
 
+  /* A hub is on the map as itself, so what reaches it is the scan's own
+     edges — a real kind, a real confidence, a real repo — rather than
+     anything derived. `through` is empty for the same reason it is empty for
+     an external: nothing was collapsed into this line. */
+  const spokes: ServiceEdge[] = []
+  for (const e of hubs.size ? data.edges : []) {
+    if (!hubs.has(e.from) && !hubs.has(e.to)) continue
+    if (!kept.has(e.from) || !kept.has(e.to)) continue
+    const rel = relationOf(e.kind)
+    if (!rel) continue
+    spokes.push({ ...e, relation: rel, through: [] })
+  }
+
   // A service nothing connects to is still part of the estate and still worth
   // seeing — an island is a finding, not a rendering accident — so every
   // service and external is kept whether or not a line reached it.
-  return { ...data, nodes: keep, edges: [...direct, ...lines.values()] }
+  return { ...data, nodes: keep, edges: [...direct, ...lines.values(), ...spokes] }
 }

@@ -1035,3 +1035,15 @@ a.pill:hover {
   font-size: 12px;
   color: var(--text-secondary);
 }
+
+/* The layout failure sits where the spinner was, because it is the same
+   answer to the same question — what is this map doing — and the reader is
+   already looking there. Unlike the spinner it has to be clickable. */
+.map-failed {
+  pointer-events: auto;
+  padding: 0 16px;
+}
+
+.map-failed .banner {
+  max-width: 520px;
+}
