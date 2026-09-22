@@ -2011,12 +2011,29 @@ if (stage === 'org') {
    its rules. Nothing here touches a database. */
 
 if (stage === 'map') {
+  /* Node reads the TypeScript, but not Vite's extensionless imports, and the
+     app's own files should not grow `.ts` suffixes to suit a test. So the
+     resolution Vite does is done here instead, for this stage's process
+     alone — every stage runs in its own. */
+  ;(await import('node:module')).registerHooks({
+    resolve(specifier, context, next) {
+      if (specifier.startsWith('.') && !path.extname(specifier)) {
+        try {
+          return next(`${specifier}.ts`, context)
+        } catch {
+          /* not a TypeScript module after all; resolve it as written */
+        }
+      }
+      return next(specifier, context)
+    },
+  })
+
   console.log('\nThe service view — collapse, and where it stops')
   const { collapseToServices } = await import('../../web/src/graph/collapse.ts')
 
   const svc = (id) => ({ id: `svc:${id}`, kind: 'service', name: id })
-  const produce = (from, topic) => ({ id: `p|${from}|${topic}`, from: `svc:${from}`, to: topic, kind: 'kafka.produce' })
-  const consume = (by, topic) => ({ id: `c|${by}|${topic}`, from: `svc:${by}`, to: topic, kind: 'kafka.consume' })
+  const produce = (from, topic) => ({ id: `p|${from}|${topic}`, from: `svc:${from}`, to: topic, kind: 'kafka.produce', confidence: 'high' })
+  const consume = (by, topic) => ({ id: `c|${by}|${topic}`, from: `svc:${by}`, to: topic, kind: 'kafka.consume', confidence: 'high' })
   const topic = (id) => ({ id, kind: 'kafka.topic', name: id.replace('topic:', '') })
 
   /* ---- the ordinary case is unchanged: one publisher, three listeners, and
@@ -2079,6 +2096,42 @@ if (stage === 'map') {
     )
   }
 
+  /* ---- a derived line carries what the scan knew, never more.
+
+     It used to be stamped 'high' regardless, which is a claim nothing made:
+     the line is two edges and an inference. A route is as good as its weaker
+     leg, and between two routes the better one counts — the claim being made
+     is that these two services are related, and one solid path establishes
+     it. */
+  {
+    const line = (out, back) =>
+      collapseToServices({
+        nodes: [svc('a'), svc('b'), topic('topic:t.v1')],
+        edges: [
+          { ...produce('a', 'topic:t.v1'), confidence: out },
+          { ...consume('b', 'topic:t.v1'), confidence: back },
+        ],
+      }).edges[0]
+
+    is('two certain legs make a certain line', line('high', 'high').confidence, 'high')
+    is('a guessed publish and a certain consume is a guess', line('low', 'high').confidence, 'low')
+    is('  …and the other way round too', line('high', 'low').confidence, 'low')
+    is('the middle survives being the weaker leg', line('medium', 'high').confidence, 'medium')
+
+    const twoRoutes = collapseToServices({
+      nodes: [svc('a'), svc('b'), topic('topic:weak.v1'), topic('topic:firm.v1')],
+      edges: [
+        { ...produce('a', 'topic:weak.v1'), confidence: 'low' },
+        { ...consume('b', 'topic:weak.v1'), confidence: 'low' },
+        { ...produce('a', 'topic:firm.v1'), confidence: 'high' },
+        { ...consume('b', 'topic:firm.v1'), confidence: 'high' },
+      ],
+    }).edges
+    is('two topics between one pair is still one line', twoRoutes.length, 1)
+    is('  …standing for both', twoRoutes[0].through.length, 2)
+    is('  …and taking the better route, not the worse', twoRoutes[0].confidence, 'high')
+  }
+
   /* ---- the boundary itself, so the constant cannot drift unnoticed. Three
      by four is twelve lines and collapses; three by five is fifteen and does
      not. */
@@ -2096,6 +2149,104 @@ if (stage === 'map') {
     }
     is('twelve lines is still worth expanding', run(3, 4).edges.length, 12)
     is('  …and thirteen is not', run(3, 5).nodes.some((n) => n.id === 'topic:shared.v1'), true)
+  }
+
+  /* ──────────────────────────────── the handoff diagram's rollup collapse */
+
+  console.log('\nThe handoff diagram — one crossing, said once')
+  {
+    const { handoffDiagram } = await import('../../web/src/graph/processDiagrams.ts')
+
+    const end = (code, team) => ({ id: `proc:${code}`, code, name: `Step ${code}`, teamId: team, teamName: team })
+    const crossing = (from, fromTeam, to, toTeam, topic, via = 'rollup') => ({
+      id: `${from}->${to}|${topic}`,
+      from: end(from, fromTeam),
+      to: end(to, toTeam),
+      kind: 'kafka',
+      viaNode: topic,
+      via,
+      declared: false,
+      derived: true,
+      support: 'kafka',
+      crossTeam: fromTeam !== toTeam,
+      fromEdgeId: null,
+      toEdgeId: null,
+      note: null,
+      firstSeen: '2026-09-22T00:00:00Z',
+    })
+    const process = { id: 'proc:2', code: '2', name: 'Order and execution', teamId: 'trading', teamName: 'trading' }
+    const boxes = (src) => new Set((src.match(/H\d+/g) ?? []))
+    const arrows = (src) => (src.match(/^ {2}H\d+ -\.?->\|/gm) ?? []).length
+
+    /* ---- the rollup's own repetition is still collapsed. One crossing
+       reported at three depths is one crossing. */
+    {
+      const src = handoffDiagram(process, {
+        out: [
+          crossing('2', 'trading', '3', 'ledger', 'topic:t.v1'),
+          crossing('2', 'trading', '3.1', 'ledger', 'topic:t.v1'),
+          crossing('2', 'trading', '3.1.2', 'ledger', 'topic:t.v1'),
+        ],
+        in: [],
+        inside: [],
+      })
+      is('one crossing reported at three depths draws once', arrows(src), 1)
+      is('  …at the depth that actually happens', src.includes('3.1.2'), true)
+      is('  …and the shallower ones are not boxes of their own', boxes(src).size, 2)
+    }
+
+    /* ---- and the defect this replaces. Two unrelated far ends over one
+       topic are two crossings; comparing depths across the whole topic kept
+       whichever came first and dropped the other without saying so. */
+    {
+      const src = handoffDiagram(process, {
+        out: [
+          crossing('2', 'trading', '3.1.2', 'ledger', 'topic:orders.matched.v1'),
+          crossing('2', 'trading', '4.2.1', 'risk', 'topic:orders.matched.v1'),
+        ],
+        in: [],
+        inside: [],
+      })
+      is('two far ends over one topic are two crossings', arrows(src), 2)
+      is('  …both of which are on the diagram', src.includes('3.1.2') && src.includes('4.2.1'), true)
+      is('  …in the three teams they involve', boxes(src).size, 3)
+    }
+
+    /* ---- a leaf row the rollup never produced is not a rollup row and must
+       survive alongside one. Both of the crossings this lost on the demo
+       estate were of this shape. */
+    {
+      const src = handoffDiagram(process, {
+        out: [
+          crossing('2', 'trading', '3.1', 'ledger', 'topic:t.v1'),
+          crossing('2.3.5', 'trading', '3.1.3', 'ledger', 'topic:t.v1', 'interaction'),
+        ],
+        in: [],
+        inside: [],
+      })
+      is('a leaf crossing is not swallowed by a rollup over the same topic', arrows(src), 2)
+      is('  …because neither is under the other', src.includes('2.3.5') && src.includes('3.1.3'), true)
+    }
+
+    /* ---- two topics between one pair stay two facts, as they always did. */
+    {
+      const src = handoffDiagram(process, {
+        out: [
+          crossing('2', 'trading', '3.1.2', 'ledger', 'topic:one.v1'),
+          crossing('2', 'trading', '3.1.2', 'ledger', 'topic:two.v1'),
+        ],
+        in: [],
+        inside: [],
+      })
+      is('two topics between one pair are two crossings', arrows(src), 2)
+    }
+
+    /* ---- an exact duplicate must not read as its own descendant. */
+    {
+      const dup = crossing('2', 'trading', '3.1.2', 'ledger', 'topic:t.v1')
+      const src = handoffDiagram(process, { out: [dup, { ...dup }], in: [], inside: [] })
+      is('a row repeated verbatim draws once, not never', arrows(src), 1)
+    }
   }
 
   done()

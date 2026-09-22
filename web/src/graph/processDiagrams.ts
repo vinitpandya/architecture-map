@@ -314,28 +314,52 @@ export function laneDiagram(
  *
  * `inside` is already leaf-to-leaf. `out` and `in` are rollups, and the rollup
  * produces one row per ancestor of the far end — `2 → 3`, `2 → 3.1` and
- * `2 → 3.1.2` are one crossing said three times. The deepest far end is the
- * one that actually happens, so that is the one kept; the others are the same
- * fact with detail removed.
+ * `2 → 3.1.2` are one crossing said three times. Only the deepest is real;
+ * the others are the same fact with detail removed.
+ *
+ * "Deepest" has to mean deepest *along one chain*, though. Comparing depths
+ * across a whole topic collapses two unrelated crossings that happen to share
+ * a topic — `→ 3.1.2` and `→ 4.2.1` over the same topic are equally deep, so
+ * one was kept and the other silently dropped. On the demo estate that lost
+ * three crossings, every one of them cross-team, and two of them leaf rows
+ * the rollup never touched: exactly the handoffs this diagram exists to show.
+ *
+ * So a row survives unless another row in its group is a strict descendant of
+ * it. Unrelated far ends are incomparable and both stay.
  */
 function handoffRows(links: { out: Handoff[]; in: Handoff[]; inside: Handoff[] }) {
-  const depth = (code: string) => code.split('.').length
-  const deepest = (rows: Handoff[], far: (h: Handoff) => string) => {
-    const best = new Map<string, Handoff>()
-    for (const h of rows) {
-      // Two crossings between the same pair over two topics are two facts, so
-      // the topic is part of the key. A declared handoff has no topic and is
-      // keyed by its note instead.
-      const key = `${h.viaNode ?? h.note ?? ''}`
-      const held = best.get(key)
-      if (!held || depth(far(h)) > depth(far(held))) best.set(key, h)
+  const under = (ancestor: string, code: string) => code.startsWith(`${ancestor}.`)
+  const carriedBy = (h: Handoff) => h.viaNode ?? h.note ?? ''
+
+  const deepest = (rows: Handoff[], far: (h: Handoff) => string, near: (h: Handoff) => string) => {
+    // Identical rows first, so that an exact duplicate is not read as its own
+    // descendant and removed along with the row it duplicates.
+    const once = new Map<string, Handoff>()
+    for (const h of rows) once.set(`${near(h)}\u0000${far(h)}\u0000${carriedBy(h)}`, h)
+
+    /* Two crossings between the same pair over two topics are two facts, so
+       what carried it is part of the group. A declared handoff has no topic
+       and groups by its note instead. */
+    const groups = new Map<string, Handoff[]>()
+    for (const h of once.values()) {
+      const key = `${near(h)}\u0000${carriedBy(h)}`
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key)!.push(h)
     }
-    return [...best.values()]
+
+    const kept: Handoff[] = []
+    for (const group of groups.values()) {
+      for (const h of group) {
+        if (!group.some((other) => other !== h && under(far(h), far(other)))) kept.push(h)
+      }
+    }
+    return kept
   }
+
   return [
     ...links.inside,
-    ...deepest(links.out, (h) => h.to.code),
-    ...deepest(links.in, (h) => h.from.code),
+    ...deepest(links.out, (h) => h.to.code, (h) => h.from.code),
+    ...deepest(links.in, (h) => h.from.code, (h) => h.to.code),
   ]
 }
 

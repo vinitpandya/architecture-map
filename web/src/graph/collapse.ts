@@ -92,6 +92,13 @@ const HUB_LINES = 12
 const relationOf = (kind: string): Relation | null =>
   RELATIONS.find((r) => OUT[r].includes(kind) || IN[r].includes(kind)) ?? null
 
+type Confidence = GraphEdge['confidence']
+
+/** Low to high, so two of them can be compared. */
+const RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2 }
+
+const weaker = (a: Confidence, b: Confidence) => (RANK[a] <= RANK[b] ? a : b)
+
 /** Whether a line on the map is one of these derived ones rather than a scanned edge. */
 export const isDerived = (e: GraphEdge): e is ServiceEdge => 'relation' in e
 
@@ -107,14 +114,22 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
   const isService = (id: string) => byId.get(id)?.kind === 'service'
   const isExternal = (id: string) => byId.get(id)?.kind === 'external'
 
-  // Which services sit on each end of each intermediary, per relation.
-  const producers = new Map<string, Map<Relation, Set<string>>>()
-  const consumers = new Map<string, Map<Relation, Set<string>>>()
-  const bag = (m: Map<string, Map<Relation, Set<string>>>, mid: string, rel: Relation) => {
+  /* Which services sit on each end of each intermediary, per relation — and
+     how well the scan knew it, which the derived line has to carry rather
+     than assert for itself. */
+  type Side = Map<string, Confidence>
+  const producers = new Map<string, Map<Relation, Side>>()
+  const consumers = new Map<string, Map<Relation, Side>>()
+  const bag = (m: Map<string, Map<Relation, Side>>, mid: string, rel: Relation) => {
     if (!m.has(mid)) m.set(mid, new Map())
     const r = m.get(mid)!
-    if (!r.has(rel)) r.set(rel, new Set())
+    if (!r.has(rel)) r.set(rel, new Map())
     return r.get(rel)!
+  }
+  /** The best this service was ever seen to reach the intermediary by. */
+  const note = (side: Side, service: string, confidence: Confidence) => {
+    const held = side.get(service)
+    if (!held || RANK[confidence] > RANK[held]) side.set(service, confidence)
   }
 
   const direct: ServiceEdge[] = []
@@ -128,8 +143,8 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
     }
     if (!isService(e.from)) continue
     for (const rel of RELATIONS) {
-      if (OUT[rel].includes(e.kind)) bag(producers, e.to, rel).add(e.from)
-      if (IN[rel].includes(e.kind)) bag(consumers, e.to, rel).add(e.from)
+      if (OUT[rel].includes(e.kind)) note(bag(producers, e.to, rel), e.from, e.confidence)
+      if (IN[rel].includes(e.kind)) note(bag(consumers, e.to, rel), e.from, e.confidence)
     }
   }
 
@@ -156,16 +171,22 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
   for (const [mid, byRel] of producers) {
     if (hubs.has(mid)) continue
     for (const [rel, from] of byRel) {
-      for (const to of consumers.get(mid)?.get(rel) ?? []) {
+      for (const [to, inbound] of consumers.get(mid)?.get(rel) ?? []) {
         if (!from.size) continue
-        for (const a of from) {
+        for (const [a, outbound] of from) {
           if (a === to) continue
           if (!kept.has(a) || !kept.has(to)) continue
           const id = `${a}|${rel}|${to}`
           const prior = lines.get(id)
           const through = { id: mid, kind: byId.get(mid)?.kind ?? 'unknown' }
+          /* A route is only as good as its weaker leg: a guessed publish and
+             a certain consume is a guess. Between routes it is the better
+             one that counts — the claim is that these two are related, and
+             one solid path is enough to make it. */
+          const route = weaker(outbound, inbound)
           if (prior) {
             if (!prior.through.some((t) => t.id === mid)) prior.through.push(through)
+            if (RANK[route] > RANK[prior.confidence]) prior.confidence = route
             continue
           }
           lines.set(id, {
@@ -177,7 +198,11 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
             kind: rel === 'event' ? 'kafka.produce' : rel === 'store' ? 'db.write' : 'http.call',
             contractId: null,
             description: null,
-            confidence: 'high',
+            /* Not 'high'. Nothing scanned this line — it is two edges and an
+               inference — so it carries what those edges knew and no more.
+               Stamping certainty on something the scan never asserted is the
+               one thing this view must not do. */
+            confidence: route,
             repo: '',
             relation: rel,
             through: [through],
