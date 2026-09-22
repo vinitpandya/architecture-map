@@ -127,6 +127,16 @@ router.get('/status', wrap(async (req, res) => {
       edges: db.prepare('SELECT COUNT(*) AS n FROM edges').get().n,
       unresolved: db.prepare('SELECT COUNT(*) AS n FROM unresolved').get().n,
       drift: db.prepare('SELECT COUNT(*) AS n FROM drift').get().n,
+      /* What is still news. `drift` stays the number the link pass found,
+         because that is what it has always meant and what §14 asserts; this
+         is the one that moves when somebody accepts something. */
+      driftOpen: db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM drift d
+           LEFT JOIN drift_state s ON s.fingerprint = d.fingerprint
+           WHERE s.state IS NULL`
+        )
+        .get().n,
       driftWarn: db.prepare(`SELECT COUNT(*) AS n FROM drift WHERE severity = 'warn'`).get().n,
       quarantined: db.prepare(`SELECT COUNT(*) AS n FROM manifests WHERE status = 'quarantined'`).get().n,
       processes: db.prepare('SELECT COUNT(*) AS n FROM processes').get().n,
@@ -202,6 +212,17 @@ router.get('/status', wrap(async (req, res) => {
         .get().t ?? null,
   })
 }))
+
+/** A subject's findings, carrying whatever somebody decided about each — so a
+ *  node page cannot show as open what the findings list shows as accepted. */
+const findingsAbout = (subjectId) =>
+  db
+    .prepare(
+      `SELECT d.*, s.state, s.note AS state_note, s.author AS state_author, s.updated_at AS state_at
+       FROM drift d LEFT JOIN drift_state s ON s.fingerprint = d.fingerprint
+       WHERE d.subject_id = ?`
+    )
+    .all(subjectId)
 
 /* ───────────────────────────────────────────────────────── nodes & edges */
 
@@ -315,7 +336,7 @@ router.get('/node', wrap(async (req, res) => {
     viaContract,
     neighbours,
     processes,
-    drift: db.prepare('SELECT * FROM drift WHERE subject_id = ?').all(id),
+    drift: findingsAbout(id),
   })
 }))
 
@@ -475,19 +496,64 @@ router.get('/drift', wrap(async (req, res) => {
     args.push(...repos)
   }
   if (teams.length) {
-    where.push(
-      `EXISTS (SELECT 1 FROM nodes n
-               WHERE n.id = d.subject_id AND n.team_id IN (${teams.map(() => '?').join(',')}))`
-    )
+    where.push(`d.team_id IN (${teams.map(() => '?').join(',')})`)
     args.push(...teams)
   }
+  /* Everything comes back by default, accepted or not — a finding somebody
+     decided to live with has not stopped being true, and the caller is better
+     placed to decide where it belongs on screen than this is. `state` is for
+     the callers that want one or the other outright. */
+  const state = one(req.query.state)
+  if (state === 'open') where.push('s.state IS NULL')
+  if (state === 'accepted') where.push('s.state IS NOT NULL')
+
   const rows = db
     .prepare(
-      `SELECT d.* FROM drift d ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      `SELECT d.*, s.state, s.note AS state_note, s.author AS state_author, s.updated_at AS state_at
+       FROM drift d LEFT JOIN drift_state s ON s.fingerprint = d.fingerprint
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
        ORDER BY d.severity DESC, d.kind, d.subject_id LIMIT ?`
     )
     .all(...args, Number(req.query.limit) || 500)
   res.json({ findings: rows.map((r) => ({ ...r, data: parse(r.data, null) })) })
+}))
+
+/**
+ * Accept a finding, or take the acceptance back.
+ *
+ * Keyed by fingerprint, not by row id: the row is thrown away and rebuilt on
+ * every link pass, and what a person decided about it is not. The fingerprint
+ * covers the wording too, so if the situation changes — three repos claiming
+ * a node becomes five — the acceptance does not silently carry over to a
+ * finding nobody read.
+ */
+router.put('/finding-state', wrap(async (req, res) => {
+  const { fingerprint, state, note, author } = req.body ?? {}
+  const str = (v) => typeof v === 'string' && v.trim().length > 0
+  if (!str(fingerprint)) return res.status(400).json({ error: 'fingerprint must be a non-empty string' })
+  if (state !== 'accepted' && state !== 'open') {
+    return res.status(400).json({ error: `state must be 'accepted' or 'open'` })
+  }
+  for (const [name, value] of [['note', note], ['author', author]]) {
+    if (value !== undefined && value !== null && typeof value !== 'string') {
+      return res.status(400).json({ error: `${name} must be a string or null` })
+    }
+  }
+  const known = db.prepare('SELECT 1 FROM drift WHERE fingerprint = ?').get(fingerprint)
+  if (!known) return res.status(404).json({ error: 'no finding with that fingerprint' })
+
+  if (state === 'open') {
+    db.prepare('DELETE FROM drift_state WHERE fingerprint = ?').run(fingerprint)
+    return res.json({ fingerprint, state: 'open' })
+  }
+  const now = new Date().toISOString()
+  db.prepare(
+    `INSERT INTO drift_state (fingerprint, state, note, author, updated_at)
+     VALUES (?, 'accepted', ?, ?, ?)
+     ON CONFLICT(fingerprint) DO UPDATE SET
+       note = excluded.note, author = excluded.author, updated_at = excluded.updated_at`
+  ).run(fingerprint, note ?? null, author ?? null, now)
+  res.json({ fingerprint, state: 'accepted', note: note ?? null, author: author ?? null, updatedAt: now })
 }))
 
 router.get('/unresolved', wrap(async (req, res) => {
@@ -1153,7 +1219,7 @@ router.get('/process', wrap(async (req, res) => {
       )
       .all(row.id)
       .map((r) => ({ ...r, registered: !!r.registered })),
-    drift: db.prepare('SELECT * FROM drift WHERE subject_id = ?').all(row.id).map((r) => ({ ...r, data: parse(r.data, null) })),
+    drift: findingsAbout(row.id).map((r) => ({ ...r, data: parse(r.data, null) })),
     // `source` is JSON in the column and an object everywhere else it is
     // returned — /api/process-packs parses it, processRow parses it, and the
     // declared type says object. This one was handing back the raw string.

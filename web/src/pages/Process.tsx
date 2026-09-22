@@ -243,6 +243,7 @@ export function ProcessPage() {
             {drift.map((f) => (
               <li key={f.id}>
                 <strong>{driftTitle(f.kind)}</strong> — {f.detail}
+                {f.state === 'accepted' && <span className="muted"> · accepted</span>}
               </li>
             ))}
           </ul>

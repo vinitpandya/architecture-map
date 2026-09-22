@@ -5,6 +5,7 @@ import { DataGrid } from '../components/DataGrid'
 import { EvidenceList } from '../components/EvidenceList'
 import { Empty } from '../components/ui'
 import { api } from '../lib/api'
+import { relative } from '../lib/format'
 import { EDGE_LABEL, KIND_LABEL, KIND_PLURAL, VIA_LABEL, displayCode, idValue, nodeHref, processHref } from '../lib/nodes'
 import { MapCanvas } from '../graph/MapCanvas'
 import { Mermaid } from '../graph/ProcessFlow'
@@ -130,6 +131,7 @@ export const WIDGETS: WidgetDef[] = [
           { value: 'externals', label: 'External systems' },
           { value: 'edges', label: 'Relationships' },
           { value: 'drift', label: 'Drift findings' },
+          { value: 'driftOpen', label: 'Findings not yet accepted' },
           { value: 'unresolved', label: 'Unresolved references' },
           { value: 'orphans', label: 'Orphan nodes' },
           { value: 'quarantined', label: 'Quarantined manifests' },
@@ -770,8 +772,14 @@ function DriftBody({ widget }: { widget: WidgetConfig }) {
     )
   }
 
+  /* Accepted findings drop out of the list by kind and into one section at
+     the end. Hiding them outright would make the count move for a reason the
+     reader cannot see, and an accepted finding has not gone away — somebody
+     decided to live with it. */
+  const accepted = data.findings.filter((f) => f.state === 'accepted')
   const byKind = new Map<string, DriftFinding[]>()
   for (const f of data.findings) {
+    if (f.state === 'accepted') continue
     if (!byKind.has(f.kind)) byKind.set(f.kind, [])
     byKind.get(f.kind)!.push(f)
   }
@@ -792,16 +800,53 @@ function DriftBody({ widget }: { widget: WidgetConfig }) {
           </ul>
         </section>
       ))}
+      {accepted.length > 0 && (
+        <section className="drift-accepted">
+          <div className="drift-group-head">
+            <h4>Accepted</h4>
+            <span className="pill">{accepted.length}</span>
+          </div>
+          <p className="muted drift-why">
+            Still true, and somebody has looked at each of these and decided to live with it.
+          </p>
+          <ul className="drift-list">
+            {accepted.map((f) => (
+              <Finding key={f.id} finding={f} />
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   )
 }
 
 function Finding({ finding }: { finding: DriftFinding }) {
+  const { reload } = useScope()
   const [open, setOpen] = useState(false)
   const [evidence, setEvidence] = useState<Evidence[] | null>(null)
+  const [note, setNote] = useState('')
+  const [saving, setSaving] = useState(false)
   const who = participants(finding)
   const subject = finding.subject_id
   const process = isProcess(subject)
+  const accepted = finding.state === 'accepted'
+
+  // Keyed by fingerprint rather than row id: the row is rebuilt on every link
+  // pass and would take the decision with it.
+  const setState = async (state: 'accepted' | 'open') => {
+    if (!finding.fingerprint) return
+    setSaving(true)
+    try {
+      await api.put('/finding-state', {
+        fingerprint: finding.fingerprint,
+        state,
+        note: state === 'accepted' ? note.trim() || null : null,
+      })
+      reload()
+    } finally {
+      setSaving(false)
+    }
+  }
 
   // Citations are fetched when a finding is opened, not for all of them up
   // front — most findings are never expanded. A process has no evidence by
@@ -824,6 +869,21 @@ function Finding({ finding }: { finding: DriftFinding }) {
         <span className={`drift-dot ${finding.severity}`} aria-hidden="true" />
         <span className="drift-subject">{subject ? subjectLabel(subject) : 'the estate'}</span>
         <span className="drift-detail">{finding.detail}</span>
+        {accepted && (
+          /* On the row, not only inside it. Accepting collapses the finding
+             again, and a reason nobody can see without re-opening it is a
+             reason nobody reads. */
+          <span className="muted drift-accepted-note">
+            accepted{finding.state_note ? ` · ${finding.state_note}` : ''}
+          </span>
+        )}
+        {finding.team_id && <span className="pill drift-team">{finding.team_id}</span>}
+        {/* First seen, not last rebuilt. A finding that has been true for a
+            fortnight reads differently from one that appeared this morning,
+            and until now every one of them said "just now". */}
+        <span className="muted drift-age" title={`First seen ${finding.detected_at}`}>
+          {relative(Date.parse(finding.detected_at))}
+        </span>
         <span className="drift-caret" aria-hidden="true">
           {open ? '−' : '+'}
         </span>
@@ -867,6 +927,39 @@ function Finding({ finding }: { finding: DriftFinding }) {
             </p>
           )}
           {subject && <Link to={subjectHref(subject)}>Open details →</Link>}
+
+          {/* A finding nobody can close is a finding people stop reading. What
+              is accepted is stored against the wording as well as the subject,
+              so a situation that changes comes back rather than staying quietly
+              accepted under a sentence nobody agreed to. */}
+          {finding.fingerprint && (
+            <div className="drift-decide">
+              {accepted ? (
+                <>
+                  <span className="muted">
+                    Accepted {finding.state_at ? relative(Date.parse(finding.state_at)) : ''}
+                    {finding.state_author ? ` by ${finding.state_author}` : ''}
+                    {finding.state_note ? ` · ${finding.state_note}` : ''}
+                  </span>
+                  <button type="button" className="ghost" disabled={saving} onClick={() => setState('open')}>
+                    Reopen
+                  </button>
+                </>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    value={note}
+                    placeholder="Why this is acceptable (optional)"
+                    onChange={(e) => setNote(e.target.value)}
+                  />
+                  <button type="button" className="ghost" disabled={saving} onClick={() => setState('accepted')}>
+                    Accept
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
     </li>

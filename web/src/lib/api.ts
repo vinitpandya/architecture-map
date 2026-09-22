@@ -128,6 +128,8 @@ export type Status = {
     edges: number
     unresolved: number
     drift: number
+    /** The ones nobody has accepted yet — `drift` stays what the pass found. */
+    driftOpen: number
     driftWarn: number
     quarantined: number
     processes: number
@@ -369,7 +371,18 @@ export type DriftFinding = {
   severity: 'info' | 'warn'
   detail: string
   data: unknown
+  /** When this finding was FIRST seen. It survives the nightly rebuild. */
   detected_at: string
+  last_seen: string | null
+  /** Identity across rebuilds, and what an acceptance is keyed by. */
+  fingerprint: string | null
+  /** Who should go and look. Null where more than one team is the finding. */
+  team_id: string | null
+  /** Set once somebody has decided to live with it. */
+  state: 'accepted' | null
+  state_note: string | null
+  state_author: string | null
+  state_at: string | null
 }
 
 export type TopicFlow = {

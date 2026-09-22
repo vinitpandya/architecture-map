@@ -6,6 +6,7 @@ import { Card, Empty } from '../components/ui'
 import { DataGrid, type GridColumn } from '../components/DataGrid'
 import { EvidenceList } from '../components/EvidenceList'
 import { assignTeam } from '../lib/teams'
+import { driftTitle } from '../lib/drift'
 import {
   EDGE_LABEL,
   KIND_LABEL,
@@ -91,7 +92,8 @@ export function NodePage() {
           <ul className="stack" style={{ gap: 6, margin: 0, paddingLeft: 18 }}>
             {data.drift.map((f) => (
               <li key={f.id}>
-                <strong>{f.kind}</strong> — {f.detail}
+                <strong>{driftTitle(f.kind)}</strong> — {f.detail}
+                {f.state === 'accepted' && <span className="muted"> · accepted</span>}
               </li>
             ))}
           </ul>

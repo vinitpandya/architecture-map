@@ -366,6 +366,7 @@ if (stage === 'estate') {
   await fetch(`${base}/override?subjectKind=node&subjectId=svc:gateway-api&field=team`, { method: 'DELETE' })
 
   const { ingestManifest } = await import('../src/ingest.js')
+  const { linkPass } = await import('../src/link.js')
   const again = JSON.parse(fs.readFileSync(path.join(ROOT, 'demo', 'manifests', 'ledger-service.json'), 'utf8'))
   ingestManifest(again, 'ledger-service.json')
   const reingested = await get(`/node?id=${encodeURIComponent(subjectId)}`)
@@ -424,7 +425,6 @@ if (stage === 'estate') {
      unseen; so the pair is ingested here on purpose. */
   {
     const { normaliseId } = await import('../src/link.js')
-    const { linkPass } = await import('../src/link.js')
     is(
       'two spellings of one topic still normalise together',
       normaliseId('topic:users.created.v2') === normaliseId('topic:UsersCreatedV2'),
@@ -476,6 +476,50 @@ if (stage === 'estate') {
       db.prepare(`SELECT COUNT(*) n FROM nodes WHERE id LIKE 'topic:shipments.dispatched%'`).get().n,
       2
     )
+  }
+
+  /* ---- a finding has an age, an owner, and a way to close it.
+
+     rebuildDrift() deletes the whole table and writes it again on every link
+     pass, and it used to re-stamp detected_at with the time of that pass — so
+     every finding was permanently seconds old, nothing could be sorted or
+     chased, and there was no way to say "seen it, living with it". All three
+     now hang off a fingerprint that survives the rebuild. */
+  {
+    const q = (p) => get(p).then((r) => r.body)
+    const put = (body) =>
+      fetch(`${base}/finding-state`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(async (r) => ({ status: r.status, body: await r.json() }))
+
+    const findings = (await q('/drift?limit=500')).findings
+    ok('every finding carries a fingerprint', findings.every((f) => f.fingerprint), 'one had none')
+    is('  …and no two findings share one', new Set(findings.map((f) => f.fingerprint)).size, findings.length)
+
+    const subject = findings[0]
+    const firstSeen = subject.detected_at
+    linkPass()
+    const rebuilt = (await q('/drift?limit=500')).findings.find((f) => f.fingerprint === subject.fingerprint)
+    ok('a finding survives a rebuild', !!rebuilt, 'the fingerprint changed across a link pass')
+    is('  …keeping the moment it was first seen', rebuilt.detected_at, firstSeen)
+    ok('  …while last_seen moves to this pass', rebuilt.last_seen > firstSeen, `${rebuilt.last_seen} vs ${firstSeen}`)
+
+    is('accepting a finding takes', (await put({ fingerprint: subject.fingerprint, state: 'accepted', note: 'known' })).status, 200)
+    const accepted = (await q('/drift?limit=500&state=accepted')).findings
+    is('  …and it is the one accepted', accepted.length, 1)
+    is('  …with the reason kept', accepted[0].state_note, 'known')
+    is('  …and out of the open list', (await q('/drift?limit=500&state=open')).findings.length, findings.length - 1)
+
+    linkPass()
+    is('  …and the acceptance outlives the rebuild too', (await q('/drift?limit=500&state=accepted')).findings.length, 1)
+
+    is('reopening it takes', (await put({ fingerprint: subject.fingerprint, state: 'open' })).status, 200)
+    is('  …leaving nothing accepted', (await q('/drift?limit=500&state=accepted')).findings.length, 0)
+
+    is('a fingerprint nothing matches is refused', (await put({ fingerprint: 'nope', state: 'accepted' })).status, 404)
+    is('  …as is a state that is neither', (await put({ fingerprint: subject.fingerprint, state: 'ignored' })).status, 400)
   }
 
   server.close()
@@ -1965,21 +2009,39 @@ if (stage === 'org') {
       'every line stayed inside the team'
     )
 
-    /* Findings are filtered by whoever owns what they are about. Most of the
-       demo estate's findings are about something with no team — a contract
-       is nobody's, a topic nobody produces has nothing to inherit, and a
-       process-* finding is not about a node at all — so the team that does
-       own one is found here rather than assumed. */
+    /* Findings are filtered by the team routed to them, which is the subject's
+       own team where it has one and the team of the services around it where
+       it does not. Filtering on the subject's own team alone would return
+       almost nothing: a contract is nobody's, a topic nobody produces has
+       nothing to inherit, and a process-* finding is not about a node at all. */
     const allFindings = (await q('/drift?limit=1000')).findings
-    const owning = allFindings.map((f) => owner.get(f.subject_id)).find(Boolean)
-    ok('some finding is about something a team owns', !!owning, 'no finding had an owned subject')
+    const routed = allFindings.filter((f) => f.team_id)
+    ok(
+      'most findings name a team to look at them',
+      routed.length > allFindings.length / 2,
+      `${routed.length} of ${allFindings.length}`
+    )
+    const owning = routed[0].team_id
     const theirs = (await q(`/drift?limit=1000&teams=${owning}`)).findings
     ok('/drift narrows to that team', theirs.length > 0 && theirs.length < allFindings.length, `${theirs.length} of ${allFindings.length}`)
-    is('  …to findings about something it owns', theirs.every((f) => owner.get(f.subject_id) === owning), true)
+    is('  …to the findings routed to it', theirs.every((f) => f.team_id === owning), true)
+    is('  …every one of them', theirs.length, routed.filter((f) => f.team_id === owning).length)
+    ok(
+      '  …and a finding whose subject it owns outright is among them',
+      allFindings
+        .filter((f) => owner.get(f.subject_id) === owning)
+        .every((f) => theirs.some((t) => t.fingerprint === f.fingerprint)),
+      'a finding about something the team owns was filtered out'
+    )
     is(
-      '  …and a team that owns none of them gets none, rather than all of them',
+      '  …while a team that owns none of them gets none, rather than all of them',
       (await q('/drift?limit=1000&teams=nobody-at-all')).findings.length,
       0
+    )
+    is(
+      '  …and a skew between two teams is routed to neither',
+      allFindings.filter((f) => f.kind === 'version-skew').every((f) => f.team_id === null),
+      true
     )
 
     server.close()

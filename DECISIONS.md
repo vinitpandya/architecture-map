@@ -572,6 +572,57 @@ the git log rather than here. Three were judgement calls:
   and leaves a graph that is already squarer exactly as it was. Still layered,
   still never force.
 
+## Scale, and four things that were not true
+
+- **A busy intermediary is kept as a node rather than collapsed.** Collapsing
+  asserts a line per producer per consumer, which is right for the shape most
+  intermediaries have — one publisher, a handful of listeners — and wrong for
+  the ones every estate grows. Eight producers and eight consumers of one audit
+  topic is sixteen services sharing a bus, not sixty-four conversations. Past
+  twelve lines the intermediary stays on the map and its own scanned edges are
+  drawn: `p + c` instead of `p × c`, and nothing invented. The threshold is a
+  judgement call; the demo estate's widest expansion is four, so it sits well
+  clear of anything real there.
+- **elk runs in a worker, against a ten-second deadline, rather than behind a
+  node-count guard.** A guard needs a number that separates "fine" from "never
+  finishes", and there isn't one: a synthetic 122-node estate took 16s where a
+  152-node one took 12s. Cost follows shape. A clock needs no such number, and
+  a worker that blows it is terminated because nothing else can stop it.
+- **A derived line's confidence is the weaker of its two legs, and the better
+  of its routes.** A route is only as good as its weakest part; but where two
+  intermediaries connect one pair, the claim is that the pair is related, and
+  one solid path establishes that. It used to be `'high'` unconditionally.
+- **near-miss no longer strips a version suffix.** It made `orders.matched.v1`
+  and `.v2` normalise alike and reported a migration as a typo. The case the
+  rule was written for — `users.created.v2` against `UsersCreatedV2` — still
+  collapses, because separators and case are all it takes. Nothing now reports
+  two live versions of a topic at all; both are nodes on the map, and a wrong
+  finding is worse than a missing one.
+- **A finding's identity is `sha1(kind | subject | detail)`.** The table is
+  deleted and rebuilt on every link pass, so identity had to be derived from
+  content. Including the wording is deliberate: "3 repos claim this" and "5
+  repos claim this" are different situations, and an acceptance of the first
+  should not silently cover the second.
+- **A finding is routed to a team the way a node is.** Its subject's team,
+  the owning team if the subject is a process, the team itself if it is a team,
+  and otherwise the team of the services around it when they agree. That takes
+  the demo estate from 1 finding of 15 carrying a team to 10. The five left
+  over are a topic two teams publish and three version skews — more than one
+  team is the finding in each, so naming one would be picking a side.
+- **`counts.drift` still means what the link pass found; `counts.driftOpen` is
+  the one that moves.** Redefining the existing count to exclude accepted
+  findings would change the meaning of a number §14 asserts and that people
+  may already be reading. The new one is additive, and the stat tile offers
+  both.
+- **An accepted finding is greyed and moved to the end, not hidden.** Hiding it
+  would move a count for a reason the reader cannot see, and it has not stopped
+  being true.
+- **The `map` verification stage imports the app's own TypeScript.** Node reads
+  `.ts` directly but not Vite's extensionless imports, so the stage registers a
+  resolver hook for its own process rather than putting `.ts` suffixes through
+  the app to suit a test. The alternative — a copy of the collapse rules in the
+  test — is the thing most likely to drift from what ships.
+
 ## Working
 
 - **`npm run verify` was added** — SPEC.md §14 as a runnable check, over HTTP,

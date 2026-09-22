@@ -376,6 +376,46 @@ addColumn('processes', 'team_id', 'TEXT')
 // otherwise drop out of the team filter and poison cross_team on every handoff
 // it takes part in.
 addColumn('processes', 'team_via', 'TEXT')
+
+/*
+ * A finding is derived, and rebuildDrift() throws the whole table away and
+ * writes it again on every link pass. So three things that must not be
+ * rewritten each time need somewhere to live.
+ *
+ * 'fingerprint' is what survives a rebuild: the same situation, described the
+ * same way, is the same finding. Wording is part of it on purpose — "3 repos
+ * claim this" and "5 repos claim this" are not the same situation, and an
+ * acceptance of the first should not silently cover the second.
+ *
+ * 'detected_at' can then mean what it says. It used to be stamped with the
+ * time of the last link pass, so every finding was permanently seconds old
+ * and nothing could be sorted, aged or chased.
+ *
+ * 'team_id' is who should look at it, resolved the way Layer C resolves a
+ * node's team. Without it a team filtering the estate to its own findings got
+ * almost nothing, because most subjects carry no team of their own.
+ */
+addColumn('drift', 'fingerprint', 'TEXT')
+addColumn('drift', 'last_seen', 'TEXT')
+addColumn('drift', 'team_id', 'TEXT')
+db.exec(`
+  CREATE INDEX IF NOT EXISTS drift_fingerprint ON drift (fingerprint);
+  CREATE INDEX IF NOT EXISTS drift_team        ON drift (team_id);
+`)
+
+/* What a person decided about a finding, which the ingest never touches --
+   the same division as 'overrides'. Keyed by fingerprint rather than by the
+   row id, because the row is thrown away and rebuilt while the judgement
+   about it is not. */
+db.exec(`
+CREATE TABLE IF NOT EXISTS drift_state (
+  fingerprint TEXT PRIMARY KEY,
+  state       TEXT NOT NULL,   -- accepted
+  note        TEXT,
+  author      TEXT,
+  updated_at  TEXT NOT NULL
+);
+`)
 db.exec(`
   CREATE INDEX IF NOT EXISTS nodes_team     ON nodes (team_id);
   CREATE INDEX IF NOT EXISTS processes_team ON processes (team_id);

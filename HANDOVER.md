@@ -29,6 +29,13 @@ found defects on paths the demo data never reaches. That turned out to be the
 most productive thing in the build, and it is why §"Nothing is failing" below is
 as long as it is.
 
+A later pass did the same thing against *scale* rather than the spec, by
+building a synthetic estate shaped like a real one and measuring. It found that
+the map does not survive a real estate at all — see §"What the scale pass
+found" — along with a filter row that silently did nothing on four screens, a
+finding table that could not age or be closed, and two defects of my own. All
+are fixed and verified.
+
 Read [DECISIONS.md](DECISIONS.md) alongside this. It has the working for every
 judgement call, including three places where a spec contradicts itself and how
 each was resolved.
@@ -42,8 +49,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 385 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 179 more
+npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 451 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 185 more
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
 npm run prompts                      # rebuild prompts/standalone/ from prompts/ and schema/
@@ -102,7 +109,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 385 assertions across five stages, all passing.**
+**`npm run verify` — 451 assertions across six stages, all passing.**
 
 *Ingest (26, in-process against a fresh database).* `prompts/standalone/` is in
 sync with the schemas it inlines, carries no unfilled placeholder, and has the
@@ -118,7 +125,7 @@ manifest, doubles nothing, and leaves every `edges.id` and `first_seen`
 unchanged when the manifest's edges and evidence are reordered. The contract
 version is in `contract_bindings`, not on the node.
 
-*The estate (49, over HTTP).* Every §14 count — 10 services, 9 topics, 5
+*The estate (74, over HTTP).* Every §14 count — 10 services, 9 topics, 5
 contracts, 6 endpoints, 8 databases, 2 caches, 3 externals, 0 quarantined, 3
 unresolved. Exactly one `no-producer` (`topic:risk.flagged.v1`), exactly one
 `shared-database` (`db:postgres/ledger`), three `version-skew` including
@@ -131,6 +138,15 @@ override is a 400 that writes nothing. Five searches including `@KafkaListener` 
 return hits rather than an FTS5 syntax error. **An override changes
 `/api/node` and a re-ingest of that repo does not revert it** — the single most
 important test in the suite.
+
+`/nodes`, `/edges` and `/unresolved` each narrow by repo, and an edge's repo is
+the manifest that saw the call rather than either end's owner. A service
+publishing v1 and v2 of one topic raises no `near-miss` while both versions stay
+on the map — the demo estate carries no two-version pair, which is exactly why
+that defect went unseen, so the pair is ingested on purpose. And a finding keeps
+the moment it was first seen across a rebuild while `last_seen` moves, can be
+accepted with a reason and reopened, survives a rebuild in either state, and
+refuses a fingerprint nothing matches (404) or a state that is neither (400).
 
 *Processes (96, over HTTP).* `validate.mjs` says which schema it picked. A
 four-segment code exits 1 naming the path, quarantines the pack and imports zero
@@ -163,7 +179,7 @@ A branch to its own process is dropped; one back to an earlier sibling is kept,
 because that is a retry. `--remove` clears packs, processes, the join tables,
 the branches and every process finding.
 
-*Org (164, in-process and over HTTP).* `teamId()` fixes case and separators and
+*Org (177, in-process and over HTTP).* `teamId()` fixes case and separators and
 deliberately does not merge `Trading Team` into `trading`. A service takes its
 own team, a database its owner's, an endpoint its exposer's, a cache its single
 writing team's; an external, a contract, an unproduced topic, a two-writer cache
@@ -198,6 +214,14 @@ editor does not understand — at the top level and on the entry being edited �
 survives a write, and a `teams.json` whose `teams` is not a list is refused
 rather than replaced.
 
+`/nodes`, `/edges` and `/drift` each narrow to a team, this being the stage
+where teams are resolved on more than the one service a manifest names
+outright. A connection is kept when *either* end belongs to the team, because a
+line that leaves the team is the reason to filter by one — and at least one of
+the ones returned does leave it. Most findings now name a team to look at them,
+a team that owns none gets none rather than all of them, and a version skew
+between two teams is routed to neither.
+
 *Packs (50, in-process).* The situations the demo estate cannot contain, because
 its packs are well-formed on purpose. A pack whose `pack` field is not a string
 quarantines instead of throwing, and a malformed file in the inbox does not stop
@@ -212,7 +236,33 @@ Deleting a pack outright has the same hole as re-ingesting one, and does not
 take away a code another pack still declares either. The demo estate is
 unharmed by all of it.
 
-**`npm run verify:ui` — 179 checks in Chromium at 1280×900, all passing.**
+*The service view (28, no database at all).* The one part of the map that can
+be checked without a browser, and the part most worth checking as an estate
+grows: whether collapsing an intermediary is still telling the truth. Node
+reads `web/src/graph/collapse.ts` and `processDiagrams.ts` directly, so these
+assert against the modules the app ships rather than a copy of their rules.
+
+A topic with one publisher collapses into a line per listener, each saying what
+carried it. A fan-out stays collapsed however wide, because one publisher means
+`p × c` never exceeds `p + c`. A shared bus — five publishers, five listeners —
+is *not* expanded into all twenty-five pairs: the topic stays on the map and
+the ten edges drawn are the ones the scan actually found. Twelve lines is worth
+expanding and thirteen is not, so the threshold cannot drift unnoticed. A
+derived line takes the weaker of its two legs and the better of its routes.
+
+And the handoff diagram's rollup collapse: one crossing reported at three
+depths draws once and at the depth that happens; two far ends over one topic
+draw twice; a leaf crossing is not swallowed by a rollup over the same topic;
+a verbatim duplicate draws once rather than never.
+
+**`npm run verify:ui` — 185 checks in Chromium at 1280×900, all passing.**
+
+A finding says how long it has been true rather than "just now", names the team
+that should look at it, and can be accepted with a reason and reopened again —
+the accepted one moving into its own section, carrying the reason on the row,
+and coming back when reopened. (`counts.drift` is unchanged and still means
+what the link pass found; `counts.driftOpen` is the number that moves when
+something is accepted, and the stat tile offers both.)
 
 The map opens collapsed to services and draws all ten of them, with a key
 naming the three kinds of line. The number of collapsed lines equals the number
@@ -292,9 +342,20 @@ they produce.
 
 ## Nothing is failing
 
-No verification step is left failing and nothing was weakened to pass.
-Forty-three defects were found and fixed rather than worked around. Five came
-out of running the thing:
+No verification step is left failing and nothing was weakened to pass. One
+thing is *uncovered* rather than failing, and it is named in §"What the scale
+pass found": the layout deadline and the worker have no automated check,
+because producing a hanging graph in the suite would mean shipping a fixture
+big enough to make every run take minutes.
+
+Forty-three defects were found and fixed during the build proper, and a later
+pass found more by measuring rather than reading: a map that crashes elk on any
+estate with a shared topic, a service-level view that multiplied lines through
+one, a filter row that silently did nothing on four screens, a finding table
+that could not age or be closed, a version migration reported as a typo, a node
+page printing a finding's raw slug, and two of my own — a lost cross-team
+crossing and a confidence nothing asserted. Five of the original forty-three
+came out of running the thing:
 
 - **`/api/graph` ignored `depth`.** The BFS grew its frontier while iterating the
   edge list, so one pass walked the whole connected component and `depth=1`
@@ -406,6 +467,74 @@ returned 43 of 46 processes because the value reached a LIKE pattern unvalidated
 `pack.source` as an unparsed JSON string; an unresolvable widget code rendered a
 blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
 
+## What the scale pass found
+
+The demo estate is ten services, sparse, with no node anything else crowds
+around. Everything below was measured against a synthetic estate shaped like a
+real one instead: every service owning a database and a topic, plus the two
+things a demo estate never has — a shared audit topic many services publish and
+many consume, and a shared database many write and many read.
+
+**The service-level collapse multiplied through them.** Collapsing an
+intermediary asserts one line per producer per consumer:
+
+| services | Everything | Services level |
+|---|---|---|
+| 30 | 92 nodes / 205 lines | 30 nodes / **740** lines |
+| 60 | 182 / 370 | 60 / **2,100** |
+| 120 | 362 / 700 | 120 / **7,500** |
+
+The level meant to reduce clutter produced 3.6× more lines than showing
+everything. One audit topic with 30 producers and 15 consumers is 450 lines on
+its own, none of which the scan found.
+
+**elk did not slow down so much as stop.** Timings are node, main thread, with
+the `compact` options exactly as shipped:
+
+| | graph | result |
+|---|---|---|
+| no hub | 92 nodes / 150 lines | 3,971 ms |
+| no hub | 182 / 300 | 35,113 ms |
+| hub | 92 / 205 | no result in 45 s |
+| hub | 182 / 370 | **RangeError: Maximum call stack size exceeded**, 1.9 s |
+| hub | 362 / 700 | **RangeError**, 5.5 s |
+| hub, services | 30 / 740 | **RangeError**, 3.5 s |
+| hub, services | 60 / 2,100 | **RangeError**, 16.9 s |
+
+A control rules out cycles: the same estate as a DAG behaves identically. It is
+a single high-degree node that tips it. Deduplicating parallel edges — the
+obvious fix — does not save it either: 740 lines deduped to 600 still threw.
+
+In Chromium the 182-node graph did not finish within 100 s rather than throwing,
+browsers having a deeper stack. That is worse, not better: a frozen tab with no
+error. It is also why the fix is a deadline and a worker rather than only a
+`.catch`.
+
+**Three cost figures do not line up with size at all**: 62 nodes 1.5 s, 92 nodes
+3.6 s, 122 nodes 15.9 s, 152 nodes 12.2 s. Layout cost follows a graph's shape.
+Any guard phrased as a node count would refuse healthy graphs and admit hanging
+ones, which is why the guard is a clock.
+
+### What is fixed
+
+- A middle node whose expansion would assert more than the scan found stays on
+  the map and is drawn with its own scanned edges: `p + c`, not `p × c`.
+- elk runs in a worker against a 10-second deadline; a worker that blows it is
+  terminated and the map says so, offering Columns, which uses no engine.
+- `layoutGraph` finally has a `.catch`. Without it a failure left the spinner
+  running for ever and a crash was indistinguishable from a slow graph.
+- elk is no longer handed duplicate edges it cannot use — only node positions
+  are ever read back from it.
+
+### What is not covered by a check
+
+The deadline and the worker are **not** exercised by either suite. There is no
+way to produce a hanging graph in the suite without shipping a large fixture,
+and a fixture big enough to hang elk would make every run take minutes. The
+collapse rule *is* covered, by 18 checks in the `map` stage that import the
+app's own module. The numbers above are reproducible by hand; the probe is not
+committed, being a throwaway.
+
 ## Things worth knowing before you touch it
 
 - **The demo data is the test suite.** `server/scripts/demo/estate.mjs` is the
@@ -479,6 +608,18 @@ blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
   lives in `available()` in `web/src/graph/processDiagrams.ts` and it shares
   `laneSplit()` with the lane generator on purpose — the two answering
   differently is how you get a tab that renders one lane.
+- **`verify:ui` serves `web/dist`, not your source.** It is the production
+  build it drives, so a change to `web/src` that has not been rebuilt is
+  silently not under test — the suite runs green against the previous bundle
+  and tells you nothing is wrong. `npm run build && npm run verify:ui`, always,
+  in that order. (`npm run verify` needs no build: it imports the source.)
+- **Running the two suites at the same time will fail checks.** They share
+  `data/`, and one truncating the other's tables mid-run produces failures
+  that look like real defects and do not reproduce. Likewise
+  `node server/scripts/verify.mjs --stage=<x>` on its own runs against your
+  *working* database rather than a throwaway one, because `DATA_DIR` is set by
+  the orchestrator — it will ingest the fixtures into your estate. Use
+  `npm run verify` unless you know you want that.
 - **The registry is now something the server writes.** Both verification
   suites run against a *copy* of `demo/teams.json` under `data/` for that
   reason: `verify:ui` renames and merges teams, and pointed at the repo root it
@@ -511,30 +652,37 @@ blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
 
 ## What I would do next, in order
 
-1. **Stale evidence.** Given a checkout, re-read each cited `file:line` and
+1. **Route a finding to more than one team.** `drift.team_id` is a single
+   column, so a version skew between two teams and a topic two teams publish
+   stay unrouted — 5 of the demo estate's 15. That is honest (more than one
+   team *is* the finding) but it means the two most interesting kinds never
+   reach an inbox. A join table would fix it; the question is whether the
+   finding should then be resolvable by naming an owner, which is item 6 below
+   and probably the same piece of work.
+2. **Stale evidence.** Given a checkout, re-read each cited `file:line` and
    compare it to the stored snippet. The schema already promises this ("ingest
    re-checks it, and a snippet that no longer matches marks the fact stale") and
    `drift.stale-evidence` is reserved for it. It is what turns the map from "true
    when it was scanned" into "provably still true", and it is the last piece of
    the honesty argument that is missing.
-2. **Pass 2.** `prompts/scan-pass2-link.md` exists and nothing runs it. The
+3. **Pass 2.** `prompts/scan-pass2-link.md` exists and nothing runs it. The
    `near-miss` findings are exactly its input, and reconciling ids across
    manifests is what stops a ten-repo estate becoming ten islands.
-3. **Edge overrides and `hidden`.** `overrides` supports `subject_kind='edge'`
+4. **Edge overrides and `hidden`.** `overrides` supports `subject_kind='edge'`
    and a `hidden` field, `/api/graph` already honours `hidden` on nodes, and no
    screen writes either. A "this edge is wrong" button is a small change with a
    large effect on whether people trust the map enough to correct it.
-4. **Process coverage as a first-class report.** `/api/coverage` and the
+5. **Process coverage as a first-class report.** `/api/coverage` and the
    `process-coverage` widget exist; what is missing is the other direction —
    which processes have gone longest without anybody confirming them. `source.asOf`
    is already stored and the process page already shows its age.
-5. **Team assignment should reach further than a service.** Only a service can
+6. **Team assignment should reach further than a service.** Only a service can
    be put in a team today, because everything else inherits. The cases that
    would want their own are a topic two teams publish (deliberately teamless,
    and `multi-team-topic` says why) and a cache two teams write. Both are real
    findings rather than gaps, so the right move is probably to let the *finding*
    be resolved by naming an owner, not to add a free-floating override.
-6. **A saved map arrangement should be shareable.** It is per browser today.
+7. **A saved map arrangement should be shareable.** It is per browser today.
    The obvious shape is a `layout` field on the widget's options, saved with the
    page like everything else on it, with `localStorage` as the per-person
    override. That is also what would let a team agree on one picture of the

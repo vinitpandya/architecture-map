@@ -1,5 +1,5 @@
 import { db } from './db.js'
-import { linkId } from './ids.js'
+import { linkId, sha1 } from './ids.js'
 import { aliasMap, canonicalTeam, rebuildTeams, registryConfigured } from './teams.js'
 
 /**
@@ -813,14 +813,81 @@ function resolveOwnership() {
 
 /* ─────────────────────────────────────────────────────────────── findings */
 
+/**
+ * Who should go and look at a finding.
+ *
+ * The same rules Layer C already uses to give a node a team, applied to
+ * whatever the finding is about: its own team if it has one, the owning
+ * team if it is a process, the team itself if it is a team. A subject with
+ * no team of its own takes the team of the services around it — but only
+ * when they agree, because a topic two teams publish has no owner and saying
+ * otherwise would promote a tiebreak into an org fact.
+ *
+ * That leaves a version skew between two teams, and a topic two teams
+ * publish, unrouted. Both are right: more than one team is the finding, and
+ * naming one of them would be picking a side. Everything else lands
+ * somewhere — 10 of the demo estate's 15, against 1 when the only rule was
+ * the subject's own team.
+ */
+function teamRouter() {
+  const node = new Map(db.prepare('SELECT id, kind, team_id FROM nodes').all().map((r) => [r.id, r]))
+  const process = new Map(db.prepare('SELECT id, team_id FROM processes').all().map((r) => [r.id, r.team_id]))
+  const neighbours = new Map()
+  for (const e of db.prepare('SELECT from_id, to_id FROM edges').all()) {
+    for (const [self, other] of [[e.from_id, e.to_id], [e.to_id, e.from_id]]) {
+      if (!neighbours.has(self)) neighbours.set(self, new Set())
+      neighbours.get(self).add(other)
+    }
+  }
+
+  return (subjectId) => {
+    if (!subjectId) return null
+    if (subjectId.startsWith('proc:')) return process.get(subjectId) ?? null
+    if (subjectId.startsWith('team:')) return subjectId.slice('team:'.length) || null
+    const self = node.get(subjectId)
+    if (!self) return null
+    if (self.team_id) return self.team_id
+    const around = new Set()
+    for (const other of neighbours.get(subjectId) ?? []) {
+      const n = node.get(other)
+      if (n?.kind === 'service' && n.team_id) around.add(n.team_id)
+    }
+    return around.size === 1 ? [...around][0] : null
+  }
+}
+
 function rebuildDrift(now) {
+  /* When a finding was first seen has to outlive the table it lives in, or
+     the rebuild below makes every finding seconds old on every link pass and
+     nothing can be aged, sorted or chased. The fingerprint is what carries it
+     across: same kind, same subject, same sentence, same finding. */
+  const since = new Map(
+    db
+      .prepare('SELECT fingerprint, detected_at FROM drift WHERE fingerprint IS NOT NULL')
+      .all()
+      .map((r) => [r.fingerprint, r.detected_at])
+  )
+
   db.prepare('DELETE FROM drift').run()
   const add = db.prepare(
-    `INSERT INTO drift (kind, subject_id, severity, detail, data, detected_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO drift (kind, subject_id, severity, detail, data, detected_at, last_seen, fingerprint, team_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-  const write = (kind, subjectId, severity, detail, data) =>
-    add.run(kind, subjectId, severity, detail, data ? JSON.stringify(data) : null, now)
+  const routeTeam = teamRouter()
+  const write = (kind, subjectId, severity, detail, data) => {
+    const fingerprint = sha1(`${kind}|${subjectId ?? ''}|${detail}`)
+    add.run(
+      kind,
+      subjectId,
+      severity,
+      detail,
+      data ? JSON.stringify(data) : null,
+      since.get(fingerprint) ?? now,
+      now,
+      fingerprint,
+      routeTeam(subjectId)
+    )
+  }
 
   const nodes = db.prepare('SELECT * FROM nodes').all()
   const edges = db.prepare('SELECT * FROM edges').all()

@@ -879,7 +879,7 @@ for (const [code, expected] of [['2', 4], ['2.1', 4]]) {
    and on the Health page they used to arrive as bare slugs with no title and no
    explanation of what to do about them. */
 {
-  const { ctx, page } = await open(`/d/${pageId('health')}`)
+  const { ctx, page, problems } = await open(`/d/${pageId('health')}`)
   await page.waitForSelector('[data-grid-id], .drift-group, .empty', { timeout: 20000 })
   await page.waitForTimeout(600)
   const text = await page.evaluate(() => document.body.innerText)
@@ -898,6 +898,40 @@ for (const [code, expected] of [['2', 4], ['2.1', 4]]) {
     text.includes('Calls a document describes and no code makes'),
     true
   )
+
+  /* ---- a finding's age, its team, and closing it.
+
+     rebuildDrift() used to re-stamp detected_at on every link pass, so every
+     finding read "just now" however long it had been true, there was nobody
+     to send it to, and no way to say "seen it". */
+  {
+    const first = page.locator('.drift-finding').first()
+    await first.waitFor({ timeout: 10000 })
+    const age = await first.locator('.drift-age').innerText()
+    ok('a finding says how long it has been true', /ago|just now/.test(age), age)
+
+    const teams = await page.locator('.drift-team').count()
+    ok('and findings name the team to look at them', teams > 0, `${teams} of them`)
+
+    await first.locator('.drift-toggle').click()
+    await page.waitForSelector('.drift-decide', { timeout: 5000 })
+    const subject = (await first.locator('.drift-subject').innerText()).trim()
+
+    await first.locator('.drift-decide input').fill('known, tracked elsewhere')
+    await first.locator('.drift-decide button').click()
+    await page.waitForSelector('.drift-accepted', { timeout: 10000 })
+    const accepted = await page.locator('.drift-accepted').innerText()
+    is('accepting a finding moves it out of its kind', accepted.includes(subject), true)
+    is('  …carrying the reason with it', accepted.includes('known, tracked elsewhere'), true)
+
+    const acceptedRow = page.locator('.drift-accepted .drift-finding').first()
+    await acceptedRow.locator('.drift-toggle').click()
+    await acceptedRow.locator('.drift-decide button').click()
+    await page.waitForSelector('.drift-accepted', { state: 'detached', timeout: 10000 })
+    pass('  …and reopening puts it back')
+  }
+
+  ok('no console errors on the findings list', problems.length === 0, problems.join(' | '))
   await ctx.close()
 }
 

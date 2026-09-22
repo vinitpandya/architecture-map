@@ -1047,3 +1047,44 @@ a.pill:hover {
 .map-failed .banner {
   max-width: 520px;
 }
+
+/* Who owns a finding, and how long it has been true — both to the right of
+   the sentence, where they do not push the subject or the detail around. */
+.drift-team,
+.drift-age {
+  flex-shrink: 0;
+}
+
+.drift-age {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.drift-decide {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.drift-decide input {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* Accepted findings stay legible but stop competing with the ones nobody has
+   looked at yet. */
+.drift-accepted .drift-finding {
+  opacity: 0.72;
+}
+
+.drift-accepted-note {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
