@@ -252,6 +252,77 @@ await setScope('map', null)
     fullKinds.join(', ')
   )
 
+  /* ---- a line joins the side of each box that faces the other one.
+
+     Every node used to carry one target handle on its left and one source on
+     its right, so a line to something above, below or behind left the right
+     edge, travelled round the box and came back in on the left. Measured at
+     full detail on the demo estate, all 75 edges attached right-to-left; with
+     a handle on each side and the facing pair chosen per edge, 31 do and the
+     rest join a side that is actually nearer. The ends are read off the
+     rendered path rather than off an attribute, because it is where the line
+     lands that the reader sees. */
+  {
+    const sides = await page.evaluate(() => {
+      const rects = [...document.querySelectorAll('.react-flow__node')]
+        .filter((n) => !n.querySelector('.map-group'))
+        .map((n) => n.getBoundingClientRect())
+      const sideOf = (pt) => {
+        let best = null
+        for (const r of rects) {
+          if (Math.max(r.left - pt.x, pt.x - r.right, r.top - pt.y, pt.y - r.bottom, 0) > 6) continue
+          const near = Math.min(
+            Math.abs(pt.x - r.left), Math.abs(pt.x - r.right),
+            Math.abs(pt.y - r.top), Math.abs(pt.y - r.bottom)
+          )
+          if (best && near >= best.near) continue
+          const which = [
+            ['left', Math.abs(pt.x - r.left)], ['right', Math.abs(pt.x - r.right)],
+            ['top', Math.abs(pt.y - r.top)], ['bottom', Math.abs(pt.y - r.bottom)],
+          ].sort((a, b) => a[1] - b[1])[0][0]
+          best = { near, side: which }
+        }
+        return best?.side ?? 'unattached'
+      }
+      const tally = {}
+      for (const g of document.querySelectorAll('.react-flow__edge')) {
+        const path = g.querySelector('path.react-flow__edge-path')
+        if (!path) continue
+        const len = path.getTotalLength()
+        if (!len) continue
+        const svg = path.ownerSVGElement
+        const m = path.getScreenCTM()
+        const at = (d) => {
+          const q = svg.createSVGPoint()
+          const raw = path.getPointAtLength(d)
+          q.x = raw.x
+          q.y = raw.y
+          return q.matrixTransform(m)
+        }
+        const key = `${sideOf(at(0))} -> ${sideOf(at(len))}`
+        tally[key] = (tally[key] ?? 0) + 1
+      }
+      return tally
+    })
+    const pairs = Object.entries(sides)
+    const total = pairs.reduce((n, [, v]) => n + v, 0)
+    const vertical = pairs
+      .filter(([k]) => /top|bottom/.test(k))
+      .reduce((n, [, v]) => n + v, 0)
+    ok('a line can join the top or bottom of a box, not only the sides', vertical > 0, `${vertical} of ${total}`)
+    ok(
+      '  …and not every line is still leaving right and entering left',
+      (sides['right -> left'] ?? 0) < total,
+      `${sides['right -> left'] ?? 0} of ${total} are`
+    )
+    is('  …with every line landing on a box rather than beside one', sides['unattached -> unattached'] ?? 0, 0)
+    ok(
+      '  …and no end floating free',
+      !pairs.some(([k]) => k.includes('unattached')),
+      pairs.filter(([k]) => k.includes('unattached')).map(([k, v]) => `${k}: ${v}`).join(', ')
+    )
+  }
+
   const shownNodes = await page.$$eval(MAP_NODE, (els) => els.map((e) => e.getAttribute('data-id')))
   const shownEdges = await page.$$eval('.react-flow__edge', (els) => els.map((e) => e.getAttribute('data-id')))
   const expectedPairs = (() => {

@@ -617,6 +617,17 @@ the git log rather than here. Three were judgement calls:
 - **An accepted finding is greyed and moved to the end, not hidden.** Hiding it
   would move a count for a reason the reader cannot see, and it has not stopped
   being true.
+- **A line on the map joins the side of each box that faces the other one.**
+  Every node carried one target handle on its left and one source on its
+  right, so a line to something above, below or behind had to leave the right
+  edge, travel round the box and come back in on the left — a crossing the
+  graph did not have, invented by the drawing. There is a handle on each side
+  now and the facing pair is chosen per edge. The choice is not `|dx|` against
+  `|dy|`: a box 320 wide and 46 tall is a mostly horizontal thing, so the test
+  is which side the ray from its centre reaches first, and the two ends of one
+  line are asked separately because they are not the same size. Measured at
+  full detail on the demo estate: 75 of 75 edges were right-to-left before, 31
+  of 75 after.
 - **The chord shows direction as a shape, because colour is already spoken
   for.** A ribbon's colour says what the relationship is — an event, a call, a
   shared store — and the key reads off that, so direction had to go somewhere

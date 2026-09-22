@@ -12,6 +12,9 @@ import { KIND_COLOR, KIND_LABEL } from '../lib/nodes'
  * long before it is dense.
  */
 
+/** The four sides a line may leave or arrive at, in clockwise order. */
+const SIDES = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const
+
 export type MapNodeData = {
   node: GraphNode
   focused: boolean
@@ -43,7 +46,19 @@ function Shell({ data, extra, glyph }: { data: MapNodeData; extra?: string; glyp
       style={{ ['--node-color' as string]: `var(${data.color ?? KIND_COLOR[node.kind]})` }}
       title={`${KIND_LABEL[node.kind]} · ${node.id}`}
     >
-      <Handle type="target" position={Position.Left} className="map-handle" />
+      {/* A handle on every side, for both ends of a line.
+
+          With one target on the left and one source on the right, a line to
+          something above, below or behind had to leave the right edge, travel
+          round the box and come back in on the left — a crossing the graph
+          did not have, invented by the drawing. MapCanvas picks the pair
+          facing the other node; these are the eight it picks from. */}
+      {SIDES.map((side) => (
+        <Handle key={`t-${side}`} id={`t-${side}`} type="target" position={side} className="map-handle" />
+      ))}
+      {SIDES.map((side) => (
+        <Handle key={`s-${side}`} id={`s-${side}`} type="source" position={side} className="map-handle" />
+      ))}
       {showLabel ? (
         <>
           <span className="map-node-kind">
@@ -58,7 +73,6 @@ function Shell({ data, extra, glyph }: { data: MapNodeData; extra?: string; glyp
           &nbsp;
         </span>
       )}
-      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   )
 }

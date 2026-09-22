@@ -6,6 +6,9 @@ import {
   Controls,
   MarkerType,
   MiniMap,
+  // `Position` here is a side of a box; ./layout exports one that is an x and
+  // a y. Aliased so the two cannot be confused at a glance.
+  Position as Side,
   Panel,
   ReactFlow,
   applyNodeChanges,
@@ -442,10 +445,34 @@ export function MapCanvas({
     requestAnimationFrame(() => flow.current?.fitView({ padding: 0.14, duration: 240 }))
   }, [storageKey, detail, arrangement])
 
+  /* Where each node is and how big it is, read off what React Flow is
+     rendering rather than off the computed layout — so a line re-attaches
+     while the node it points at is still being dragged, not after. */
+  const boxes = useMemo(() => {
+    const m = new Map<string, { cx: number; cy: number; w: number; h: number }>()
+    for (const n of rfNodes) {
+      if (n.type === 'group') continue
+      const w = n.width ?? n.measured?.width ?? 0
+      const h = n.height ?? n.measured?.height ?? 0
+      m.set(n.id, { cx: n.position.x + w / 2, cy: n.position.y + h / 2, w, h })
+    }
+    return m
+  }, [rfNodes])
+
   const rfEdges: Edge[] = useMemo(
     () =>
       edges.map((e) => {
         const { source, target } = flowDirection(e)
+        /* The side of each box that faces the other one. Both ends are asked
+           separately, because they are not the same size: a 320px-wide
+           service and a 46px-tall topic disagree about what counts as
+           "mostly sideways", and each is right about itself. */
+        const a = boxes.get(source)
+        const b = boxes.get(target)
+        const dx = a && b ? b.cx - a.cx : 1
+        const dy = a && b ? b.cy - a.cy : 0
+        const sourceHandle = `s-${a ? sideFacing(a.w, a.h, dx, dy) : Side.Right}`
+        const targetHandle = `t-${b ? sideFacing(b.w, b.h, -dx, -dy) : Side.Left}`
         // Lit by its own selection as well as by either end's, so the line the
         // Through panel is describing is the line you can see.
         const lit = through?.id === e.id || (!!selected && (e.from === selected || e.to === selected))
@@ -458,6 +485,8 @@ export function MapCanvas({
           id: e.id,
           source,
           target,
+          sourceHandle,
+          targetHandle,
           type: 'smoothstep',
           zIndex: lit ? 2 : 1,
           style: {
@@ -478,7 +507,7 @@ export function MapCanvas({
           labelBgPadding: [4, 2] as [number, number],
         }
       }),
-    [edges, selected, through, token, showLabel]
+    [edges, selected, through, token, showLabel, boxes]
   )
 
   const derived = useMemo(() => {
@@ -1207,6 +1236,24 @@ function throughLabel(e: ServiceEdge) {
   const noun = kinds.size === 1 ? (KIND_PLURAL[[...kinds][0] as NodeKind] ?? 'things') : 'things'
   return `${e.through.length} ${noun.toLowerCase()}`
 }
+
+/**
+ * Which side of a box a line towards `dx, dy` should leave from.
+ *
+ * Not a comparison of dx against dy: a box 320 wide and 46 tall is a mostly
+ * horizontal thing, and something sixty pixels above it is still off to one
+ * side as far as that box is concerned. The ray from the centre leaves
+ * through whichever side its slope reaches first, which is what this compares
+ * — and it is why the two ends of one line are asked separately.
+ */
+const sideFacing = (w: number, h: number, dx: number, dy: number): Side =>
+  Math.abs(dx) * h >= Math.abs(dy) * w
+    ? dx >= 0
+      ? Side.Right
+      : Side.Left
+    : dy >= 0
+      ? Side.Bottom
+      : Side.Top
 
 /** A Set with one member flipped. Sets are state here, so this returns a new one. */
 function toggled(was: Set<string>, id: string) {
