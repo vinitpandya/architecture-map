@@ -2124,7 +2124,7 @@ if (stage === 'map') {
   }
 
   console.log('\nThe service view — collapse, and where it stops')
-  const { collapseToServices } = await import('../../web/src/graph/collapse.ts')
+  const { collapseToServices, looseLabel } = await import('../../web/src/graph/collapse.ts')
 
   const svc = (id) => ({ id: `svc:${id}`, kind: 'service', name: id })
   const produce = (from, topic) => ({ id: `p|${from}|${topic}`, from: `svc:${from}`, to: topic, kind: 'kafka.produce', confidence: 'high' })
@@ -2145,6 +2145,7 @@ if (stage === 'map') {
     })
     is('a topic with one publisher collapses', out.edges.length, 3)
     is('  …leaving the topic off the map', out.nodes.some((n) => n.kind === 'kafka.topic'), false)
+    is('  …and leaving nothing loose', out.loose.size, 0)
     is('  …and each line says what carried it', out.edges.every((e) => e.through.length === 1), true)
   }
 
@@ -2177,18 +2178,11 @@ if (stage === 'map') {
         ...sub.map((x) => consume(x, 'topic:audit.v1')),
       ],
     })
-    is('a shared bus is not expanded into every pair', out.edges.length, 10)
-    is('  …the topic stays on the map instead', out.nodes.some((n) => n.id === 'topic:audit.v1'), true)
-    is(
-      '  …and what reaches it is the scan\'s own edges, not derived ones',
-      out.edges.every((e) => e.through.length === 0),
-      true
-    )
-    is(
-      '  …every one of which was really scanned',
-      out.edges.every((e) => e.id.startsWith('p|') || e.id.startsWith('c|')),
-      true
-    )
+    is('a shared bus is not expanded into every pair', out.edges.length, 0)
+    is('  …nor drawn as a node, on a map of services', out.nodes.every((n) => n.kind === 'service'), true)
+    is('  …it belongs to each service that touches it', out.loose.size, 10)
+    is('  …once each', [...out.loose.values()].every((ends) => ends.length === 1), true)
+    is('  …said in the reader\'s terms', looseLabel(out.loose.get('svc:p0')[0], 1), 'shared topic')
   }
 
   /* ---- a derived line carries what the scan knew, never more.
@@ -2244,10 +2238,12 @@ if (stage === 'map') {
       nodes: [svc('checkout'), svc('payments'), ep],
       edges: [call('checkout')],
     })
-    is('a call nobody answers is still on the map', unanswered.edges.length, 1)
-    is('  …as a call, so it wears the endpoint\'s colour', unanswered.edges[0].relation, 'call')
-    is('  …reaching the endpoint itself, which is kept', unanswered.nodes.some((n) => n.id === ep.id), true)
-    is('  …and it is the scanned edge, not a derived one', unanswered.edges[0].through.length, 0)
+    is('a call nobody answers draws no line, because there is nobody to draw it to', unanswered.edges.length, 0)
+    is('  …and puts no endpoint on a map of services', unanswered.nodes.every((n) => n.kind === 'service'), true)
+    is('  …it belongs to the service that made the call', [...unanswered.loose.keys()].join(), 'svc:checkout')
+    is('  …which is what it is', looseLabel(unanswered.loose.get('svc:checkout')[0], 1), 'call nothing answers')
+    is('  …and says it plurally when there are several', looseLabel(unanswered.loose.get('svc:checkout')[0], 3), 'calls nothing answer')
+    is('  …naming the endpoint it could not reach', unanswered.loose.get('svc:checkout')[0].name, 'POST /v1/charges')
 
     const answered = collapseToServices({
       nodes: [svc('checkout'), svc('payments'), ep],
@@ -2257,11 +2253,9 @@ if (stage === 'map') {
     is('  …between the two services', `${answered.edges[0].from}>${answered.edges[0].to}`, 'svc:checkout>svc:payments')
     is('  …with the endpoint collapsed away', answered.nodes.some((n) => n.id === ep.id), false)
 
-    is(
-      'an endpoint exposed that nobody calls is kept too',
-      collapseToServices({ nodes: [svc('payments'), ep], edges: [expose('payments')] }).edges.length,
-      1
-    )
+    const unheard = collapseToServices({ nodes: [svc('payments'), ep], edges: [expose('payments')] })
+    is('an endpoint nobody calls belongs to whoever exposes it', [...unheard.loose.keys()].join(), 'svc:payments')
+    is('  …and is named as that, not as a call', looseLabel(unheard.loose.get('svc:payments')[0], 1), 'endpoint nobody calls')
 
     /* ---- but a thing only one service touches is not traffic between two,
        and collapsing it away is the point of this view rather than a loss. */
@@ -2274,6 +2268,7 @@ if (stage === 'map') {
     })
     is('a database only its owner reads and writes is collapsed away', own.nodes.length, 1)
     is('  …drawing no line, because there is no second service', own.edges.length, 0)
+    is('  …and leaving nothing loose, because nothing is missing', own.loose.size, 0)
   }
 
   /* ---- the boundary itself, so the constant cannot drift unnoticed. Three
@@ -2292,7 +2287,10 @@ if (stage === 'map') {
       })
     }
     is('twelve lines is still worth expanding', run(3, 4).edges.length, 12)
-    is('  …and thirteen is not', run(3, 5).nodes.some((n) => n.id === 'topic:shared.v1'), true)
+    is('  …and leave nothing loose', run(3, 4).loose.size, 0)
+    const past = run(3, 5)
+    is('  …fifteen is not', past.edges.length, 0)
+    is('  …so the eight services carry it instead', past.loose.size, 8)
   }
 
   /* ──────────────────────────────── the handoff diagram's rollup collapse */

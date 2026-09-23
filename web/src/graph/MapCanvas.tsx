@@ -61,6 +61,8 @@ import {
   RELATION_LABEL,
   RELATION_STYLE,
   collapseToServices,
+  looseLabel,
+  type LooseEnd,
   isDerived,
   type Relation,
   type ServiceEdge,
@@ -244,10 +246,12 @@ export function MapCanvas({
   const view = useMemo(() => {
     const empty: GraphNode[] = []
     const noEdges: GraphEdge[] = []
+    const noLoose = new Map<string, LooseEnd[]>()
     if (!data) {
-      return { nodes: empty, edges: noEdges, candidates: empty, candidateEdges: noEdges, isolated: false, hidden: 0 }
+      return { nodes: empty, edges: noEdges, candidates: empty, candidateEdges: noEdges, isolated: false, hidden: 0, loose: noLoose }
     }
-    const base: GraphData = detail === 'services' ? collapseToServices(data) : data
+    const collapsed = detail === 'services' ? collapseToServices(data) : null
+    const base: GraphData = collapsed ?? data
     const gone = (n: GraphNode) =>
       colourBy === 'team' ? hiddenTeams.has(n.teamId ?? TEAMLESS) : hiddenKinds.has(n.kind)
     const nodes = base.nodes.filter((n) => !gone(n))
@@ -270,6 +274,9 @@ export function MapCanvas({
       candidateEdges: base.edges,
       isolated: !!reached,
       hidden: reached ? nodes.length - reached.size : 0,
+      /* What each service reaches for that could not become a line. Empty at
+         full detail, where every one of them is drawn as itself. */
+      loose: collapsed?.loose ?? noLoose,
     }
   }, [data, detail, colourBy, hiddenKinds, hiddenTeams, hiddenRelations, isolate, selected])
 
@@ -399,6 +406,7 @@ export function MapCanvas({
         faded: !!selected && n.id !== selected && !neighbours.has(n.id),
         showLabel,
         color: colourBy === 'team' ? (n.teamId && teamSlot.get(n.teamId)) || NO_TEAM_COLOR : undefined,
+        loose: view.loose.get(n.id)?.length ?? 0,
       } satisfies MapNodeData,
       ...nodeSize(n),
       // Above the edges. An edge carries an invisible 20px interaction stroke,
@@ -410,7 +418,7 @@ export function MapCanvas({
     })))
     // colourBy and teamSlot are in here because the node's colour is part of
     // its data: without them the legend switched and the nodes did not.
-  }, [nodes, groups, positions, placedByHand, focus, selected, neighbours, showLabel, colourBy, teamSlot])
+  }, [nodes, groups, positions, placedByHand, focus, selected, neighbours, showLabel, colourBy, teamSlot, view.loose])
 
   /*
    * React Flow owns node positions while a drag is in flight, so the array it
@@ -653,6 +661,7 @@ export function MapCanvas({
         </div>
         <Inspector
           id={selected}
+          loose={selected ? view.loose.get(selected) : undefined}
           open={open}
           onToggle={() => {
             setOpen((v) => {
@@ -945,6 +954,7 @@ export function MapCanvas({
 
       <Inspector
         id={selected}
+        loose={selected ? view.loose.get(selected) : undefined}
         open={open}
         onToggle={() => {
           setOpen((v) => {
@@ -1043,11 +1053,14 @@ function Inspector({
   open,
   onToggle,
   onFocus,
+  loose,
 }: {
   id: string | null
   open: boolean
   onToggle: () => void
   onFocus?: (id: string) => void
+  /** What this node reaches for that the service view could not draw. */
+  loose?: LooseEnd[]
 }) {
   const [detail, setDetail] = useState<NodeDetail | null>(null)
 
@@ -1089,14 +1102,31 @@ function Inspector({
       ) : !detail ? (
         <span className="spinner" />
       ) : (
-        <NodeSummary detail={detail} onFocus={onFocus} />
+        <NodeSummary detail={detail} onFocus={onFocus} loose={loose} />
       )}
     </aside>
   )
 }
 
-function NodeSummary({ detail, onFocus }: { detail: NodeDetail; onFocus?: (id: string) => void }) {
+function NodeSummary({
+  detail,
+  onFocus,
+  loose,
+}: {
+  detail: NodeDetail
+  onFocus?: (id: string) => void
+  /** What this service reaches for that the service view could not draw. */
+  loose?: LooseEnd[]
+}) {
   const { node } = detail
+  /* Grouped on the plural form, so that counting the group and naming it
+     cannot disagree, then named for however many turned out to be in it. */
+  const byReason = new Map<string, LooseEnd[]>()
+  for (const end of loose ?? []) {
+    const key = looseLabel(end)
+    if (!byReason.has(key)) byReason.set(key, [])
+    byReason.get(key)!.push(end)
+  }
   /* The resolved team, not `node.team`, which is the string the scan found in
      the manifest. After a merge or a rename the two disagree, and this is the
      one the map colours by — the panel and the picture have to say the same
@@ -1112,6 +1142,29 @@ function NodeSummary({ detail, onFocus }: { detail: NodeDetail; onFocus?: (id: s
           {team ? ` · ${team}` : ''}
         </p>
       </div>
+
+      {byReason.size > 0 && (
+        /* Not a defect list and not decoration: these are the things this
+           service reaches for that the map could not draw a line to, because
+           the far end was never scanned or because too many share it. They
+           belong to the service, which is why they are here rather than as
+           nodes on a map of services. */
+        <div className="map-loose">
+          <span className="nav-group-label">Not drawn as lines</span>
+          {[...byReason].map(([key, ends]) => (
+            <div key={key}>
+              <span className="map-loose-count">{ends.length}</span>{' '}
+              {looseLabel(ends[0], ends.length)}
+              <ul className="map-loose-list">
+                {ends.slice(0, 6).map((e) => (
+                  <li key={`${e.id}|${e.direction}`}>{e.name}</li>
+                ))}
+                {ends.length > 6 && <li className="muted">and {ends.length - 6} more</li>}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
 
       <code className="muted" style={{ fontSize: 11, wordBreak: 'break-all' }}>
         {node.id}

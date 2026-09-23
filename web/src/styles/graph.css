@@ -1112,3 +1112,42 @@ a.pill:hover {
   white-space: nowrap;
   font-size: 11px;
 }
+
+/* The count of what a service reaches for that could not be drawn as a line.
+   In the kind row, because the node clips its own overflow and its size is
+   what the layout measured — a badge hanging off the corner would be cut off
+   or would move everything around it. */
+.map-node-loose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  margin-left: 5px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--node-color);
+  color: var(--surface-1);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* What the inspector says about them. */
+.map-loose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.map-loose-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.map-loose-list {
+  margin: 2px 0 0;
+  padding-left: 16px;
+  color: var(--text-secondary);
+}

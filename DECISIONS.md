@@ -617,8 +617,20 @@ the git log rather than here. Three were judgement calls:
 - **An accepted finding is greyed and moved to the end, not hidden.** Hiding it
   would move a count for a reason the reader cannot see, and it has not stopped
   being true.
-- **An intermediary with an end missing is kept; one only its own service
-  touches is still collapsed away.** Collapsing needs a service at each end.
+- **Nothing but services goes on the Services view; what could not be
+  collapsed is counted on the service.** Two rules stop an intermediary
+  becoming a line: a bus too many services share, where expanding it would
+  assert p x c conversations the scan never found, and one with an end
+  missing, where there is no far side to join to. Drawing either as a node
+  fixed the honesty and broke the view — somebody asking for a map of
+  services does not want a Kafka topic on it, and on an estate with a few
+  unanswered calls per service the Services view came out barely smaller than
+  the full one (measured: 62 nodes to 182 at sixty services). So the
+  intermediary stays off, and the service carries a count and a list: "9 calls
+  nothing answer", "1 topic nothing writes". It belongs to the service, which
+  is what it always was.
+- **The rule for what cannot be collapsed is "an end missing", not "no line
+  derived".** Collapsing needs a service at each end.
   An endpoint somebody calls and nobody scanned exposes has one end, so
   collapsing it produced no line and then dropped the endpoint too — a
   service's entire REST surface could be absent from the Services view with

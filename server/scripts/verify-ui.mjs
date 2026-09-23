@@ -167,10 +167,10 @@ const IN_KIND = { event: ['kafka.consume'], call: ['http.expose'], store: ['db.r
  *
  * Collapsing an intermediary needs a service at each end. One with an end
  * missing — an endpoint somebody calls and nobody exposes, a topic nobody
- * produces — cannot be collapsed and is kept as a node, because collapsing it
- * would delete the relationship rather than summarise it. One that only its
- * own service touches is collapsed away as before: that is a detail of one
- * service, not traffic between two.
+ * produces — cannot be collapsed at all, and neither can a bus too many
+ * services share. None of them goes on the map: this is a view of services,
+ * and what could not be joined up is attributed to the service that reaches
+ * for it instead, where it shows as a count on the node.
  */
 function serviceViewOf(graph, edgeIds) {
   const kind = Object.fromEntries(graph.nodes.map((n) => [n.id, n.kind]))
@@ -204,8 +204,13 @@ function serviceViewOf(graph, edgeIds) {
   const nodes = new Set([
     ...graph.nodes.filter((n) => n.kind === 'service').map((n) => n.id),
     ...graph.nodes.filter((n) => n.kind === 'external' && touched.has(n.id)).map((n) => n.id),
-    ...asNodes,
   ])
+  /** The services carrying something that could not be drawn as a line. */
+  const carrying = new Set()
+  for (const [mid, byRel] of ends) {
+    if (!asNodes.has(mid)) continue
+    for (const [, side] of byRel) for (const svc of [...side.from, ...side.to]) carrying.add(svc)
+  }
   const lines = new Set()
   for (const [mid, byRel] of ends) {
     if (asNodes.has(mid)) continue
@@ -214,16 +219,14 @@ function serviceViewOf(graph, edgeIds) {
     }
   }
   for (const e of edges) {
-    // What reaches a kept intermediary, and what leaves for an external, are
-    // the scan's own edges rather than anything derived.
+    // An external has nothing on the far side to collapse into, so its edge
+    // survives as itself. Nothing else scanned does.
     const relational = ['event', 'call', 'store'].some(
       (r) => OUT_KIND[r].includes(e.kind) || IN_KIND[r].includes(e.kind)
     )
-    if (!relational) continue
-    if (kind[e.to] === 'external' && kind[e.from] === 'service') lines.add(e.id)
-    else if ((asNodes.has(e.from) || asNodes.has(e.to)) && nodes.has(e.from) && nodes.has(e.to)) lines.add(e.id)
+    if (relational && kind[e.to] === 'external' && kind[e.from] === 'service') lines.add(e.id)
   }
-  return { nodes, asNodes, lines: lines.size }
+  return { nodes, asNodes, carrying, lines: lines.size }
 }
 
 const nodePositions = (page) =>
@@ -267,17 +270,37 @@ await setScope('map', null)
     graph.nodes.filter((n) => n.kind === 'service').every((n) => onScreen.includes(n.id)),
     graph.nodes.filter((n) => n.kind === 'service' && !onScreen.includes(n.id)).map((n) => n.id).join(', ')
   )
-  /* And the intermediaries that could not be collapsed, which is the whole of
-     a service's REST surface when nothing scanned exposes what it calls. */
+  /* Nothing but services and externals, whatever could not be collapsed —
+     this is a view of services, and a Kafka topic on it is a surprise. */
   ok(
-    '  …and any intermediary with an end missing, rather than deleting the line',
-    [...expected.asNodes].every((id) => onScreen.includes(id)),
-    [...expected.asNodes].filter((id) => !onScreen.includes(id)).join(', ') || `${expected.asNodes.size} of them`
-  )
-  ok(
-    '  …while one only its own service touches is still collapsed away',
+    '  …and nothing else, not even what it could not collapse',
     onScreen.every((id) => expected.nodes.has(id)),
     onScreen.filter((id) => !expected.nodes.has(id)).join(', ')
+  )
+  /* But not by deleting it. What could not be joined up is counted on the
+     service that reaches for it, which is the whole of a service's REST
+     surface when nothing scanned exposes what it calls. */
+  /* Worked out from the whole graph rather than from the lines on screen:
+     the edges to an uncollapsible intermediary are precisely the ones no
+     longer drawn, so deriving this from what is drawn would ask the question
+     of a set that can never answer it — and pass whatever happened. */
+  const carrying = serviceViewOf(graph).carrying
+  ok('  …with something left uncollapsed to count', carrying.size > 0, `${carrying.size} services`)
+  const badges = await page.$$eval('.map-node-loose', (els) => els.map((e) => e.textContent.trim()))
+  is('  …counted on the service instead, one badge each', badges.length, carrying.size)
+  ok('  …each saying how many', badges.every((b) => Number(b) > 0), badges.join(', '))
+
+  /* And the badge is a way in, not just a mark. Checked on the service that
+     has one rather than on whichever node happens to be clicked first: a
+     panel that only ever renders for a node with nothing to show would pass
+     any test that did not go looking for it. */
+  await page.locator('.map-node-loose').first().click({ force: true })
+  await page.waitForSelector('.map-loose', { timeout: 8000 })
+  const looseText = await page.$eval('.map-loose', (e) => e.innerText.replace(/\s+/g, ' ').trim())
+  ok(
+    '  …and clicking it says what could not be drawn',
+    /\d+ (topic|call|endpoint|store|shared)/.test(looseText),
+    looseText.slice(0, 120)
   )
   const relationKey = await page.$$eval('.map-legend .legend-item', (els) => els.map((e) => e.textContent.trim()))
   ok(

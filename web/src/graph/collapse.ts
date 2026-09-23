@@ -54,6 +54,60 @@ export type ServiceEdge = GraphEdge & {
   through: { id: string; kind: string }[]
 }
 
+/**
+ * Something one service does that could not become a line between two.
+ *
+ * The Services view is services, and an intermediary on it is a surprise —
+ * the reader asked for the estate's traffic and got a Kafka topic. But some
+ * of them genuinely cannot be collapsed: an endpoint nobody scanned exposes
+ * has no far end, and a bus half the estate publishes to has too many. What
+ * used to happen was that the first was deleted and the second drawn as a
+ * node; neither is what somebody looking at a map of services wants.
+ *
+ * So they are attributed to the service instead. The map stays services, and
+ * the service carries what it could not be joined to.
+ */
+export type LooseEnd = {
+  id: string
+  name: string
+  kind: string
+  relation: Relation
+  /** Whether this service is the one sending into it or reading out of it. */
+  direction: 'out' | 'in'
+  /**
+   * `unanswered` — nothing is on the far side, and this service is the near
+   * one. `unheard` — the far side is the one missing what this service reads.
+   * `shared` — too many on both sides to claim a conversation between any two.
+   */
+  why: 'unanswered' | 'unheard' | 'shared'
+}
+
+/**
+ * What a group of loose ends is called, in the reader's terms.
+ *
+ * Both numbers, because these are always counted: "1 topic nothing writes",
+ * "9 calls nothing answers". A label that only reads correctly in the plural
+ * is a label that is wrong most of the time somebody is looking at one.
+ */
+export const looseLabel = (e: LooseEnd, n = 2): string => {
+  const one = n === 1
+  if (e.why === 'shared') {
+    return { event: one ? 'shared topic' : 'shared topics', call: one ? 'shared endpoint' : 'shared endpoints', store: one ? 'shared store' : 'shared stores' }[e.relation]
+  }
+  if (e.direction === 'out') {
+    return {
+      event: one ? 'topic nothing reads' : 'topics nothing read',
+      call: one ? 'call nothing answers' : 'calls nothing answer',
+      store: one ? 'store nothing reads' : 'stores nothing read',
+    }[e.relation]
+  }
+  return {
+    event: one ? 'topic nothing writes' : 'topics nothing write',
+    call: one ? 'endpoint nobody calls' : 'endpoints nobody calls',
+    store: one ? 'store nothing fills' : 'stores nothing fill',
+  }[e.relation]
+}
+
 const OUT: Record<Relation, string[]> = {
   event: ['kafka.produce'],
   call: ['http.call'],
@@ -109,7 +163,9 @@ export const isDerived = (e: GraphEdge): e is ServiceEdge => 'relation' in e
  * Stripe has nothing on the far side to collapse INTO, and "who do we depend
  * on outside" is one of the questions this view is for.
  */
-export function collapseToServices(data: GraphData): GraphData & { edges: ServiceEdge[] } {
+export function collapseToServices(
+  data: GraphData
+): GraphData & { edges: ServiceEdge[]; loose: Map<string, LooseEnd[]> } {
   const byId = new Map(data.nodes.map((n) => [n.id, n]))
   const isService = (id: string) => byId.get(id)?.kind === 'service'
   const isExternal = (id: string) => byId.get(id)?.kind === 'external'
@@ -198,10 +254,14 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
    * surface could be missing with nothing to say so. The same silence hid a
    * topic nobody consumes and one nobody produces.
    *
-   * So an intermediary with an end missing is kept as itself, and the scan's
-   * own edge to it is drawn. The line is a real one and wears its relation's
-   * colour, so a call that goes nowhere looks like a call that goes nowhere
-   * rather than like nothing at all.
+   * Drawing them as nodes fixed the silence and broke the view: somebody
+   * asking for a map of services does not want a Kafka topic on it, and on an
+   * estate with a few unanswered calls per service the Services view came out
+   * barely smaller than the full one.
+   *
+   * So neither. The intermediary stays off the map, and what could not be
+   * joined up is attributed to the service that reaches for it — where it
+   * reads as a fact about that service, which is what it is.
    */
   const stranded = new Set<string>()
   for (const mid of new Set([...producers.keys(), ...consumers.keys()])) {
@@ -209,18 +269,34 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
     if (missingAnEnd(mid)) stranded.add(mid)
   }
 
-  /** Every intermediary the map keeps as a node rather than as a line. */
-  const asNodes = new Set([...hubs, ...stranded])
+  /** The intermediaries that could not become a line, whichever way. */
+  const uncollapsed = new Set([...hubs, ...stranded])
 
-  const keep = data.nodes.filter(
-    (n) => n.kind === 'service' || n.kind === 'external' || asNodes.has(n.id)
-  )
+  const loose = new Map<string, LooseEnd[]>()
+  for (const mid of uncollapsed) {
+    const node = byId.get(mid)
+    for (const rel of RELATIONS) {
+      const out = producers.get(mid)?.get(rel)
+      const into = consumers.get(mid)?.get(rel)
+      if (!out?.size && !into?.size) continue
+      const why: LooseEnd['why'] = hubs.has(mid) ? 'shared' : into?.size ? 'unheard' : 'unanswered'
+      const end = { id: mid, name: node?.name ?? mid.slice(mid.indexOf(':') + 1), kind: node?.kind ?? 'unknown', relation: rel }
+      for (const [side, services] of [['out', out], ['in', into]] as const) {
+        for (const service of services?.keys() ?? []) {
+          if (!loose.has(service)) loose.set(service, [])
+          loose.get(service)!.push({ ...end, direction: side, why })
+        }
+      }
+    }
+  }
+
+  const keep = data.nodes.filter((n) => n.kind === 'service' || n.kind === 'external')
   const kept = new Set(keep.map((n) => n.id))
 
   // One line per (from, to, relation), listing everything it stands for.
   const lines = new Map<string, ServiceEdge>()
   for (const [mid, byRel] of producers) {
-    if (asNodes.has(mid)) continue
+    if (uncollapsed.has(mid)) continue
     for (const [rel, from] of byRel) {
       for (const [to, inbound] of consumers.get(mid)?.get(rel) ?? []) {
         if (!from.size) continue
@@ -263,22 +339,8 @@ export function collapseToServices(data: GraphData): GraphData & { edges: Servic
     }
   }
 
-  /* An intermediary kept as itself — a hub, or one that could not be
-     collapsed — has the scan's own edges drawn to it: a real kind, a real
-     confidence, a real repo, rather than anything derived. `through` is empty
-     for the same reason it is empty for an external: nothing was collapsed
-     into this line. */
-  const spokes: ServiceEdge[] = []
-  for (const e of asNodes.size ? data.edges : []) {
-    if (!asNodes.has(e.from) && !asNodes.has(e.to)) continue
-    if (!kept.has(e.from) || !kept.has(e.to)) continue
-    const rel = relationOf(e.kind)
-    if (!rel) continue
-    spokes.push({ ...e, relation: rel, through: [] })
-  }
-
   // A service nothing connects to is still part of the estate and still worth
   // seeing — an island is a finding, not a rendering accident — so every
   // service and external is kept whether or not a line reached it.
-  return { ...data, nodes: keep, edges: [...direct, ...lines.values(), ...spokes] }
+  return { ...data, nodes: keep, edges: [...direct, ...lines.values()], loose }
 }

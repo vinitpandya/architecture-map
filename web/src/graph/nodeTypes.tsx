@@ -24,10 +24,16 @@ export type MapNodeData = {
   showLabel: boolean
   /** A theme token name, when the map is colouring by something else. */
   color?: string
+  /**
+   * How many things this service reaches for that could not be drawn as a
+   * line — an endpoint nobody scanned exposes, a bus half the estate shares.
+   * Zero on every node at full detail, where each of them is drawn as itself.
+   */
+  loose?: number
 }
 
 function Shell({ data, extra, glyph }: { data: MapNodeData; extra?: string; glyph?: JSX.Element }) {
-  const { node, focused, selected, faded, showLabel } = data
+  const { node, focused, selected, faded, showLabel, loose } = data
   const classes = [
     'map-node',
     node.kind.replace('kafka.', ''),
@@ -65,6 +71,18 @@ function Shell({ data, extra, glyph }: { data: MapNodeData; extra?: string; glyp
             {glyph}
             {KIND_LABEL[node.kind]}
             {node.orphan ? ' · not declared' : ''}
+            {/* What this service reaches for that the map could not join up.
+                In the kind row rather than floating over the box: the node
+                clips its overflow, and a badge hanging off the corner would
+                be cut off or would change the box the layout measured. */}
+            {!!loose && (
+              <span
+                className="map-node-loose"
+                title={`${loose} ${loose === 1 ? 'connection' : 'connections'} that could not be drawn as a line — open the inspector`}
+              >
+                {loose}
+              </span>
+            )}
           </span>
           <span className="map-node-label">{node.name}</span>
         </>
