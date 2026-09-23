@@ -2,20 +2,24 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type ManifestRow, type ProcessPack } from '../lib/api'
 import { useScope } from '../lib/scope'
-import { Card, Empty } from '../components/ui'
+import { Banner, Card, Empty } from '../components/ui'
 
 /**
  * The ingest log, for both things that arrive through the inbox: scan
  * manifests derived from a repository, and process packs written by people.
  * They route by shape on the way in, and they read side by side here.
  *
- * A quarantined row of either kind expands to its validation errors.
+ * A quarantined row of either kind expands to its validation errors, and a
+ * scan set aside for shrinking can be applied from here — this is the only
+ * screen that still holds the body that was refused.
  */
 export function ManifestsPage() {
-  const { status } = useScope()
+  const { status, reload } = useScope()
   const [rows, setRows] = useState<ManifestRow[]>([])
   const [packs, setPacks] = useState<ProcessPack[]>([])
   const [open, setOpen] = useState<string | null>(null)
+  const [applying, setApplying] = useState<number | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
 
   useEffect(() => {
     api
@@ -27,6 +31,26 @@ export function ManifestsPage() {
       .then((d) => setPacks(d.packs))
       .catch(() => setPacks([]))
   }, [status?.lastIngestAt])
+
+  /* Applying a refused scan is a decision, not a retry: it deletes whatever
+     the previous scan asserted and this one does not. So it reports back
+     rather than failing quietly, and the row stays where it is if the server
+     still refuses it — which it will if the body was never valid. */
+  const applyAnyway = async (id: number) => {
+    setApplying(id)
+    setFailed(null)
+    try {
+      const res = await api.post<{ ok?: boolean; errors?: { path: string; message: string }[] }>(
+        `/ingest/force?id=${id}`
+      )
+      if (res.ok === false) setFailed(res.errors?.[0]?.message ?? 'The scan was refused again.')
+      reload()
+    } catch (err) {
+      setFailed(String((err as Error).message))
+    } finally {
+      setApplying(null)
+    }
+  }
 
   const head = (
     <div className="page-head">
@@ -74,6 +98,12 @@ export function ManifestsPage() {
   return (
     <div className="page">
       {head}
+
+      {failed && (
+        <Banner kind="error" title="That scan was not applied">
+          {failed}
+        </Banner>
+      )}
 
       {packs.length > 0 && (
         <>
@@ -131,7 +161,23 @@ export function ManifestsPage() {
                 key={key}
                 title={m.repo}
                 sub={`${m.status} · ${m.producer_kind ?? 'unknown producer'} · ${m.ingested_at}`}
-                actions={m.status === 'quarantined' ? toggle(key, m.errors?.length ?? 0) : undefined}
+                actions={
+                  m.status === 'quarantined' ? (
+                    <>
+                      {m.refused && (
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={applying === m.id}
+                          onClick={() => void applyAnyway(m.id)}
+                        >
+                          {applying === m.id ? 'Applying…' : 'Apply anyway'}
+                        </button>
+                      )}
+                      {toggle(key, m.errors?.length ?? 0)}
+                    </>
+                  ) : undefined
+                }
               >
                 <div className="muted" style={{ fontSize: 12 }}>
                   {m.commit_sha ? <code>{m.commit_sha}</code> : 'no commit'}

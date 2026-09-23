@@ -983,13 +983,40 @@ router.get('/manifests', wrap(async (req, res) => {
          FROM manifests ORDER BY ingested_at DESC, id DESC LIMIT ?`
       )
       .all(Number(req.query.limit) || 100)
-      .map((r) => ({ ...r, errors: parse(r.errors, null) })),
+      .map((r) => {
+        const errors = parse(r.errors, null)
+        // A row set aside for shrinking is valid and could be applied exactly
+        // as it stands; a row that failed the schema could not. Only the first
+        // is worth offering a button for, so the distinction is surfaced here
+        // rather than left for the page to infer from the wording.
+        return { ...r, errors, refused: !!errors?.some((e) => e.refused) }
+      }),
   })
 }))
 
 router.post('/ingest', wrap(async (req, res) => {
   const { ingestManifest } = await import('./ingest.js')
-  res.json(ingestManifest(req.body, req.body?.repo ? `${req.body.repo}.json` : null))
+  res.json(
+    ingestManifest(req.body, req.body?.repo ? `${req.body.repo}.json` : null, {
+      force: req.query.force === 'true',
+    })
+  )
+}))
+
+/**
+ * Apply a scan that was set aside for shrinking, off the body already stored
+ * on the quarantined row. Re-sending the file would be refused again, and the
+ * operator has no other copy once the inbox sweep has moved it — so the
+ * decision is made where the refusal is read, against the exact bytes that
+ * were refused.
+ */
+router.post('/ingest/force', wrap(async (req, res) => {
+  const { ingestManifest } = await import('./ingest.js')
+  const row = db
+    .prepare(`SELECT raw, source_file FROM manifests WHERE id = ? AND status = 'quarantined'`)
+    .get(Number(one(req.query.id)))
+  if (!row) return res.status(404).json({ error: 'no quarantined manifest with that id' })
+  res.json(ingestManifest(parse(row.raw, null), row.source_file, { force: true }))
 }))
 
 router.post('/ingest/sweep', wrap(async (req, res) => {

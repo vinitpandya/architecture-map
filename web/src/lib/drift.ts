@@ -41,6 +41,14 @@ export const DRIFT_KINDS: Record<string, DriftKind> = {
     title: 'Citations that no longer match',
     why: 'The line a fact was read from has changed since the scan.',
   },
+  'kind-disagreement': {
+    title: 'One id, two kinds',
+    why: 'Two repositories scanned the same id as different kinds of thing — a topic in one, a database in the other. It is drawn as whichever repository owns it, and one of them is wrong.',
+  },
+  'scan-refused': {
+    title: 'Scans set aside rather than applied',
+    why: 'A newer scan of a service asserted a fraction of what the last one did, so it was kept out rather than allowed to delete the difference. Usually a scan that stopped early. Read it in the ingest log and either re-run the scan or apply it anyway.',
+  },
 
   /* Layer B. These are the cross-check the process layer exists for, so they
      are the last findings that should arrive as a bare slug with no

@@ -158,11 +158,20 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
           continue
         }
         try {
-          const res = await api.post<{ ok?: boolean; errors?: { path: string; message: string }[] }>(
+          const res = await api.post<Pick<IngestResult, 'ok' | 'errors' | 'refused'>>(
             kind === 'manifest' ? '/ingest' : '/ingest/process-pack',
             parsed
           )
-          results.push({ file: file.name, kind, ok: res.ok !== false, errors: res.errors ?? null })
+          // `refused` rides along so the result can say "set aside" rather
+          // than "quarantined": the file is fine, and saying otherwise sends
+          // somebody looking for a mistake in it.
+          results.push({
+            file: file.name,
+            kind,
+            ok: res.ok !== false,
+            errors: res.errors ?? null,
+            refused: res.refused,
+          })
         } catch (err) {
           results.push({
             file: file.name,

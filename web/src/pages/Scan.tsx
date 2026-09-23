@@ -263,7 +263,9 @@ function Inbox({
                 <span className="muted" style={{ fontSize: 12 }}>
                   {r.kind === 'process-pack' ? 'process pack' : r.kind === 'manifest' ? 'manifest' : 'not ingestable'}
                 </span>
-                <span className={`pill ${r.ok ? 'good' : 'bad'}`}>{r.ok ? 'ingested' : 'quarantined'}</span>
+                <span className={`pill ${r.ok ? 'good' : 'bad'}`}>
+                  {r.ok ? 'ingested' : r.refused ? 'set aside' : 'quarantined'}
+                </span>
               </div>
               {r.errors?.length ? (
                 <ul className="ingest-errors">

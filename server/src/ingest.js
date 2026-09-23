@@ -88,7 +88,15 @@ INSERT INTO nodes (id, kind, name, description, engine, method, path, contract_t
 VALUES (@id, @kind, @name, @description, @engine, @method, @path, @contract_type,
         @language, @team, @owner_repo, 0, @now, @now)
 ON CONFLICT(id) DO UPDATE SET
-  kind = excluded.kind,
+  -- The same rule the name has always had. A kind was overwritten by whichever
+  -- repo was scanned last, which is the most damaging of these columns to get
+  -- wrong: it decides the colour, the icon, which filters the thing appears
+  -- under and which findings can fire for it. Two repos disagreeing is a
+  -- kind-disagreement finding, not a thing ingest settles by scan ordering.
+  kind = CASE
+    WHEN nodes.owner_repo IS NOT NULL AND nodes.owner_repo <> @repo THEN nodes.kind
+    ELSE excluded.kind
+  END,
   name = CASE
     WHEN nodes.owner_repo IS NOT NULL AND nodes.owner_repo <> @repo THEN nodes.name
     ELSE excluded.name
@@ -134,22 +142,65 @@ export function labelOf(value, fallback) {
 }
 
 /**
- * Idempotent per repo: re-ingesting a repo replaces exactly that repo's
- * contribution and touches nothing else. Overrides are a separate table and
- * are never read or written here — that is what makes a human correction
- * survive the next scan.
+ * Idempotent per service: re-ingesting one replaces exactly what that
+ * service last asserted and touches nothing else, so scans of different
+ * services land alongside each other however they are named. Overrides are a
+ * separate table and are never read or written here — that is what makes a
+ * human correction survive the next scan.
  */
-export function ingestManifest(json, sourceFile = null) {
+export function ingestManifest(json, sourceFile = null, { force = false } = {}) {
   const { ok, errors } = validateManifest(json)
   const now = new Date().toISOString()
   const repo = labelOf(json?.repo, sourceFile)
+  // `service_id` as well as the repo, when the body is well enough formed to
+  // carry one: a row set aside for shrinking is about one service, and the
+  // finding below is raised per service rather than per file.
+  const quarantine = (why) =>
+    db
+      .prepare(
+        `INSERT INTO manifests (repo, service_id, ingested_at, status, raw, errors, source_file)
+         VALUES (?, ?, ?, 'quarantined', ?, ?, ?)`
+      )
+      .run(
+        repo,
+        typeof json?.service?.id === 'string' ? json.service.id : null,
+        now,
+        JSON.stringify(json ?? null),
+        JSON.stringify(why),
+        sourceFile
+      )
 
   if (!ok) {
-    db.prepare(
-      `INSERT INTO manifests (repo, ingested_at, status, raw, errors, source_file)
-       VALUES (?, ?, 'quarantined', ?, ?, ?)`
-    ).run(repo, now, JSON.stringify(json ?? null), JSON.stringify(errors), sourceFile)
+    quarantine(errors)
     return { ok: false, repo, errors }
+  }
+
+  /* A re-scan that asserts a fraction of what the last one did is more often
+     an agent that gave up early than a service that lost most of its
+     dependencies. Applied, it would delete the difference and say nothing;
+     the operator would find out by noticing the map had thinned. So it is
+     set aside instead, the scan it would have replaced stays active, and
+     `force` is there for when the shrinking is real. */
+  const shrink = force ? null : wouldShrink(json)
+  if (shrink) {
+    const message =
+      `This scan asserts ${shrink.now} ${shrink.now === 1 ? 'edge' : 'edges'} where the last one ` +
+      `asserted ${shrink.before}. It has been set aside rather than applied, because a scan that ` +
+      `loses most of what it replaces is usually a run that stopped early. The previous scan of ` +
+      `${shrink.service} is still active. If the service really did lose them, apply this scan ` +
+      `from the ingest log.`
+    // `path` rather than ajv's `instancePath`, because explainErrors() has
+    // already renamed it by the time anything reads the column, and the
+    // `refused` flag is what tells a reader this one can be applied as it
+    // stands — a schema failure cannot.
+    const why = [{ path: '/edges', message, refused: true }]
+    quarantine(why)
+    // The topology has not moved, but what the findings should say about it
+    // has: a refusal means the map is showing the older scan, and nothing
+    // else would ever tell a reader that. Drift is rebuilt whole, so the
+    // finding is simply a fact about the manifests table once this row is in.
+    linkPass(now)
+    return { ok: false, repo, refused: { ...shrink, message }, errors: why }
   }
 
   const result = upsertTopology(json, sourceFile, now)
@@ -162,12 +213,52 @@ export function ingestManifest(json, sourceFile = null) {
   return result
 }
 
+/**
+ * Whether this manifest would replace a scan of the same service with a much
+ * smaller one, and by how much. Null when there is nothing to replace, when
+ * the previous scan was too small to judge, or when this one is no smaller.
+ *
+ * Counted in edges, because edges are what a supersede deletes: the nodes
+ * follow them, being collected once nothing points at them any more.
+ */
+function wouldShrink(json) {
+  const prior = db
+    .prepare(`SELECT id FROM manifests WHERE repo = ? AND service_id = ? AND status = 'active'`)
+    .all(json.repo, json.service.id)
+    .map((r) => r.id)
+  if (!prior.length) return null
+  const marks = prior.map(() => '?').join(',')
+  const before = db
+    .prepare(`SELECT COUNT(*) AS n FROM edges WHERE manifest_id IN (${marks})`)
+    .get(...prior).n
+  const now = json.edges?.length ?? 0
+  // Small numbers are noise: losing two of three proves nothing, and a
+  // service really can shed a dependency. Half, and at least three lost.
+  if (before < 4 || now * 2 >= before || before - now < 3) return null
+  return { service: json.service.id, before, now, lost: before - now }
+}
+
 const upsertTopology = db.transaction((json, sourceFile, now) => {
   const repo = json.repo
   const service = json.service
+  /*
+   * What this scan replaces is what it covered, which is one service — not
+   * everything that shares a repo name.
+   *
+   * Scoped to the repo alone, a second manifest naming a different service
+   * superseded the first and took its edges, its evidence and its sources
+   * with it; the nodes left with nothing pointing at them were then collected
+   * as rubbish. Two services scanned out of one repository deleted each
+   * other, and so did two agents that both happened to write the same `repo`.
+   * The schema has said "one manifest per repository" all along and nothing
+   * ever held it to that.
+   *
+   * `service.id` is required by the schema, so every manifest already carries
+   * what this needs.
+   */
   const prior = db
-    .prepare(`SELECT id FROM manifests WHERE repo = ? AND status = 'active'`)
-    .all(repo)
+    .prepare(`SELECT id FROM manifests WHERE repo = ? AND service_id = ? AND status = 'active'`)
+    .all(repo, service.id)
     .map((r) => r.id)
 
   // An edge keeps its first_seen across re-ingests even though the row itself

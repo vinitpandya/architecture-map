@@ -181,6 +181,213 @@ if (stage === 'ingest') {
     db.prepare(`SELECT version FROM contract_bindings WHERE service_id = 'svc:payments-service'`).get()?.version,
     '3.2.0'
   )
+
+  /* ---- two services scanned out of one repository.
+
+     A monorepo mapped a service at a time, or two agents that both wrote the
+     same `repo` into their manifests. Superseding on the repo name alone made
+     the second import delete the first's edges, evidence and sources — and
+     the node collector then took every node the first had asserted and
+     nothing else pointed at. Silent, and only visible as a map that thinned.
+  */
+  const cite = (file, line, snippet) => [{ file, line, snippet }]
+  const sibling = {
+    ...structuredClone(good),
+    service: {
+      id: 'svc:payments-ledger-bridge',
+      name: 'Payments Ledger Bridge',
+      language: 'kotlin',
+      team: 'payments',
+    },
+    nodes: [
+      {
+        id: 'topic:payments.bridged.v1',
+        kind: 'kafka.topic',
+        name: 'payments.bridged.v1',
+        evidence: cite('bridge/Topics.kt', 3, 'const val BRIDGED = "payments.bridged.v1"'),
+      },
+    ],
+    edges: [
+      {
+        from: 'svc:payments-ledger-bridge',
+        to: 'topic:payments.bridged.v1',
+        kind: 'kafka.produce',
+        confidence: 'high',
+        evidence: cite('bridge/Publisher.kt', 11, 'kafka.send(BRIDGED, event)'),
+      },
+    ],
+    unresolved: [],
+  }
+  ingestManifest(sibling, 'payments-ledger-bridge.json')
+
+  const active = (sql) => db.prepare(sql).all().map((r) => r.service_id ?? r.id)
+  is(
+    'a second service in the same repo leaves both manifests active',
+    active(`SELECT service_id FROM manifests WHERE repo = 'payments-service' AND status = 'active' ORDER BY service_id`).join(','),
+    'svc:payments-ledger-bridge,svc:payments-service'
+  )
+  is('  …and the first service survives', n(`SELECT COUNT(*) n FROM nodes WHERE id = 'svc:payments-service'`), 1)
+  is('  …with all seven of its edges', n(`SELECT COUNT(*) n FROM edges WHERE from_id = 'svc:payments-service'`), 7)
+  is('  …and its evidence intact', n('SELECT COUNT(*) n FROM evidence'), first.evidence + 2)
+  is('  …alongside the second service', n(`SELECT COUNT(*) n FROM nodes WHERE id = 'svc:payments-ledger-bridge'`), 1)
+
+  // And re-scanning one of them still replaces exactly its own contribution.
+  const bridgeAgain = structuredClone(sibling)
+  bridgeAgain.edges[0].description = 'now with a description'
+  ingestManifest(bridgeAgain, 'payments-ledger-bridge.json')
+  is(
+    're-scanning one service supersedes only its own manifest',
+    n(`SELECT COUNT(*) n FROM manifests WHERE repo = 'payments-service' AND status = 'active'`),
+    2
+  )
+  is(
+    '  …and the other service is still the active one for itself',
+    n(`SELECT COUNT(*) n FROM manifests WHERE service_id = 'svc:payments-service' AND status = 'active'`),
+    1
+  )
+  is('  …with its seven edges untouched', n(`SELECT COUNT(*) n FROM edges WHERE from_id = 'svc:payments-service'`), 7)
+
+  /* ---- a re-scan that asserts a fraction of what the last one did.
+
+     The honest reading of a scan that drops five of seven calls is that the
+     run stopped early, not that the service lost five dependencies in a day.
+     Applied, it deletes the difference and says nothing.
+  */
+  {
+    const thin = structuredClone(good)
+    thin.edges = good.edges.slice(0, 2)
+    const refusal = ingestManifest(thin, 'payments-service.json')
+    is('a scan that loses five of seven edges is refused', refusal.ok, false)
+    is('  …naming what it would have lost', refusal.refused?.lost, 5)
+    is(
+      '  …the previous scan is still the active one',
+      n(`SELECT COUNT(*) n FROM manifests WHERE service_id = 'svc:payments-service' AND status = 'active'`),
+      1
+    )
+    is('  …and its edges are all still there', n(`SELECT COUNT(*) n FROM edges WHERE from_id = 'svc:payments-service'`), 7)
+    const row = db
+      .prepare(`SELECT id, service_id, errors FROM manifests WHERE status = 'quarantined' ORDER BY id DESC`)
+      .get()
+    is('  …the quarantined row names the service', row.service_id, 'svc:payments-service')
+    ok('  …and is marked as applicable rather than invalid', JSON.parse(row.errors)[0]?.refused === true, row.errors)
+
+    const finding = db.prepare(`SELECT * FROM drift WHERE kind = 'scan-refused'`).all()
+    is('a refused scan raises exactly one finding', finding.length, 1)
+    is('  …against the service it was about', finding[0]?.subject_id, 'svc:payments-service')
+
+    // Forcing it through is the operator's decision, and it must actually
+    // apply — including the deletion the refusal was protecting against.
+    const forced = ingestManifest(thin, 'payments-service.json', { force: true })
+    is('forcing the same scan applies it', forced.ok, true)
+    is('  …and the edges it dropped are gone', n(`SELECT COUNT(*) n FROM edges WHERE from_id = 'svc:payments-service'`), 2)
+    is('  …and the finding goes with it', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'scan-refused'`), 0)
+
+    // Put the full manifest back, so what follows reads a whole service.
+    ingestManifest(good, 'payments-service.json', { force: true })
+    is('the full scan can be restored', n(`SELECT COUNT(*) n FROM edges WHERE from_id = 'svc:payments-service'`), 7)
+  }
+
+  /* ---- two repos calling one id two different things.
+
+     `kind` was the one descriptive column the upsert let any repo overwrite,
+     so whichever repo was scanned last decided whether a thing was a topic or
+     a database — its colour, its icon, its filters and which findings could
+     fire for it, all settled by ingest order.
+  */
+  {
+    const contrarian = {
+      ...structuredClone(good),
+      repo: 'reporting-service',
+      service: { id: 'svc:reporting-service', name: 'Reporting Service', team: 'data' },
+      nodes: [
+        {
+          id: 'db:postgres/payments',
+          kind: 'cache',
+          name: 'payments',
+          evidence: cite('reporting/Stores.kt', 4, 'val payments = cache("postgres/payments")'),
+        },
+      ],
+      edges: [
+        {
+          from: 'svc:reporting-service',
+          to: 'db:postgres/payments',
+          kind: 'db.read',
+          confidence: 'medium',
+          evidence: cite('reporting/Reader.kt', 20, 'payments.select()'),
+        },
+      ],
+      unresolved: [],
+    }
+    ingestManifest(contrarian, 'reporting-service.json')
+    is(
+      'a second repo cannot change the kind of a node it does not own',
+      db.prepare(`SELECT kind FROM nodes WHERE id = 'db:postgres/payments'`).get()?.kind,
+      'database'
+    )
+    const clash = db.prepare(`SELECT * FROM drift WHERE kind = 'kind-disagreement'`).all()
+    is('  …and the disagreement is reported rather than settled silently', clash.length, 1)
+    is('  …against the contested id', clash[0]?.subject_id, 'db:postgres/payments')
+    ok(
+      '  …naming both repos',
+      clash[0]?.detail.includes('payments-service') && clash[0]?.detail.includes('reporting-service'),
+      clash[0]?.detail
+    )
+  }
+
+  /* ---- the same two decisions, over the wire.
+
+     The refusal is only useful if the operator can see which quarantined row
+     is applicable and act on it, and both of those are route surface: the
+     page reads `refused` off the row and posts the id back. Checked here
+     rather than left to the browser suite, because the body being applied is
+     the one SQLite is holding, not one the browser still has.
+  */
+  {
+    const express = (await import('express')).default
+    const { router } = await import('../src/routes.js')
+    const app = express()
+    app.use(express.json({ limit: '16mb' }))
+    app.use('/api', router)
+    const server = app.listen(0)
+    await new Promise((r) => server.once('listening', r))
+    const base = `http://127.0.0.1:${server.address().port}/api`
+    const post = async (p, body) => {
+      const res = await fetch(`${base}${p}`, {
+        method: 'POST',
+        headers: body ? { 'Content-Type': 'application/json' } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      })
+      return { status: res.status, body: await res.json() }
+    }
+
+    const thin = structuredClone(good)
+    thin.edges = good.edges.slice(0, 2)
+    const refused = await post('/ingest', thin)
+    is('POST /ingest refuses a shrinking scan', refused.body.ok, false)
+
+    const listed = await (await fetch(`${base}/manifests`)).json()
+    const row = listed.manifests.find((m) => m.status === 'quarantined' && m.refused)
+    ok('  …and the row it leaves is marked applicable', !!row, 'no quarantined row came back marked refused')
+    is('  …for the right service', row?.service_id, 'svc:payments-service')
+    is(
+      '  …while a row that failed the schema is not',
+      listed.manifests.some((m) => m.status === 'quarantined' && !m.refused),
+      true
+    )
+
+    const missing = await post('/ingest/force?id=999999')
+    is('applying a row that is not there is a 404, not a throw', missing.status, 404)
+
+    const applied = await post(`/ingest/force?id=${row.id}`)
+    is('POST /ingest/force applies the stored body', applied.body.ok, true)
+    is('  …and it is the shrunk one that landed', n(`SELECT COUNT(*) n FROM edges WHERE from_id = 'svc:payments-service'`), 2)
+
+    // `force` on the endpoint itself, for anything posting directly.
+    const forcedOverWire = await post('/ingest?force=true', good)
+    is('POST /ingest?force=true applies a scan that would be refused', forcedOverWire.body.ok, true)
+    server.close()
+  }
+
   done()
 }
 

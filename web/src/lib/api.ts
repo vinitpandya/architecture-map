@@ -289,6 +289,8 @@ export type IngestResult = {
   repo?: string
   pack?: string
   counts?: Record<string, number>
+  /** Set when a valid scan was held back for shrinking, rather than rejected. */
+  refused?: { service: string; before: number; now: number; lost: number }
 }
 
 /* ------------------------------------------------------- layer C */
@@ -443,6 +445,8 @@ export type ManifestRow = {
   source_file: string | null
   status: 'active' | 'superseded' | 'quarantined'
   errors: { path: string; message: string }[] | null
+  /** Quarantined for shrinking rather than for being invalid, so it can still be applied. */
+  refused?: boolean
 }
 
 /* ------------------------------------------------------------ pages */

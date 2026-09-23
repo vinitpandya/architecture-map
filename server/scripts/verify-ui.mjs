@@ -1422,6 +1422,63 @@ for (const code of ['1', '2.1', '2.3.5']) {
   await ctx.close()
 }
 
+/* ---- a scan set aside, and the one screen that can let it through.
+
+   Last, because it deliberately changes the estate: a refused scan is only
+   interesting once there is something for it to shrink, and applying it
+   really does delete the difference. Nothing after this would be reading a
+   whole estate.
+*/
+{
+  const whole = JSON.parse(
+    fs.readFileSync(path.join(ROOT, 'demo', 'manifests', 'notification-service.json'), 'utf8')
+  )
+  const thin = { ...whole, edges: whole.edges.slice(0, 2) }
+  const sent = await (
+    await fetch(`${BASE}/api/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(thin),
+    })
+  ).json()
+  is('a scan that loses four of six edges is refused over HTTP', sent.ok, false)
+
+  const { ctx, page, problems } = await open('/manifests')
+  await page.waitForSelector('.card', { timeout: 20000 })
+  const card = page.locator('.card', { has: page.locator('h2', { hasText: 'notification-service' }) }).first()
+  const applyButton = card.locator('button:has-text("Apply anyway")')
+  is('the ingest log offers to apply it anyway', await applyButton.count(), 1)
+
+  // One button, on one row. The demo estate ingests cleanly, so this is the
+  // only row that could be applied — and the button must not appear beside
+  // the twenty-odd active and superseded ones, where it would mean nothing.
+  is(
+    '  …and on that row alone, not beside every manifest',
+    await page.locator('button:has-text("Apply anyway")').count(),
+    1
+  )
+
+  await card.locator('button:has-text("error")').click()
+  const why = await card.locator('.error-list').innerText()
+  ok('  …saying what it would have lost', /asserts 2 edges where the last one asserted 6/.test(why), why)
+
+  // An edge's repo is the manifest that declared it, so this counts exactly
+  // what that one scan is asserting — six before, and whatever it leaves after.
+  const declares = async () => (await api('/edges?repos=notification-service')).edges.length
+  is('  …while the estate still shows what the last whole scan found', await declares(), 6)
+
+  await applyButton.click()
+  await page.waitForTimeout(2500)
+  is('applying it deletes the difference, which is the point of asking first', await declares(), 2)
+  is(
+    '  …and the finding it raised goes with it',
+    (await api('/drift')).findings.filter((f) => f.kind === 'scan-refused').length,
+    0
+  )
+  ok('no console errors on the ingest log', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
 await browser.close()
 console.log(`\n  ${checks - failures}/${checks} checks passed\n`)
 process.exit(failures ? 1 : 0)

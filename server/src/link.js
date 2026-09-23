@@ -1015,6 +1015,101 @@ function rebuildDrift(now) {
     )
   }
 
+  /* two repos calling one id two different things.
+
+     The upsert keeps the owning repo's kind, because something has to be
+     drawn and ordering is no basis for choosing. But deciding it silently is
+     how a topic quietly becomes a database — so what was rejected is said
+     out loud here, off the active manifests rather than the nodes table,
+     which by construction only holds the winner. */
+  const kindsClaimed = new Map()
+  for (const m of db.prepare(`SELECT repo, raw FROM manifests WHERE status = 'active'`).all()) {
+    let parsed = null
+    try {
+      parsed = JSON.parse(m.raw)
+    } catch {
+      continue
+    }
+    const declares = [
+      ...(parsed?.service?.id ? [{ id: parsed.service.id, kind: 'service' }] : []),
+      ...(Array.isArray(parsed?.nodes) ? parsed.nodes : []),
+    ]
+    for (const n of declares) {
+      if (typeof n?.id !== 'string' || typeof n?.kind !== 'string') continue
+      if (!kindsClaimed.has(n.id)) kindsClaimed.set(n.id, new Map())
+      // One repo, one claim: a repo that says `database` twice is not a
+      // disagreement with itself.
+      kindsClaimed.get(n.id).set(m.repo, n.kind)
+    }
+  }
+  for (const [id, byRepo] of kindsClaimed) {
+    const kinds = [...new Set(byRepo.values())]
+    if (kinds.length < 2) continue
+    const settled = nodes.find((n) => n.id === id)?.kind
+    write(
+      'kind-disagreement',
+      id,
+      'warn',
+      `${label(id)} is scanned as ${andList(kinds.sort())} by different repositories: ` +
+        `${[...byRepo].map(([repo, kind]) => `${repo} says ${kind}`).join(', ')}. ` +
+        `It is drawn as ${settled ?? kinds[0]}, which is whichever repo owns it — a human decides ` +
+        `which is right, never the ingest.`,
+      { kinds, claims: [...byRepo].map(([repo, kind]) => ({ repo, kind })), drawn: settled ?? null }
+    )
+  }
+
+  /* the newest scan of a service, set aside rather than applied.
+
+     Without this the refusal is silent in every place a reader actually
+     looks: the map, the service page and the health page all go on showing
+     the older scan, correctly and with no hint that a newer one exists and
+     was rejected. The ingest log has the row, but nobody opens the ingest log
+     to find out why a service looks stale.
+
+     Per service and only while it is still the last word — an id higher than
+     every active manifest for that service. A later scan that landed, or an
+     operator who applied this one with force, both leave a higher active id
+     and the finding goes on its own. */
+  const activeScan = new Map()
+  for (const m of db
+    .prepare(`SELECT id, service_id FROM manifests WHERE status = 'active' AND service_id IS NOT NULL`)
+    .all()) {
+    activeScan.set(m.service_id, Math.max(activeScan.get(m.service_id) ?? 0, m.id))
+  }
+  const refused = new Map()
+  for (const m of db
+    .prepare(
+      `SELECT id, repo, service_id, ingested_at, errors FROM manifests
+       WHERE status = 'quarantined' AND service_id IS NOT NULL ORDER BY id`
+    )
+    .all()) {
+    const why = (() => {
+      try {
+        return JSON.parse(m.errors)
+      } catch {
+        return null
+      }
+    })()
+    const mark = why?.find?.((e) => e.refused)
+    // Last one wins: ordered by id, so a service scanned and refused three
+    // times reads as one finding about the newest attempt, not three.
+    if (mark) refused.set(m.service_id, { ...m, message: mark.message })
+  }
+  for (const [serviceId, m] of refused) {
+    if (m.id < (activeScan.get(serviceId) ?? 0)) continue
+    write(
+      'scan-refused',
+      serviceId,
+      'warn',
+      // No timestamp in the sentence: the fingerprint is the sentence, so a
+      // service refused three mornings running would otherwise read as three
+      // findings seconds old rather than one that has been true since Monday.
+      `A newer scan of ${label(serviceId)} was set aside. ${m.message} Until somebody decides, ` +
+        `what the map shows for it is the older scan.`,
+      { manifestId: m.id, repo: m.repo, ingestedAt: m.ingested_at }
+    )
+  }
+
   processFindings(write, { nodes, nameOf, label })
   teamFindings(write, { nodes })
   handoffFindings(write)

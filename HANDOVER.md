@@ -49,8 +49,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 470 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 206 more
+npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 502 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 214 more
 npm run verify:dev                   # the 11 that only fail in dev mode
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
@@ -110,9 +110,10 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 470 assertions across six stages, all passing.**
+**`npm run verify` — 502 assertions across six stages, all passing.**
 
-*Ingest (26, in-process against a fresh database).* `prompts/standalone/` is in
+*Ingest (58, in-process against a fresh database, with a short HTTP stretch at
+the end for the two routes an operator drives).* `prompts/standalone/` is in
 sync with the schemas it inlines, carries no unfilled placeholder, and has the
 README, both schemas and both worked examples beside it — the check that stops
 somebody being handed a copy of a schema that has quietly drifted.
@@ -125,6 +126,18 @@ leaves one row and zero nodes, edges and evidence. Re-ingesting leaves one activ
 manifest, doubles nothing, and leaves every `edges.id` and `first_seen`
 unchanged when the manifest's edges and evidence are reordered. The contract
 version is in `contract_bindings`, not on the node.
+
+Then the import rules, which are the part of ingest the author actually hit. A
+second service scanned out of the same repository leaves both manifests active,
+the first service's seven edges and its evidence intact; re-scanning one
+supersedes only its own. A scan asserting two edges where the last asserted
+seven is refused, naming the five it would have lost, leaving the previous scan
+active and raising one `scan-refused` finding against the service — and
+`force` applies it, after which the finding goes. A second repo cannot change
+the `kind` of a node it does not own, and the disagreement is reported with both
+repos named. Over HTTP: `POST /ingest` refuses, `GET /manifests` marks that row
+applicable and the schema-invalid one not, `POST /ingest/force` applies the
+stored body, and an id that is not there is a 404 rather than a throw.
 
 *The estate (74, over HTTP).* Every §14 count — 10 services, 9 topics, 5
 contracts, 6 endpoints, 8 databases, 2 caches, 3 externals, 0 quarantined, 3
@@ -268,7 +281,7 @@ through 452 server assertions and 191 browser checks, because neither of them
 runs the build that says so. This one opens every page against `npm run dev`
 and fails on any console error.
 
-**`npm run verify:ui` — 206 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 214 checks in Chromium at 1280×900, all passing.**
 
 A finding says how long it has been true rather than "just now", names the team
 that should look at it, and can be accepted with a reason and reopened again —
@@ -480,6 +493,62 @@ returned 43 of 46 processes because the value reached a LIKE pattern unvalidated
 `pack.source` as an unparsed JSON string; an unresolvable widget code rendered a
 blank body forever; and `L2.1` typed into a widget came back out as `LL2.1`.
 
+## What importing one repo at a time found
+
+The author imports a service at a time, running the scan prompt against a
+different team's repository each time. Doing that, older imports were being
+overwritten. Three separate defects, all of them silent:
+
+- **A scan superseded every manifest sharing its `repo` name, not its own
+  service.** `upsertTopology` read `WHERE repo = ? AND status = 'active'`, marked
+  those superseded, deleted their `edges`, `evidence`, `node_sources`,
+  `unresolved` and `contract_bindings`, and then collected any node left with
+  nothing pointing at it. Two services scanned out of one repository deleted
+  each other. So did two agents that both happened to write the same `repo`
+  string — which is what running one prompt across several teams' repositories
+  makes likely. The schema has said "one manifest per repository" all along and
+  nothing held it to that; `service.id` is required, so the key was already
+  there. Now scoped to `repo AND service_id`.
+- **A re-scan that found a fraction of what the last one found applied
+  silently.** An agent that stops early produces a valid manifest asserting two
+  edges where the last one asserted seven, and the difference is deleted with
+  no record that it ever existed. Such a scan is now quarantined instead: the
+  previous one stays active, a `scan-refused` finding says the map is showing
+  the older scan, and the body is kept so the operator can apply it — from
+  **Apply anyway** in the ingest log, or `POST /api/ingest?force=true`. The rule
+  is half the edges gone and at least three of them, and nothing is judged
+  below four edges.
+- **`kind` was the one descriptive column any repo could overwrite.** Every
+  other field follows the owning repo; `kind` was `kind = excluded.kind`, so
+  whichever repo was scanned last decided whether `db:postgres/payments` was a
+  database or a cache — its colour, its icon, which filters it appears under and
+  which findings could fire for it. Measured, not read: a second repo calling it
+  a cache flipped it. It now follows the owner like everything else, and a
+  disagreement raises `kind-disagreement` naming both repos, derived from the
+  active manifests because the `nodes` table only holds the winner.
+
+**Pure appending was considered and rejected**, and the reasoning is in
+DECISIONS.md. A map that can never lose a fact is never wrong about today: a
+call deleted from the code would stay on the map for ever. Replacement is
+right; the bug was its scope, and a shrinking scan is a question rather than an
+instruction.
+
+All three were confirmed against the unfixed code before the fixes went in —
+the new checks fail on `main` as it was, with `svc:payments-service` gone
+entirely and its seven edges with it.
+
+**If your database already has damage from this**, the manifests are all still
+there. This finds the repos that were fighting each other:
+
+```sql
+SELECT repo, COUNT(*) AS files, COUNT(DISTINCT service_id) AS services
+FROM manifests GROUP BY repo HAVING files > 1 ORDER BY files DESC;
+```
+
+Any row with `services > 1` had imports deleting each other. Re-run the scans
+for those services, or re-ingest the manifest files if you still have them;
+nothing needs to be reset.
+
 ## What the scale pass found
 
 The demo estate is ten services, sparse, with no node anything else crowds
@@ -586,7 +655,12 @@ committed, being a throwaway.
   stage, which is where four of the seven polish defects were caught. **That
   asymmetry is the lesson of this build: every defect found by reading rather
   than running lived on a path the demo data does not reach.** The four Layer A
-  findings above are the remaining ones, and they are where to look next.
+  findings above are the remaining ones, and they are where to look next. The
+  two newest kinds, `scan-refused` and `kind-disagreement`, produce nothing on
+  the demo data either, and are deliberately not in that list: both are
+  asserted in the `ingest` stage against manifests built for them, and
+  `scan-refused` is driven through the ingest log's **Apply anyway** button at
+  the end of the browser suite.
 - **A group box is a React Flow node.** Two arrangements draw them, so every
   check that counts "things on the map" goes through `MAP_NODE` in
   `verify-ui.mjs`, which excludes them. If you add a count, use it.
@@ -706,37 +780,46 @@ committed, being a throwaway.
 
 ## What I would do next, in order
 
-1. **Route a finding to more than one team.** `drift.team_id` is a single
+1. **A process pack gets no shrink guard, and should.** A re-ingested pack
+   supersedes on its `pack` id, which is the right identity — but a pack
+   rewritten with half its processes dropped applies silently, exactly as a
+   shrinking scan used to. The same rule fits, counted in processes rather than
+   edges, and `ingestProcessPack` is deliberately the same shape as
+   `ingestManifest` so it is a small change. It was left out of this pass
+   because the reported problem was scans, and widening the refusal rule to a
+   document a person authored deserves its own thought: a person deleting half
+   a pack usually means it.
+2. **Route a finding to more than one team.** `drift.team_id` is a single
    column, so a version skew between two teams and a topic two teams publish
    stay unrouted — 5 of the demo estate's 15. That is honest (more than one
    team *is* the finding) but it means the two most interesting kinds never
    reach an inbox. A join table would fix it; the question is whether the
    finding should then be resolvable by naming an owner, which is item 6 below
    and probably the same piece of work.
-2. **Stale evidence.** Given a checkout, re-read each cited `file:line` and
+3. **Stale evidence.** Given a checkout, re-read each cited `file:line` and
    compare it to the stored snippet. The schema already promises this ("ingest
    re-checks it, and a snippet that no longer matches marks the fact stale") and
    `drift.stale-evidence` is reserved for it. It is what turns the map from "true
    when it was scanned" into "provably still true", and it is the last piece of
    the honesty argument that is missing.
-3. **Pass 2.** `prompts/scan-pass2-link.md` exists and nothing runs it. The
+4. **Pass 2.** `prompts/scan-pass2-link.md` exists and nothing runs it. The
    `near-miss` findings are exactly its input, and reconciling ids across
    manifests is what stops a ten-repo estate becoming ten islands.
-4. **Edge overrides and `hidden`.** `overrides` supports `subject_kind='edge'`
+5. **Edge overrides and `hidden`.** `overrides` supports `subject_kind='edge'`
    and a `hidden` field, `/api/graph` already honours `hidden` on nodes, and no
    screen writes either. A "this edge is wrong" button is a small change with a
    large effect on whether people trust the map enough to correct it.
-5. **Process coverage as a first-class report.** `/api/coverage` and the
+6. **Process coverage as a first-class report.** `/api/coverage` and the
    `process-coverage` widget exist; what is missing is the other direction —
    which processes have gone longest without anybody confirming them. `source.asOf`
    is already stored and the process page already shows its age.
-6. **Team assignment should reach further than a service.** Only a service can
+7. **Team assignment should reach further than a service.** Only a service can
    be put in a team today, because everything else inherits. The cases that
    would want their own are a topic two teams publish (deliberately teamless,
    and `multi-team-topic` says why) and a cache two teams write. Both are real
    findings rather than gaps, so the right move is probably to let the *finding*
    be resolved by naming an owner, not to add a free-floating override.
-7. **A saved map arrangement should be shareable.** It is per browser today.
+8. **A saved map arrangement should be shareable.** It is per browser today.
    The obvious shape is a `layout` field on the widget's options, saved with the
    page like everything else on it, with `localStorage` as the per-person
    override. That is also what would let a team agree on one picture of the

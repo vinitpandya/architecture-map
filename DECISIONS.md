@@ -65,6 +65,39 @@ contracts" rather than "Everything".
   the schema's definition of medium. Everything else is `high`, where the
   evidence states the fact outright.
 
+## Importing one repo at a time
+
+- **A scan supersedes its own service, not everything sharing its repo name.**
+  The schema says "one manifest per repository" and nothing enforced it, so a
+  second manifest naming a different service superseded the first and took its
+  edges, evidence and sources with it — after which the node collector removed
+  whatever was left unreferenced. A monorepo mapped a service at a time, and
+  two agents that both wrote the same `repo`, each silently deleted the other.
+  `service.id` is required by the schema, so the key was already there.
+- **A re-scan that loses most of what it replaces is set aside, not applied.**
+  Half the edges gone and at least three of them, counted against the same
+  service's last scan, is far more often a run that stopped early than a
+  service that shed five dependencies overnight. The scan is quarantined, the
+  previous one stays active, and a `scan-refused` finding says the map is
+  showing the older one — otherwise the only symptom is a map that thinned.
+  Thresholds are deliberately blunt: below four edges nothing is judged,
+  because losing two of three proves nothing.
+- **Refusing is not the same as rejecting.** The refused body is kept on the
+  quarantined row and can be applied exactly as it stands, from the ingest log
+  or by `POST /api/ingest?force=true`. A service really can be decommissioned,
+  and the operator is the one who knows.
+- **Appending only was considered and rejected.** A map that can never lose a
+  fact is a map that is never wrong about today: a call deleted from the code
+  would stay on it for ever, and within a year it is a museum. Replacement is
+  right; the bug was its scope.
+- **A node's `kind` follows its owning repo, like every other column.** It was
+  the one descriptive field any repo could overwrite, so whichever repo was
+  scanned last decided whether a thing was a topic or a database — its colour,
+  its icon, which filters it appears under and which findings could fire for
+  it. Two repos disagreeing now raises `kind-disagreement` rather than being
+  settled by ingest order, read off the active manifests because the `nodes`
+  table only ever holds the winner.
+
 ## Link pass and search
 
 - **The search index is rebuilt wholesale after each ingest.** §5 says "for the
