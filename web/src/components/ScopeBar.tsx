@@ -11,22 +11,54 @@ import { Picker, type Option } from './Picker'
 export function ScopeBar() {
   const { scope, setScope, resetScope, status } = useScope()
   const [nodes, setNodes] = useState<GraphNode[]>([])
+  const [more, setMore] = useState(0)
+  const [chosen, setChosen] = useState<GraphNode | null>(null)
+  const [nodeQuery, setNodeQuery] = useState('')
   const [processes, setProcesses] = useState<Process[]>([])
   const [loading, setLoading] = useState(false)
 
-  // The focus picker searches the whole estate, not just what is on screen.
+  /* The focus picker searches the whole estate, not just what is on screen —
+     and it searches it on the SERVER. Filtering a fetched page in the browser
+     is only searching the estate while the estate fits in one page, and on
+     anything real it does not: the first 500 rows came back ordered by kind,
+     which sorts `service` last of the seven, so the picker whose whole job is
+     to find a service offered none of them. */
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     api
-      .get<{ nodes: GraphNode[] }>('/nodes', { limit: 500 })
-      .then((d) => !cancelled && setNodes(d.nodes))
+      .get<{ nodes: GraphNode[]; total: number }>('/nodes', { limit: 200, q: nodeQuery })
+      .then((d) => {
+        if (cancelled) return
+        setNodes(d.nodes)
+        setMore(Math.max(0, (d.total ?? d.nodes.length) - d.nodes.length))
+      })
       .catch(() => !cancelled && setNodes([]))
       .finally(() => !cancelled && setLoading(false))
     return () => {
       cancelled = true
     }
-  }, [status?.lastIngestAt])
+  }, [status?.lastIngestAt, nodeQuery])
+
+  /* What is focused may be outside whatever the search last returned, and a
+     picker that cannot name its own selection reads as though nothing is
+     selected. Fetched once per focus and kept. */
+  useEffect(() => {
+    let cancelled = false
+    if (!scope.focus) {
+      setChosen(null)
+      return
+    }
+    if (chosen?.id === scope.focus) return
+    api
+      .get<{ node: GraphNode }>('/node', { id: scope.focus })
+      .then((d) => !cancelled && setChosen(d.node))
+      .catch(() => !cancelled && setChosen(null))
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope.focus])
 
   // The process list is small enough to fetch whole, and it only moves when
   // a pack is ingested.
@@ -41,7 +73,12 @@ export function ScopeBar() {
     }
   }, [status?.lastIngestAt])
 
-  const focusOptions: Option[] = nodes.map((n) => ({
+  const focusOptions: Option[] = [
+    // The selection first, and never twice: it may be outside what the last
+    // search returned, and dropping it would unname it.
+    ...(chosen && !nodes.some((n) => n.id === chosen.id) ? [chosen] : []),
+    ...nodes,
+  ].map((n) => ({
     value: n.id,
     label: n.name,
     sub: idValue(n.id),
@@ -96,9 +133,11 @@ export function ScopeBar() {
         onChange={(next) => setScope({ focus: next[0] ?? '' })}
         multiple={false}
         placeholder="Whole estate"
-        emptyText="Nothing ingested yet"
+        emptyText={nodeQuery ? `Nothing matches “${nodeQuery}”` : 'Nothing ingested yet'}
         width={280}
+        onSearch={setNodeQuery}
         loading={loading}
+        footer={more > 0 ? `${more} more — type to narrow` : undefined}
       />
 
       <div className="segmented" role="group" aria-label="Depth">

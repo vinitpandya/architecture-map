@@ -252,19 +252,44 @@ router.get('/nodes', wrap(async (req, res) => {
   }
   if (req.query.includeExternal === 'false') where.push(`n.orphan = 0 AND n.kind != 'external'`)
 
+  /* A name or an id, for a caller with more nodes than it can hold at once.
+     LIKE with the operand escaped: `%` and `_` are wildcards, and a service
+     called `order_service` should find itself rather than everything. */
+  const q = String(one(req.query.q) ?? '').trim()
+  if (q) {
+    const like = `%${q.replace(/[\\%_]/g, '\\$&')}%`
+    where.push(`(n.name LIKE ? ESCAPE '\\' OR n.id LIKE ? ESCAPE '\\')`)
+    args.push(like, like)
+  }
+
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
+  const limit = Number(req.query.limit) || 500
   const rows = db
     .prepare(
       `SELECT n.*, t.name AS team_name,
               (SELECT COUNT(*) FROM edges e WHERE e.from_id = n.id OR e.to_id = n.id) AS degree
        FROM nodes n LEFT JOIN teams t ON t.id = n.team_id
-       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY n.kind, n.name
+       ${clause}
+       -- Services first. Ordering by kind alone sorts 'service' last of the
+       -- seven, so an estate with more components than this limit handed back
+       -- a list with no services in it at all — and the focus picker, whose
+       -- whole job is to find a service, offered none. A caller that asked
+       -- for one kind is unaffected: the first term is constant for it.
+       ORDER BY (n.kind <> 'service'), n.kind, n.name
        LIMIT ?`
     )
-    .all(...args, Number(req.query.limit) || 500)
+    .all(...args, limit)
+
+  // Said rather than left to be inferred from a round number. A truncated list
+  // that looks complete is how a whole kind went missing without a sound.
+  const total = db.prepare(`SELECT COUNT(*) AS n FROM nodes n ${clause}`).get(...args).n
 
   const ov = overrideMap('node')
-  res.json({ nodes: rows.map(nodeRow).map((n) => applyNodeOverrides(n, ov)).filter((n) => !n.hidden) })
+  res.json({
+    nodes: rows.map(nodeRow).map((n) => applyNodeOverrides(n, ov)).filter((n) => !n.hidden),
+    total,
+    truncated: total > rows.length,
+  })
 }))
 
 router.get('/node', wrap(async (req, res) => {

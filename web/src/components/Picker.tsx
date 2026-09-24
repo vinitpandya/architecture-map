@@ -17,6 +17,7 @@ export function Picker({
   width = 230,
   onSearch,
   loading,
+  footer,
 }: {
   label: string
   options: Option[]
@@ -28,6 +29,8 @@ export function Picker({
   width?: number
   onSearch?: (q: string) => void
   loading?: boolean
+  /** A line under the list, for a list that is not all of it. */
+  footer?: string
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -141,6 +144,11 @@ export function Picker({
               </label>
             ))}
           </div>
+          {footer && (
+            <div className="muted" style={{ padding: '6px 8px 2px', fontSize: 11 }}>
+              {footer}
+            </div>
+          )}
           {selected.length > 0 && (
             <div className="row" style={{ justifyContent: 'flex-end', marginTop: 6 }}>
               <button type="button" className="ghost" onClick={() => onChange([])}>

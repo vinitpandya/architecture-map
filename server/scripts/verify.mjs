@@ -731,6 +731,58 @@ if (stage === 'estate') {
     const repoNodes = (await q(`/nodes?limit=1000&repos=${repo}`)).nodes
     ok('/nodes narrows to a repo', repoNodes.length > 0 && repoNodes.length < allNodes.length, String(repoNodes.length))
 
+    /* ---- a page of /nodes leads with the services.
+
+       `ORDER BY n.kind` sorts 'service' last of the seven kind strings, so an
+       estate with more components than one page held back every service — and
+       the filter row's Focus picker, whose whole job is to find a service,
+       offered none of them. Asserted as a property of the ordering rather
+       than against a big fixture: on the demo estate every kind fits, so only
+       the order can be checked, and the order is the whole of the bug.
+
+       Measured on 720 nodes before the fix: 0 services in the first 500. */
+    const firstPage = (await q('/nodes?limit=12')).nodes
+    const services = allNodes.filter((n) => n.kind === 'service').length
+    ok(
+      'a page of /nodes leads with the services',
+      services > 0 && firstPage.slice(0, services).every((n) => n.kind === 'service'),
+      firstPage.map((n) => n.kind).join(', ')
+    )
+    ok(
+      '  …every one of them, before anything of another kind',
+      firstPage.filter((n) => n.kind === 'service').length === services,
+      `${firstPage.filter((n) => n.kind === 'service').length} of ${services} in the first 12`
+    )
+    is(
+      '  …and says how many it did not return, rather than looking complete',
+      (await q('/nodes?limit=12')).total,
+      allNodes.length
+    )
+    is('  …with truncated saying so', (await q('/nodes?limit=12')).truncated, true)
+    is('  …and false when it really is all of them', (await q('/nodes?limit=1000')).truncated, false)
+
+    /* ---- and it searches, because one page is not the estate */
+    const named = (await q(`/nodes?limit=50&q=${encodeURIComponent('order')}`)).nodes
+    ok(
+      '/nodes?q= matches a name or an id',
+      named.length > 0 && named.every((n) => `${n.name} ${n.id}`.toLowerCase().includes('order')),
+      named.map((n) => n.id).join(', ')
+    )
+    ok(
+      '  …reaching a service that a truncated page would have dropped',
+      named.some((n) => n.id === 'svc:order-service'),
+      named.map((n) => n.id).join(', ')
+    )
+    // `%` and `_` are LIKE wildcards. A service called `order_service` has to
+    // find itself rather than everything, so the operand is escaped.
+    is('  …treating % as a character, not a wildcard', (await q('/nodes?limit=50&q=%25')).nodes.length, 0)
+    is('  …and _ likewise', (await q('/nodes?limit=50&q=_')).nodes.length, 0)
+    is(
+      '  …while an underscore that is really there still matches',
+      (await q(`/nodes?limit=50&q=${encodeURIComponent('postgres/orders')}`)).nodes.length > 0,
+      true
+    )
+
     const allEdges = (await q('/edges?limit=2000')).edges
     const repoEdges = (await q(`/edges?limit=2000&repos=${repo}`)).edges
     ok('/edges narrows to a repo', repoEdges.length > 0 && repoEdges.length < allEdges.length, String(repoEdges.length))

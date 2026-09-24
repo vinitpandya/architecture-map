@@ -189,6 +189,9 @@ export function MapCanvas({
   /** Why the last layout produced nothing, if it produced nothing. */
   const [failed, setFailed] = useState<{ title: string; hint: string } | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
+  /** What is typed in the map's own search box, and what it is waiting to reveal. */
+  const [find, setFind] = useState('')
+  const [revealing, setRevealing] = useState<string | null>(null)
   const [zoomedOut, setZoomedOut] = useState(false)
   const [open, setOpen] = useState(() => localStorage.getItem(INSPECTOR_KEY) !== 'closed')
   /**
@@ -527,6 +530,49 @@ export function MapCanvas({
     if (through && !derived.has(through.id)) setThrough(null)
   }, [derived, through])
   const name = useCallback((id: string) => all.find((n) => n.id === id)?.name ?? idValue(id), [all])
+
+  /* ---- finding something on a map too big to read.
+
+     Searched over `all` rather than over what is drawn, because the two are
+     different and the difference is the useful part: at service level a topic
+     is real, is on this map, and is inside a line rather than on the canvas.
+     Telling somebody it does not exist would be false. So a hit says whether
+     it is drawn, and one that is not offers the detail level that draws it. */
+  const hits = useMemo(() => {
+    const q = find.trim().toLowerCase()
+    if (!q) return []
+    const drawn = new Set(nodes.map((n) => n.id))
+    return all
+      .filter((n) => n.name.toLowerCase().includes(q) || n.id.toLowerCase().includes(q))
+      // Drawn first, then by name: what you can be shown right now is what you
+      // most likely meant.
+      .sort((a, b) =>
+        Number(drawn.has(b.id)) - Number(drawn.has(a.id)) || a.name.localeCompare(b.name)
+      )
+      .slice(0, 40)
+      .map((n) => ({ node: n, drawn: drawn.has(n.id) }))
+  }, [find, all, nodes])
+
+  /** Put it on screen and select it, which is what "find" has to mean. */
+  const reveal = useCallback((id: string) => {
+    setSelected(id)
+    setThrough(null)
+    // A beat, so a node that has only just been laid out has somewhere to be.
+    requestAnimationFrame(() =>
+      flow.current?.fitView({ nodes: [{ id }], duration: 420, maxZoom: 1.1, padding: 0.55 })
+    )
+  }, [])
+
+  /* Switching detail re-runs the layout, so a node that was not drawn cannot
+     be revealed in the same tick it was asked for. This waits for it. */
+  useEffect(() => {
+    if (!revealing) return
+    if (!nodes.some((n) => n.id === revealing)) return
+    reveal(revealing)
+    setRevealing(null)
+    // `nodes` is a fresh array each render; its ids are what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealing, key, reveal])
 
   /* The chord is always service-to-service, whatever the map's detail level
      says — so its key is drawn from the collapse rather than from `view`,
@@ -937,6 +983,65 @@ export function MapCanvas({
               )}
             </Panel>
           )}
+          {/* Finding something. On a map of ten this is a convenience; past a
+              hundred boxes it is the only way in, and the filter row's Focus
+              is a different question — that one narrows the map to a thing,
+              this one shows you where the thing already is. */}
+          <Panel position="top-right" className="map-find">
+            <input
+              type="search"
+              value={find}
+              placeholder="Find on this map…"
+              aria-label="Find on this map"
+              onChange={(e) => setFind(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setFind('')
+                // Enter takes the first hit, because that is what Enter means
+                // in every other search box a person has ever used.
+                if (e.key === 'Enter' && hits.length) {
+                  const first = hits[0]
+                  if (first.drawn) reveal(first.node.id)
+                  else {
+                    setRevealing(first.node.id)
+                    setDetail('all')
+                    write(DETAIL_KEY + storageKey, 'all')
+                  }
+                }
+              }}
+            />
+            {find.trim() && (
+              <div className="map-find-hits">
+                {hits.length === 0 && (
+                  <p className="muted">
+                    Nothing on this map matches. The filter row above decides what is on it at
+                    all — or try <Link to={`/search?q=${encodeURIComponent(find.trim())}`}>the
+                    estate search</Link>.
+                  </p>
+                )}
+                {hits.map(({ node: n, drawn }) => (
+                  <button
+                    key={n.id}
+                    type="button"
+                    className={`map-find-hit${drawn ? '' : ' map-find-hidden'}`}
+                    onClick={() => {
+                      if (drawn) return reveal(n.id)
+                      // Not drawn is not absent: at service level it is inside
+                      // a line. Switch to the level that draws it and reveal it
+                      // once the layout has put it somewhere.
+                      setRevealing(n.id)
+                      setDetail('all')
+                      write(DETAIL_KEY + storageKey, 'all')
+                    }}
+                  >
+                    <span className="map-find-name">{n.name}</span>
+                    <span className="muted map-find-kind">
+                      {drawn ? KIND_LABEL[n.kind] : `${KIND_LABEL[n.kind]} · inside a line`}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Panel>
           <Background variant={BackgroundVariant.Dots} gap={18} size={1} color={token.gridline} />
           <Controls showInteractive={false} />
           <MiniMap

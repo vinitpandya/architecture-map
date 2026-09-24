@@ -1546,6 +1546,127 @@ for (const code of ['1', '2.1', '2.3.5']) {
   await ctx.close()
 }
 
+/* ---- finding something on the map.
+
+   The filter row's Focus narrows the map to a thing; this says where a thing
+   already is. On ten services it is a convenience and past a hundred boxes it
+   is the only way in, so it is checked on both halves of what makes it
+   useful: a node that is drawn, and one that is real but folded into a line
+   at this detail level. */
+{
+  const { ctx, page, problems } = await open('/')
+  await page.waitForSelector('.map-node', { timeout: 30000 })
+  await page.waitForTimeout(1200)
+
+  const box = page.locator('.map-find input')
+  is('the map offers a search of its own', await box.count(), 1)
+
+  await box.fill('ledger')
+  await page.waitForTimeout(350)
+  const hits = await page.$$eval('.map-find-hit', (els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()))
+  ok('typing finds matching components', hits.length > 0, hits.join(' | '))
+  ok('  …every one of them matching', hits.every((h) => /ledger/i.test(h)), hits.join(' | '))
+
+  // The map opens collapsed to services, so the ledger DATABASE is real, is on
+  // this map, and is inside a line rather than on the canvas. Saying it does
+  // not exist would be false; this is the half that says so.
+  ok(
+    '  …including one this detail level draws inside a line',
+    hits.some((h) => /inside a line/.test(h)),
+    hits.join(' | ')
+  )
+
+  // A drawn one selects and is brought into view.
+  const drawn = page.locator('.map-find-hit:not(.map-find-hidden)').first()
+  const drawnName = (await drawn.locator('.map-find-name').innerText()).trim()
+  await drawn.click()
+  await page.waitForTimeout(900)
+  const inspector = await page.$eval('.map-inspector, .node-inspector', (e) => e.innerText).catch(() => '')
+  ok('clicking a hit selects it', inspector.includes(drawnName), `${drawnName} | ${inspector.slice(0, 120)}`)
+  is(
+    '  …and exactly one node is drawn as selected',
+    await page.$$eval('.react-flow__node', (els) => els.filter((e) => e.querySelector('.map-node.selected')).length),
+    1
+  )
+
+  /* And the other half: a component folded into a line switches the map to the
+     detail level that draws it, rather than reporting that it is not there. */
+  await box.fill('postgres/ledger')
+  await page.waitForTimeout(350)
+  const folded = page.locator('.map-find-hit.map-find-hidden').first()
+  ok('a component inside a line is offered', (await folded.count()) > 0, await box.inputValue())
+  await folded.click()
+  await page.waitForTimeout(2500)
+  is(
+    'choosing it switches to the detail level that draws it',
+    await page.$eval('.map-detail button[aria-pressed="true"]', (e) => e.textContent.trim()),
+    'Everything'
+  )
+  ok(
+    '  …and draws it',
+    (await page.$$('.react-flow__node[data-id="db:postgres/ledger"]')).length === 1,
+    'the database is still not on the canvas'
+  )
+
+  await box.fill('nothing called this exists')
+  await page.waitForTimeout(350)
+  is('a search that matches nothing says so', await page.$$eval('.map-find-hits p', (e) => e.length), 1)
+  ok(
+    '  …and points at the estate search rather than stopping',
+    (await page.$$('.map-find-hits a[href^="/search"]')).length === 1,
+    'no way onward'
+  )
+
+  ok('no console errors while finding', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+/* ---- the Focus picker offers the services.
+
+   `/nodes` ordered by kind alone sorts 'service' last of the seven, so an
+   estate with more components than one page held back every service and the
+   picker whose whole job is to find one offered none. 0 of 120 on a 720-node
+   estate before the fix. The demo estate is small enough that every kind
+   fits, so what is checkable here is the order and the search. */
+{
+  const { ctx, page, problems } = await open('/')
+  await page.waitForSelector('.scope-bar', { timeout: 20000 })
+  await page.click('.scope-bar button:has-text("Whole estate")')
+  await page.waitForSelector('.checkrow', { timeout: 10000 })
+  const labels = await page.$$eval('.checkrow', (els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()))
+  ok('Focus lists something', labels.length > 0, String(labels.length))
+
+  const services = (await api('/nodes?limit=1000')).nodes.filter((n) => n.kind === 'service')
+  ok(
+    '  …every service in the estate',
+    services.every((svc) => labels.some((l) => l.includes(svc.name))),
+    services.filter((svc) => !labels.some((l) => l.includes(svc.name))).map((s) => s.id).join(', ')
+  )
+  ok(
+    '  …and they come first, before any other kind',
+    labels.slice(0, services.length).every((l) => services.some((svc) => l.includes(svc.name))),
+    labels.slice(0, services.length).join(' | ')
+  )
+
+  // Typed, it searches the estate on the server rather than filtering whatever
+  // one page happened to hold.
+  await page.fill('.scope-bar input[type="search"]', 'wallet')
+  await page.waitForTimeout(700)
+  const narrowed = await page.$$eval('.checkrow', (els) => els.map((e) => e.innerText.toLowerCase()))
+  ok('typing narrows it', narrowed.length > 0 && narrowed.length < labels.length, `${narrowed.length} of ${labels.length}`)
+  ok('  …to things that match', narrowed.every((l) => l.includes('wallet')), narrowed.join(' | '))
+
+  await page.click('.checkrow:has-text("Wallet Service")')
+  await page.waitForTimeout(1500)
+  ok(
+    'choosing one focuses the map on it',
+    (await page.$eval('.scope-bar', (e) => e.innerText)).includes('Wallet Service'),
+    await page.$eval('.scope-bar', (e) => e.innerText.slice(0, 160))
+  )
+  ok('no console errors on the filter row', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
 await browser.close()
 console.log(`\n  ${checks - failures}/${checks} checks passed\n`)
 process.exit(failures ? 1 : 0)
