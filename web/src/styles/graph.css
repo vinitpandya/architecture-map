@@ -432,6 +432,15 @@
   gap: 8px;
   margin: 8px;
   max-width: min(280px, 46%);
+  /* Always mounted now, because the search lives in it. The column itself is
+     mostly empty space over the canvas, and empty space must not swallow a
+     drag or a click on what is underneath it — so the panel is transparent to
+     the pointer and each child takes its own events back. */
+  pointer-events: none;
+}
+
+.map-aside > * {
+  pointer-events: auto;
 }
 
 /* A transient mode needs a way out you can see without opening the key. */
@@ -1165,8 +1174,12 @@ a.pill:hover {
    of one control strip and a reader should not have to work out that they are
    the same kind of thing. */
 
+/* One column down the right-hand side, not a second panel competing for the
+   same corner. React Flow positions every `top right` panel at the same
+   absolute point, so a search box of its own sat on top of whatever the map
+   was already saying there and swallowed the clicks meant for it — the
+   isolate banner's way out, and the close on "what this line runs through". */
 .map-find {
-  margin: 8px;
   width: min(260px, 40vw);
 }
 

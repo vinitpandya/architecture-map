@@ -943,8 +943,66 @@ export function MapCanvas({
               every other corner is taken: the key top-left, React Flow's own
               controls bottom-left and its minimap bottom-right — which is what
               the isolate banner was landing underneath. */}
-          {(view.isolated || through) && (
-            <Panel position="top-right" className="map-aside">
+          <Panel position="top-right" className="map-aside">
+            {/* Finding something. On a map of ten this is a convenience; past a
+                hundred boxes it is the only way in, and the filter row's Focus
+                is a different question — that one narrows the map to a thing,
+                this one shows you where the thing already is. */}
+            <div className="map-find">
+              <input
+                type="search"
+                value={find}
+                placeholder="Find on this map…"
+                aria-label="Find on this map"
+                onChange={(e) => setFind(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setFind('')
+                  // Enter takes the first hit, because that is what Enter means
+                  // in every other search box a person has ever used.
+                  if (e.key === 'Enter' && hits.length) {
+                    const first = hits[0]
+                    if (first.drawn) reveal(first.node.id)
+                    else {
+                      setRevealing(first.node.id)
+                      setDetail('all')
+                      write(DETAIL_KEY + storageKey, 'all')
+                    }
+                  }
+                }}
+              />
+              {find.trim() && (
+                <div className="map-find-hits">
+                  {hits.length === 0 && (
+                    <p className="muted">
+                      Nothing on this map matches. The filter row above decides what is on it at
+                      all — or try <Link to={`/search?q=${encodeURIComponent(find.trim())}`}>the
+                      estate search</Link>.
+                    </p>
+                  )}
+                  {hits.map(({ node: n, drawn }) => (
+                    <button
+                      key={n.id}
+                      type="button"
+                      className={`map-find-hit${drawn ? '' : ' map-find-hidden'}`}
+                      onClick={() => {
+                        if (drawn) return reveal(n.id)
+                        // Not drawn is not absent: at service level it is inside
+                        // a line. Switch to the level that draws it and reveal it
+                        // once the layout has put it somewhere.
+                        setRevealing(n.id)
+                        setDetail('all')
+                        write(DETAIL_KEY + storageKey, 'all')
+                      }}
+                    >
+                      <span className="map-find-name">{n.name}</span>
+                      <span className="muted map-find-kind">
+                        {drawn ? KIND_LABEL[n.kind] : `${KIND_LABEL[n.kind]} · inside a line`}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
               {view.isolated && (
                 <div className="map-isolated">
                   <span>
@@ -982,66 +1040,6 @@ export function MapCanvas({
                 </div>
               )}
             </Panel>
-          )}
-          {/* Finding something. On a map of ten this is a convenience; past a
-              hundred boxes it is the only way in, and the filter row's Focus
-              is a different question — that one narrows the map to a thing,
-              this one shows you where the thing already is. */}
-          <Panel position="top-right" className="map-find">
-            <input
-              type="search"
-              value={find}
-              placeholder="Find on this map…"
-              aria-label="Find on this map"
-              onChange={(e) => setFind(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') setFind('')
-                // Enter takes the first hit, because that is what Enter means
-                // in every other search box a person has ever used.
-                if (e.key === 'Enter' && hits.length) {
-                  const first = hits[0]
-                  if (first.drawn) reveal(first.node.id)
-                  else {
-                    setRevealing(first.node.id)
-                    setDetail('all')
-                    write(DETAIL_KEY + storageKey, 'all')
-                  }
-                }
-              }}
-            />
-            {find.trim() && (
-              <div className="map-find-hits">
-                {hits.length === 0 && (
-                  <p className="muted">
-                    Nothing on this map matches. The filter row above decides what is on it at
-                    all — or try <Link to={`/search?q=${encodeURIComponent(find.trim())}`}>the
-                    estate search</Link>.
-                  </p>
-                )}
-                {hits.map(({ node: n, drawn }) => (
-                  <button
-                    key={n.id}
-                    type="button"
-                    className={`map-find-hit${drawn ? '' : ' map-find-hidden'}`}
-                    onClick={() => {
-                      if (drawn) return reveal(n.id)
-                      // Not drawn is not absent: at service level it is inside
-                      // a line. Switch to the level that draws it and reveal it
-                      // once the layout has put it somewhere.
-                      setRevealing(n.id)
-                      setDetail('all')
-                      write(DETAIL_KEY + storageKey, 'all')
-                    }}
-                  >
-                    <span className="map-find-name">{n.name}</span>
-                    <span className="muted map-find-kind">
-                      {drawn ? KIND_LABEL[n.kind] : `${KIND_LABEL[n.kind]} · inside a line`}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </Panel>
           <Background variant={BackgroundVariant.Dots} gap={18} size={1} color={token.gridline} />
           <Controls showInteractive={false} />
           <MiniMap
