@@ -38,11 +38,18 @@ import type { NodeKind } from '../lib/api'
  * happens, and a level 3 has none and is itself the content.
  *
  * A code is `2.1.1`, full of dots, so it travels as a query parameter and
- * never as a path segment.
+ * never as a path segment — and it travels beside its pack, because a code
+ * alone no longer addresses a process. `?code=` on its own is still answered
+ * while only one pack uses that number, for links written before this and for
+ * codes people paste out of tickets; two packs using it is a 409 naming them.
  */
 export function ProcessPage() {
   const [params] = useSearchParams()
   const code = params.get('code') ?? ''
+  // `askedPack`, because `pack` below is the pack DOCUMENT this process came
+  // out of — its name, its source, when it was authored. This is just the id
+  // in the URL, and the two are easy to confuse to the compiler's cost.
+  const askedPack = params.get('pack') ?? ''
   const [data, setData] = useState<ProcessDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -52,13 +59,13 @@ export function ProcessPage() {
     setError(null)
     if (!code) return
     api
-      .get<ProcessDetail>('/process', { code })
+      .get<ProcessDetail>('/process', { code, pack: askedPack })
       .then((d) => !cancelled && setData(d))
       .catch((err) => !cancelled && setError(String((err as Error).message)))
     return () => {
       cancelled = true
     }
-  }, [code])
+  }, [code, askedPack])
 
   if (!code) return <div className="page"><Empty title="No process selected" /></div>
   if (error)
@@ -90,7 +97,7 @@ export function ProcessPage() {
             {ancestors.map((a) => (
               <span key={a.id}>
                 {' › '}
-                <Link to={processHref(a.code)}>
+                <Link to={processHref(a.pack, a.code)}>
                   {displayCode(a.code)} {a.name}
                 </Link>
               </span>
@@ -185,7 +192,13 @@ export function ProcessPage() {
         title="On the map"
         sub="This process's components and the relationships among them — the shape the sequence diagram cannot show"
       >
-        <MapCanvas height={420} focus="" depth="all" process={process.code} storageKey={`p.${process.code}`} />
+        <MapCanvas
+          height={420}
+          focus=""
+          depth="all"
+          process={`${process.pack}#${process.code}`}
+          storageKey={`p.${process.pack}.${process.code}`}
+        />
       </Card>
 
       <TeamsCard process={process} teams={teams} />
@@ -383,10 +396,10 @@ function Step({ process }: { process: Process }) {
   return (
     <li className="proc-step">
       <div className="proc-step-head">
-        <Link to={processHref(process.code)} className="proc-code">
+        <Link to={processHref(process.pack, process.code)} className="proc-code">
           {displayCode(process.code)}
         </Link>
-        <Link to={processHref(process.code)} className="proc-step-name">
+        <Link to={processHref(process.pack, process.code)} className="proc-step-name">
           {process.name}
         </Link>
         {process.optional && <span className="pill">optional</span>}

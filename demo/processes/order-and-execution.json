@@ -1,9 +1,20 @@
 {
   "schemaVersion": 1,
-  "promptVersion": "2026-09-21a",
+  "promptVersion": "2026-09-24a",
   "pack": "order-and-execution",
   "name": "Order and execution",
   "description": "How a customer gets a price, accepts it, and has the resulting trade settled and told to them. Does not cover onboarding, funding or reporting — those are separate packs.",
+  "covers": {
+    "team": "trading",
+    "services": [
+      "svc:order-service",
+      "svc:matching-engine",
+      "svc:wallet-service",
+      "svc:gateway-api",
+      "svc:ledger-service",
+      "svc:notification-service"
+    ]
+  },
   "authoredAt": "2026-09-18T11:00:00Z",
   "producer": {
     "kind": "claude",
@@ -211,7 +222,7 @@
           "note": "The ledger posts the trade from the fill event."
         },
         {
-          "process": "L3.1.2",
+          "process": "reporting#3.1.2",
           "note": "Reporting ingests the fill off the topic to build the trade warehouse."
         }
       ]

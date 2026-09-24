@@ -21,6 +21,10 @@ export function ScanPage() {
   const [tab, setTab] = useState<'repository' | 'processes'>('repository')
   const [packs, setPacks] = useState<ProcessPack[]>([])
   const [pack, setPack] = useState('')
+  // For the first authoring run of a pack, when there is no `covers` stored to
+  // scope the component list by. Once the pack exists it answers for itself.
+  const [teams, setTeams] = useState<{ id: string; name: string }[]>([])
+  const [team, setTeam] = useState('')
 
   useEffect(() => {
     api
@@ -47,12 +51,19 @@ export function ScanPage() {
   }, [status?.lastIngestAt])
 
   useEffect(() => {
+    api
+      .get<{ teams: { id: string; name: string }[] }>('/teams')
+      .then((d) => setTeams(d.teams))
+      .catch(() => setTeams([]))
+  }, [status?.lastIngestAt])
+
+  useEffect(() => {
     const name = tab === 'processes' ? 'author-processes' : 'scan-pass1'
     api
-      .get<{ text: string }>('/prompt', { name, repo, pack })
+      .get<{ text: string }>('/prompt', { name, repo, pack, team })
       .then((d) => setPrompt(d.text))
       .catch(() => setPrompt(''))
-  }, [repo, pack, tab])
+  }, [repo, pack, team, tab])
 
   const copy = async () => {
     await navigator.clipboard.writeText(prompt)
@@ -134,15 +145,25 @@ export function ScanPage() {
               </button>
             </div>
             {tab === 'processes' ? (
-              <input
-                type="text"
-                list="scan-packs"
-                value={pack}
-                placeholder="pack id, e.g. onboarding"
-                aria-label="Pack"
-                onChange={(e) => setPack(e.target.value)}
-                style={{ width: 190 }}
-              />
+              <>
+                <input
+                  type="text"
+                  list="scan-packs"
+                  value={pack}
+                  placeholder="pack id, e.g. onboarding"
+                  aria-label="Pack"
+                  onChange={(e) => setPack(e.target.value)}
+                  style={{ width: 190 }}
+                />
+                <select value={team} onChange={(e) => setTeam(e.target.value)} aria-label="Team">
+                  <option value="">Whole estate</option>
+                  {teams.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </>
             ) : (
               <select value={repo} onChange={(e) => setRepo(e.target.value)} aria-label="Repository">
                 {repos.length === 0 && <option value="">(no repos.json)</option>}
@@ -166,8 +187,11 @@ export function ScanPage() {
       >
         {tab === 'processes' && (
           <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
-            The prompt carries every component currently in the map and every code already in use, because
-            its central rule is that a pack may only reference components a scan has already found.
+            The prompt carries the components a pack may reference — its central rule is that a pack may
+            only reference components a scan has already found — and the codes this pack already uses, so
+            re-authoring it keeps the numbers people are citing. Codes belong to their pack, so another
+            pack's numbering is not yours to work around. Narrow the components with a team for a pack's
+            first run; after that the pack's own <code>covers</code> does it.
           </p>
         )}
         {prompt ? (

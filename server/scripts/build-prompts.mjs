@@ -102,12 +102,18 @@ files['2-author-a-process-pack.md'] =
       'which is useful. A quietly substituted one is not.',
     ].join('\n'),
     PROCESSES: [
-      '_Paste the codes already in use here, if any._',
+      '_Paste this pack’s own codes here, if it has been authored before._',
       '',
-      '`curl localhost:8787/api/processes` lists them, or read the packs already in',
-      '`demo/processes/`. Codes are permanent and unique across every pack, so two',
-      'packs claiming one number is a reported conflict — pick a level 1 number',
-      'nobody has taken.',
+      '`curl "localhost:8787/api/processes?pack=<pack-id>"` lists them. Only this',
+      'pack’s: a code belongs to the pack that numbered it, so another team’s',
+      'numbering is not yours to avoid. If this pack is new, start at L1.',
+    ].join('\n'),
+    BOUNDARY: [
+      '_Say what this pack covers, and fill `covers` in the output to match._',
+      '',
+      'The team that owns it, and the services that team runs — not every service',
+      'the processes touch. A process reaching into somebody else’s service is a',
+      'handoff, and handoffs are the most valuable thing in the pack.',
     ].join('\n'),
   }).replace(
     'Write it to `<pack>.json` and drop it in the architecture-map `inbox/`.',

@@ -124,12 +124,16 @@ function Branch({
           <span className="proc-twisty" aria-hidden="true" />
         )}
 
-        <Link to={processHref(process.code)} className="proc-code">
+        <Link to={processHref(process.pack, process.code)} className="proc-code">
           {displayCode(process.code)}
         </Link>
-        <Link to={processHref(process.code)} className="proc-name">
+        <Link to={processHref(process.pack, process.code)} className="proc-name">
           {process.name}
         </Link>
+
+        {/* Only at the top. Every row under it is in the same pack, and
+            repeating it down the tree would be noise on every line. */}
+        {process.level === 1 && <span className="muted proc-pack">{process.pack}</span>}
 
         {kids.length > 0 && (
           <span className="muted proc-count">

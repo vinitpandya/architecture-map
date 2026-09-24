@@ -734,9 +734,16 @@ a.proc-code:hover {
 }
 
 .proc-count,
-.proc-owner {
+.proc-owner,
+.proc-pack {
   flex-shrink: 0;
   font-size: 11px;
+}
+
+/* Which pack numbered this tree. Shown on the level 1 only — a code belongs to
+   its pack, so two packs both have an L1 and the row has to say whose. */
+.proc-pack {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 
 .proc-owner {

@@ -51,7 +51,7 @@ if (!stage) {
   const registry = path.join(tmp, 'teams.json')
   fs.copyFileSync(path.join(ROOT, 'demo', 'teams.json'), registry)
   let bad = 0
-  for (const s of ['ingest', 'estate', 'processes', 'packs', 'org', 'map']) {
+  for (const s of ['ingest', 'estate', 'processes', 'packs', 'migrate', 'org', 'map']) {
     const res = spawnSync(process.execPath, [fileURLToPath(import.meta.url), `--stage=${s}`], {
       stdio: 'inherit',
       env: {
@@ -388,6 +388,138 @@ if (stage === 'ingest') {
     server.close()
   }
 
+  done()
+}
+
+/* ──────────────────── stage: migrate — a database written the old way
+
+   The one check that cannot be written from inside the new code, because its
+   subject is a database the new code has never created. A process used to be
+   identified by its code alone, so three packs each numbering from 1 — which
+   is what three independent prompt runs produce — left one set of rows and
+   deleted the rest. This builds exactly that, by hand, in the shape the old
+   schema had, and then lets the migration have it.
+
+   Built with raw SQL rather than by checking out the old code: the shape is
+   four columns and a constraint, and a test that depends on a previous commit
+   being reachable is a test that stops working. */
+
+if (stage === 'migrate') {
+  console.log('\nA database written before codes were per pack')
+  const Database = (await import('better-sqlite3')).default
+  const file = path.join(process.env.DATA_DIR, 'architecture.sqlite')
+  fs.mkdirSync(process.env.DATA_DIR, { recursive: true })
+
+  const PACKS = [
+    ['team-a', [['1', 'A one'], ['1.1', 'A one one'], ['1.2', 'A one two'], ['2', 'A two']]],
+    ['team-b', [['1', 'B one'], ['1.1', 'B one one'], ['1.2', 'B one two'], ['2', 'B two']]],
+    ['team-c', [['1', 'C one'], ['1.1', 'C one one'], ['2', 'C two'], ['2.1', 'C two one']]],
+  ]
+  const body = (id, rows) => ({
+    schemaVersion: 1,
+    pack: id,
+    name: id,
+    authoredAt: '2026-09-01T00:00:00Z',
+    producer: { kind: 'claude', model: 'verify' },
+    processes: rows.map(([code, name]) => ({ code, name })),
+  })
+
+  {
+    const old = new Database(file)
+    old.pragma('journal_mode = WAL')
+    old.exec(`
+      CREATE TABLE process_packs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, pack TEXT NOT NULL, name TEXT, description TEXT,
+        authored_at TEXT, ingested_at TEXT NOT NULL, schema_version INTEGER, prompt_version TEXT,
+        producer_kind TEXT, producer_detail TEXT, source TEXT, source_file TEXT,
+        status TEXT NOT NULL, raw TEXT NOT NULL, errors TEXT
+      );
+      -- The old shape, verbatim: no pack column, and the code unique estate-wide.
+      CREATE TABLE processes (
+        id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, level INTEGER NOT NULL, parent_id TEXT,
+        sort_key TEXT NOT NULL, name TEXT NOT NULL, description TEXT, owner TEXT, actor TEXT,
+        trigger TEXT, outcome TEXT, node_id TEXT, edge_id TEXT, edge_from TEXT, edge_kind TEXT,
+        edge_to TEXT, optional INTEGER NOT NULL DEFAULT 0, notes TEXT, tags TEXT, source TEXT,
+        pack_id INTEGER NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
+      );`)
+    const addPack = old.prepare(
+      `INSERT INTO process_packs (pack, name, ingested_at, schema_version, status, raw)
+       VALUES (?, ?, '2026-09-01T00:00:00Z', 1, 'active', ?)`
+    )
+    // Last writer wins on the code, which is the whole of the bug.
+    const addProc = old.prepare(
+      `INSERT INTO processes (id, code, level, parent_id, sort_key, name, pack_id, first_seen, last_seen)
+       VALUES (@id, @code, @level, @parent, @sort, @name, @packId, '2026-03-01T00:00:00Z', '2026-09-01T00:00:00Z')
+       ON CONFLICT(code) DO UPDATE SET
+         id = excluded.id, name = excluded.name, pack_id = excluded.pack_id`
+    )
+    for (const [id, rows] of PACKS) {
+      const packId = addPack.run(id, id, JSON.stringify(body(id, rows))).lastInsertRowid
+      for (const [code, name] of rows) {
+        const parts = code.split('.')
+        addProc.run({
+          id: `proc:${code}`,
+          code,
+          level: parts.length,
+          parent: parts.length > 1 ? `proc:${parts.slice(0, -1).join('.')}` : null,
+          sort: parts.map((x) => x.padStart(4, '0')).join('.'),
+          name,
+          packId,
+        })
+      }
+    }
+    const before = old.prepare('SELECT COUNT(*) n FROM processes').get().n
+    const declared = PACKS.reduce((a, [, rows]) => a + rows.length, 0)
+    is('three packs each numbering from 1 declare twelve processes', declared, 12)
+    is('  …and the old scheme kept five of them', before, 5)
+    is(
+      '  …with one pack gone entirely',
+      old.prepare(`SELECT COUNT(*) n FROM processes WHERE pack_id = 1`).get().n,
+      0
+    )
+    old.close()
+  }
+
+  // Now the new code opens it. db.js sees a `processes` with no `pack` column.
+  const { processIdentityChanged, db } = await import('../src/db.js')
+  const { reconcileProcesses } = await import('../src/processes.js')
+  is('opening it with the new code triggers the identity migration', processIdentityChanged, true)
+  const replayed = reconcileProcesses()
+  is('  …which replays every active pack', replayed.packs, 3)
+  is('  …into every process they declare', replayed.processes, 12)
+  is('  …none of them missing', db.prepare('SELECT COUNT(*) n FROM processes').get().n, 12)
+  is(
+    '  …four to a pack, including the one that had been deleted',
+    db.prepare('SELECT pack, COUNT(*) n FROM processes GROUP BY pack ORDER BY pack').all()
+      .map((r) => `${r.pack}:${r.n}`).join(' '),
+    'team-a:4 team-b:4 team-c:4'
+  )
+  is(
+    '  …and one code is now three processes, one per pack',
+    db.prepare(`SELECT id FROM processes WHERE code = '1.1' ORDER BY id`).all().map((r) => r.id).join(','),
+    'proc:team-a:1.1,proc:team-b:1.1,proc:team-c:1.1'
+  )
+  is(
+    '  …which is no longer a duplicate-code finding, because it is not a duplicate',
+    db.prepare(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-duplicate-code'`).get().n,
+    0
+  )
+  is(
+    'a process that really was in the old table keeps the day it was documented',
+    db.prepare(`SELECT first_seen FROM processes WHERE id = 'proc:team-c:1.1'`).get()?.first_seen,
+    '2026-03-01T00:00:00Z'
+  )
+  ok(
+    '  …and one that was being overwritten is stamped fresh, never having been there',
+    db.prepare(`SELECT first_seen FROM processes WHERE id = 'proc:team-a:2'`).get()?.first_seen >
+      '2026-03-01T00:00:00Z',
+    db.prepare(`SELECT first_seen FROM processes WHERE id = 'proc:team-a:2'`).get()?.first_seen
+  )
+  is(
+    'the carry table is emptied once it has been read',
+    db.prepare('SELECT COUNT(*) n FROM process_first_seen').get().n,
+    0
+  )
   done()
 }
 
@@ -812,7 +944,8 @@ if (stage === 'processes') {
 
   is('an L-prefixed pack ingests to the same rows', n('SELECT COUNT(*) n FROM processes'), before.processes)
   is('  …leaving one active pack per pack id', n(`SELECT COUNT(*) n FROM process_packs WHERE status = 'active'`), before.active)
-  ok('  …and proc:2.1.1 is still there', !!one(`SELECT 1 AS n FROM processes WHERE id = 'proc:2.1.1'`), 'proc:2.1.1 vanished')
+  const OAE = 'proc:order-and-execution'
+  ok(`  …and ${OAE}:2.1.1 is still there`, !!one(`SELECT 1 AS n FROM processes WHERE id = '${OAE}:2.1.1'`), 'it vanished')
   is(
     'INGESTING A PACK CREATES NO NODES',
     n('SELECT COUNT(*) n FROM nodes'),
@@ -820,10 +953,11 @@ if (stage === 'processes') {
   )
   is('INGESTING A PACK CREATES NO EDGES', n('SELECT COUNT(*) n FROM edges'), beforeTopology.edges)
 
-  const row = one(`SELECT level, parent_id, sort_key FROM processes WHERE id = 'proc:2.1.1'`)
-  is('proc:2.1.1 level', row.level, 3)
-  is('proc:2.1.1 parent_id', row.parent_id, 'proc:2.1')
-  is('proc:2.1.1 sort_key', row.sort_key, '0002.0001.0001')
+  const row = one(`SELECT pack, level, parent_id, sort_key FROM processes WHERE id = '${OAE}:2.1.1'`)
+  is('2.1.1 carries the pack it came from', row.pack, 'order-and-execution')
+  is('2.1.1 level', row.level, 3)
+  is('2.1.1 parent_id', row.parent_id, `${OAE}:2.1`)
+  is('2.1.1 sort_key', row.sort_key, '0002.0001.0001')
   is(
     "all 15 of the example's leaves resolved to an edge",
     n(`SELECT COUNT(*) n FROM processes WHERE pack_id = (SELECT id FROM process_packs WHERE pack = 'order-and-execution' AND status = 'active') AND edge_id IS NOT NULL`),
@@ -832,12 +966,12 @@ if (stage === 'processes') {
 
   /* ---- §10 Phase 8: the rollup */
   const throwaway = db.prepare(
-    `INSERT INTO processes (id, code, level, parent_id, sort_key, name, optional, pack_id, first_seen, last_seen)
-     VALUES (?, ?, 2, 'proc:2', ?, 'throwaway', 0,
+    `INSERT INTO processes (id, pack, code, level, parent_id, sort_key, name, optional, pack_id, first_seen, last_seen)
+     VALUES (?, 'order-and-execution', ?, 2, '${OAE}:2', ?, 'throwaway', 0,
              (SELECT id FROM process_packs WHERE status = 'active' LIMIT 1), 'x', 'x')`
   )
-  throwaway.run('proc:2.9', '2.9', '0002.0009')
-  throwaway.run('proc:2.10', '2.10', '0002.0010')
+  throwaway.run(`${OAE}:2.9`, '2.9', '0002.0009')
+  throwaway.run(`${OAE}:2.10`, '2.10', '0002.0010')
   const bySort = db.prepare(`SELECT code FROM processes WHERE code IN ('2.9','2.10') ORDER BY sort_key`).all()
   const byCode = db.prepare(`SELECT code FROM processes WHERE code IN ('2.9','2.10') ORDER BY code`).all()
   ok('sort_key puts 2.9 before 2.10', bySort[0].code === '2.9', bySort.map((r) => r.code).join(' then '))
@@ -846,28 +980,28 @@ if (stage === 'processes') {
 
   const compsOf = (id) =>
     new Set(db.prepare('SELECT node_id FROM process_components WHERE process_id = ?').all(id).map((r) => r.node_id))
-  const parent = compsOf('proc:2')
+  const parent = compsOf(`${OAE}:2`)
   ok(
-    'proc:2 rolls up every component of its descendants',
+    'L2 rolls up every component of its descendants',
     db
-      .prepare(`SELECT id FROM processes WHERE id LIKE 'proc:2.%'`)
+      .prepare(`SELECT id FROM processes WHERE id LIKE '${OAE}:2.%'`)
       .all()
       .every((p) => [...compsOf(p.id)].every((c) => parent.has(c))),
-    'a descendant component is missing from proc:2'
+    'a descendant component is missing from L2'
   )
   is(
-    'proc:2.1.2 reaches pricing-service through the endpoint it calls',
-    one(`SELECT via FROM process_components WHERE process_id = 'proc:2.1.2' AND node_id = 'svc:pricing-service'`)?.via,
+    '2.1.2 reaches pricing-service through the endpoint it calls',
+    one(`SELECT via FROM process_components WHERE process_id = '${OAE}:2.1.2' AND node_id = 'svc:pricing-service'`)?.via,
     'exposes'
   )
   is(
     "  …while the component it names itself is via 'node'",
-    one(`SELECT via FROM process_components WHERE process_id = 'proc:2.1.2' AND node_id = 'svc:order-service'`)?.via,
+    one(`SELECT via FROM process_components WHERE process_id = '${OAE}:2.1.2' AND node_id = 'svc:order-service'`)?.via,
     'node'
   )
   is(
     "  …and on its parent the same component is via 'rollup'",
-    one(`SELECT via FROM process_components WHERE process_id = 'proc:2.1' AND node_id = 'svc:order-service'`)?.via,
+    one(`SELECT via FROM process_components WHERE process_id = '${OAE}:2.1' AND node_id = 'svc:order-service'`)?.via,
     'rollup'
   )
 
@@ -883,16 +1017,26 @@ if (stage === 'processes') {
   const { body: drift } = await get('/drift')
   const of = (kind) => drift.findings.filter((f) => f.kind === kind)
   is('exactly one process-missing-component', of('process-missing-component').length, 1)
-  is('  …from 3.1.1', of('process-missing-component')[0]?.subject_id, 'proc:3.1.1')
+  is('  …from 3.1.1', of('process-missing-component')[0]?.subject_id, 'proc:reporting:3.1.1')
   is(
     '  …for topic:trades.enriched.v1',
     of('process-missing-component')[0]?.data?.component,
     'topic:trades.enriched.v1'
   )
   is('exactly one process-missing-interaction', of('process-missing-interaction').length, 1)
-  is('  …from 3.2.3', of('process-missing-interaction')[0]?.subject_id, 'proc:3.2.3')
+  is('  …from 3.2.3', of('process-missing-interaction')[0]?.subject_id, 'proc:reporting:3.2.3')
   is('zero process-orphan-code', of('process-orphan-code').length, 0)
   is('zero process-duplicate-code', of('process-duplicate-code').length, 0)
+  // Every demo pack declares `covers`, and every process's node is inside it —
+  // which is what makes the probe in the `packs` stage mean something.
+  is('zero process-outside-covers', of('process-outside-covers').length, 0)
+  ok(
+    'every demo pack says what it covers',
+    (await get('/process-packs')).body.packs
+      .filter((p) => p.status === 'active')
+      .every((p) => p.covers?.team && p.covers?.services?.length),
+    JSON.stringify((await get('/process-packs')).body.packs.map((p) => [p.pack, p.covers]))
+  )
   is('zero process-no-detail', of('process-no-detail').length, 0)
   is('exactly two uncovered-component', of('uncovered-component').length, 2)
   ok(
@@ -919,16 +1063,19 @@ if (stage === 'processes') {
   )
   void services
 
-  const { body: two } = await get('/process?code=2')
+  const { body: two } = await get('/process?pack=order-and-execution&code=2')
   const teams = new Set((two.services ?? []).map((s) => s.team).filter(Boolean))
   ok('process 2 crosses more than one team', teams.size > 1, [...teams].join(', '))
-  const { body: prefixedRead } = await get('/process?code=L2')
+  const { body: prefixedRead } = await get('/process?pack=order-and-execution&code=L2')
   is('code=L2 reads the same process as code=2', prefixedRead.process?.id, two.process?.id)
+  // A code alone is still an address while only one pack uses it — people type
+  // these — and a 409 naming the packs the moment two do.
+  is('code alone still reads it while it is unambiguous', (await get('/process?code=2')).body.process?.id, two.process?.id)
 
   /* ---- search (§6) */
   for (const q of ['2.3.3', 'L2.3.3']) {
     const { body } = await get(`/search?q=${encodeURIComponent(q)}`)
-    ok(`search "${q}" finds the process`, body.hits.some((h) => h.subject_id === 'proc:2.3.3'), body.hits.map((h) => h.subject_id).join(', '))
+    ok(`search "${q}" finds the process`, body.hits.some((h) => h.subject_id === 'proc:order-and-execution:2.3.3'), body.hits.map((h) => h.subject_id).join(', '))
   }
   const { body: topicSearch } = await get(`/search?q=${encodeURIComponent('orders.matched.v1')}`)
   ok(
@@ -1001,11 +1148,19 @@ if (stage === 'processes') {
       `${body.text.length} chars`
     )
   }
+  // Against an ordinary id of the SAME LENGTH rather than against a fixed
+  // arithmetic: inserted literally, `$\`` and `ab` produce documents of
+  // identical length however many slots the prompt has, and expanded as a
+  // pattern they do not. The old form subtracted one insertion and broke the
+  // moment the prompt named its pack twice, which is a change to the prompt
+  // and not to the escaping this check is about.
   is(
-    '  …and none of them changes the prompt\'s length',
+    '  …and none of them changes the prompt\'s length, against a plain id of the same length',
     new Set(
       await Promise.all(
-        ['plain', '$`', '$&'].map(async (v) => (await get(`/prompt?name=author-processes&pack=${encodeURIComponent(v)}`)).body.text.length - v.length)
+        ['ab', '$`', '$&', "$'"].map(
+          async (v) => (await get(`/prompt?name=author-processes&pack=${encodeURIComponent(v)}`)).body.text.length
+        )
       )
     ).size,
     1
@@ -1018,7 +1173,7 @@ if (stage === 'processes') {
   const body = prompt.text.slice(prompt.text.indexOf('-->') + 3)
   ok(
     'the authoring prompt keeps its placeholder legend',
-    comment.includes('{{COMPONENTS}} → every component'),
+    comment.includes('{{COMPONENTS}} → the components'),
     comment.slice(0, 400)
   )
   ok('  …and does not paste the schema into the comment', !comment.includes('"$id"'), `${comment.length} chars`)
@@ -1033,10 +1188,41 @@ if (stage === 'processes') {
     (body.match(/\{\{[A-Z_]+\}\}/g) ?? []).join(', ')
   )
   ok('  …with the pack that was asked for', body.includes('authoring the pack `onboarding`'), 'pack not filled in')
+  /* ---- and it is narrowed to the pack, which is the whole point of it.
+
+     It used to carry the entire estate and every code in use, under the
+     heading "so you do not collide" — the right instruction while a code was
+     the whole identity, and the wrong one now. Authors who could not see that
+     list (a parallel run, the standalone prompt) all began at 1 anyway and
+     overwrote each other. */
   ok(
-    '  …and the components and codes the author must not collide with',
-    body.includes('`svc:order-service`') && body.includes('`L2.1.1`'),
-    'components or codes missing'
+    "  …and the components inside the pack's own boundary",
+    body.includes('`svc:identity-service`'),
+    'identity-service missing from the onboarding prompt'
+  )
+  ok(
+    '  …not another team’s, which this pack does not run',
+    !body.includes('`svc:order-service`'),
+    'the onboarding prompt still carries trading’s services'
+  )
+  // Off the injected section alone: the prompt's own prose uses `L2.1.1` as
+  // its worked example, so searching the whole body would pass on the example
+  // and never notice the injection.
+  const codeList = body.slice(body.indexOf('already uses'), body.indexOf('### Schema'))
+  ok(
+    "  …and the pack's own codes, so a re-author keeps the numbers people cite",
+    codeList.includes('`L1.1.1`'),
+    codeList.slice(0, 300)
+  )
+  ok(
+    '  …not another pack’s, which are not this one’s to avoid',
+    !codeList.includes('`L2.1.1`') && !codeList.includes('`L3.'),
+    codeList.slice(0, 300)
+  )
+  ok(
+    '  …and it says what it was narrowed to',
+    /boundary — \d+ of the estate's \d+ components/.test(body),
+    body.slice(body.indexOf('What this pack covers'), body.indexOf('What this pack covers') + 300)
   )
 
   /* ---- §8: "the existing focus/depth controls still work within that
@@ -1060,24 +1246,63 @@ if (stage === 'processes') {
     // A focus the process does not contain selects nothing, so the filter
     // stands alone rather than emptying the canvas. matching-engine is in
     // order-and-execution, not in reporting.
-    const plain = (await get('/graph?process=3')).body
+    const plain = (await get('/graph?process=reporting%233')).body
     ok(
       'the focus for this check really is outside the process',
       !plain.nodes.some((n) => n.id === 'svc:matching-engine'),
       'matching-engine turned out to be in process 3'
     )
-    const { body } = await get(`/graph?process=3&focus=${encodeURIComponent('svc:matching-engine')}`)
+    const { body } = await get(`/graph?process=reporting%233&focus=${encodeURIComponent('svc:matching-engine')}`)
     is('a focus outside the process leaves the process whole', body.nodes.length, plain.nodes.length)
+
+    /* A bare code is an address only while one pack uses that number. The
+       demo's three packs took an L1 each, so `3` still resolves; a second
+       pack numbering something 3 makes it a choice, and answering with
+       whichever sorted first would be a graph of somebody else's work. */
+    ingestProcessPack(
+      {
+        schemaVersion: 1,
+        pack: 'ambiguity-probe',
+        name: 'Ambiguity probe',
+        authoredAt: '2026-09-24T00:00:00Z',
+        producer: { kind: 'import' },
+        processes: [{ code: '3', name: 'Also numbered 3, by somebody else' }],
+      },
+      'ambiguity-probe.json'
+    )
+    const { body: clash } = await get('/graph?process=3')
+    is('a bare code two packs use draws nothing', clash.nodes.length, 0)
+    is(
+      '  …and says which packs it could have meant',
+      (clash.ambiguousProcess ?? []).sort().join(','),
+      'ambiguity-probe,reporting'
+    )
+    const { body: named } = await get('/graph?process=reporting%233')
+    ok('  …while naming the pack still works', named.nodes.length > 0, `${named.nodes.length} nodes`)
+    db.prepare(`DELETE FROM process_packs WHERE pack = 'ambiguity-probe'`).run()
+    ;(await import('../src/link.js')).linkPass()
   }
 
   /* ---- a `root` that is not a code, and a `maxLevel` that is not a number */
-  is('processes?root=% is a 400, not 43 rows', (await get('/processes?root=%25')).status, 400)
+  is('processes?root=% is a 400, not 43 rows', (await get('/processes?pack=order-and-execution&root=%25')).status, 400)
   is('processes?maxLevel=abc is a 400, not an empty tree', (await get('/processes?maxLevel=abc')).status, 400)
-  is('processes?root=2 still works', (await get('/processes?root=2')).body.processes.length, 20)
+  // A subtree belongs to one pack: two packs' 2.x are two hierarchies, and
+  // answering with both mixed together is the bug this change is about.
+  is('processes?root=2 with no pack is a 400', (await get('/processes?root=2')).status, 400)
+  is(
+    'processes?pack=…&root=2 still works',
+    (await get('/processes?pack=order-and-execution&root=2')).body.processes.length,
+    20
+  )
+  is(
+    'processes?pack=… alone is that pack and nothing else',
+    (await get('/processes?pack=reporting')).body.processes.every((p) => p.pack === 'reporting'),
+    true
+  )
 
   /* ---- pack.source is an object here as it is everywhere else */
   {
-    const { body } = await get('/process?code=2')
+    const { body } = await get('/process?pack=order-and-execution&code=2')
     is('/process returns pack.source parsed', typeof body.pack?.source, 'object')
     ok('  …with the fields the card reads', !!body.pack?.source?.asOf, JSON.stringify(body.pack?.source))
   }
@@ -1088,46 +1313,53 @@ if (stage === 'processes') {
      before this existed draws the same straight line it always described.
      Everything below is about the departures from it. */
   {
-    const branches = (code) =>
-      db.prepare('SELECT * FROM process_next WHERE from_id = ? ORDER BY seq').all(`proc:${code}`)
+    const branches = (pack, code) =>
+      db.prepare('SELECT * FROM process_next WHERE from_id = ? ORDER BY seq').all(`proc:${pack}:${code}`)
+    const oae = (code) => branches('order-and-execution', code)
 
-    is('a step with no branches stores none', branches('2.1.2').length, 0)
-    const cache = branches('2.1.1')
+    is('a step with no branches stores none', oae('2.1.2').length, 0)
+    const cache = oae('2.1.1')
     is('a decision stores one row per arm', cache.length, 2)
     is('  …in the order it was written', cache.map((b) => b.condition).join(' | '),
       'the quote is still warm | the cache has expired')
     is('  …resolved to the process each arm continues at', cache.map((b) => b.to_id).join(','),
-      'proc:2.1.3,proc:2.1.2')
+      'proc:order-and-execution:2.1.3,proc:order-and-execution:2.1.2')
     is('  …and marked as resolved', cache.every((b) => b.resolved === 1), true)
 
-    const permitted = branches('2.1.3')
+    const permitted = oae('2.1.3')
     is('an arm that stops the process stores its outcome', permitted[1].end_label, 'Estimate refused')
     is('  …and continues to nothing', permitted[1].to_id, null)
 
     // The finding, and the case it exists for: a branch to a code nobody has
     // written fails silently — the flow simply stops drawing that arm.
-    const dangling = branches('1.2.1')[1]
-    is('a branch to a code nobody wrote is kept, not dropped', dangling.to_id, 'proc:4.2')
+    const dangling = branches('onboarding', '1.2.1')[1]
+    // Into another pack, and that pack has never been written. A bare code
+    // would have meant onboarding's own 1.2 — which is exactly why a
+    // cross-pack reference has to name the pack.
+    is('a branch to a code nobody wrote is kept, not dropped', dangling.to_id, 'proc:risk:1.2')
     is('  …and marked unresolved', dangling.resolved, 0)
     is('exactly one process-flow-unknown-target',
       n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-flow-unknown-target'`), 1)
-    is('  …from 1.2.1, naming L4.2',
-      one(`SELECT subject_id FROM drift WHERE kind = 'process-flow-unknown-target'`)?.subject_id, 'proc:1.2.1')
+    is('  …from 1.2.1, naming risk L1.2',
+      one(`SELECT subject_id FROM drift WHERE kind = 'process-flow-unknown-target'`)?.subject_id,
+      'proc:onboarding:1.2.1')
 
     /* ---- the API carries it, because only the client draws the flow */
-    const { body: est } = await get('/process?code=2.1')
+    const { body: est } = await get('/process?pack=order-and-execution&code=2.1')
     const by = Object.fromEntries(est.children.map((c) => [c.code, c]))
     is('/api/process carries next on each child', by['2.1.1'].next.length, 2)
     is('  …with the condition', by['2.1.1'].next[0].when, 'the quote is still warm')
     is('  …the code rather than the id, like every other reference in the API',
       by['2.1.1'].next[0].to, '2.1.3')
+    is('  …with the pack beside it, because a code alone no longer addresses one',
+      by['2.1.1'].next[0].toPack, 'order-and-execution')
     is('  …and the name of what it continues to', by['2.1.1'].next[0].toName, 'Check the customer may trade')
     is('  …an arm that ends carries its label instead', by['2.1.3'].next[1].end, 'Estimate refused')
     is('  …and a step with none carries an empty list, never a missing field',
       Array.isArray(by['2.1.2'].next) && by['2.1.2'].next.length, 0)
-    const { body: kyc } = await get('/process?code=1.2')
+    const { body: kyc } = await get('/process?pack=onboarding&code=1.2')
     is('  …an unresolved arm says so rather than vanishing',
-      kyc.children.find((c) => c.code === '1.2.1').next.find((b) => b.to === '4.2')?.resolved, false)
+      kyc.children.find((c) => c.code === '1.2.1').next.find((b) => b.toPack === 'risk')?.resolved, false)
 
     /* ---- a branch to the process it leaves is the one loop nobody means */
     const { ingestProcessPack: ingest } = await import('../src/processes.js')
@@ -1148,9 +1380,9 @@ if (stage === 'processes') {
       'probe.json'
     )
     linkPass()
-    is('a branch to its own process is dropped', branches('9.1').length, 0)
+    is('a branch to its own process is dropped', branches('branch-probe', '9.1').length, 0)
     is('  …while a branch back to an earlier sibling is kept, because that is a retry',
-      branches('9.2')[0]?.to_id, 'proc:9.1')
+      branches('branch-probe', '9.2')[0]?.to_id, 'proc:branch-probe:9.1')
     db.prepare(`DELETE FROM process_packs WHERE pack = 'branch-probe'`).run()
     linkPass()
     is('  …and removing the probe pack leaves the demo estate alone', n('SELECT COUNT(*) n FROM processes'), 46)
@@ -1271,19 +1503,26 @@ if (stage === 'packs') {
   )
   is(
     'a missing touches entry raises process-missing-component',
-    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-missing-component' AND subject_id = 'proc:7.1'`),
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-missing-component' AND subject_id = 'proc:probe-shadow:7.1'`),
     1
   )
   is(
     '  …and does NOT hide the missing interaction beside it',
-    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-missing-interaction' AND subject_id = 'proc:7.1'`),
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-missing-interaction' AND subject_id = 'proc:probe-shadow:7.1'`),
     1
   )
 
-  /* ---- two packs claiming one code, then one of them re-ingested.
-     `processes.code` is unique, so the single row can only hold one writer;
-     clearing "this pack's rows" on re-ingest would take away a row the other
-     pack still declares, and nothing would bring it back. */
+  /* ---- two packs claiming one code, which is no longer a claim at all.
+
+     This is the situation the author actually hit: the authoring prompt was
+     run against several teams' repositories at once, every run numbered from
+     1 because none could see the others, and the last pack ingested took
+     every code the rest had claimed. Hundreds of authored processes came out
+     as eight rows.
+
+     A code is a number line and a number line belongs to whoever is
+     numbering. Both packs keep everything they declared, and neither is
+     asked to renumber around the other. */
   ingestProcessPack(
     envelope('probe-a', [
       { code: '8', name: 'Owned by A' },
@@ -1292,6 +1531,7 @@ if (stage === 'packs') {
     ]),
     'probe-a.json'
   )
+  const bothBefore = n('SELECT COUNT(*) n FROM processes')
   ingestProcessPack(
     envelope('probe-b', [
       { code: '8.2', name: 'A and B both declare this' },
@@ -1299,29 +1539,169 @@ if (stage === 'packs') {
     ]),
     'probe-b.json'
   )
+  is('a second pack numbering from the same place adds its own rows', n('SELECT COUNT(*) n FROM processes'), bothBefore + 2)
+  is("  …and does not take the first pack's", n(`SELECT COUNT(*) n FROM processes WHERE pack = 'probe-a'`), 3)
+  is('  …so one code in two packs is two processes', n(`SELECT COUNT(*) n FROM processes WHERE code = '8.2'`), 2)
   is(
-    'two packs declaring one code raise process-duplicate-code',
-    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-duplicate-code' AND subject_id = 'proc:8.2'`),
-    1
-  )
-  ingestProcessPack(envelope('probe-b', [{ code: '8.3', name: 'Only B declares this' }]), 'probe-b.json')
-  is('re-ingesting the second pack keeps its own process', n(`SELECT COUNT(*) n FROM processes WHERE code = '8.3'`), 1)
-  is('  …and does not delete the code it shared', n(`SELECT COUNT(*) n FROM processes WHERE code = '8.2'`), 1)
-  is('  …or anything else the first pack declared', n(`SELECT COUNT(*) n FROM processes WHERE code = '8.1'`), 1)
-  is(
-    '  …and the shared code is owned by the pack that still declares it',
-    db
-      .prepare(
-        `SELECT pk.pack AS pack FROM processes p JOIN process_packs pk ON pk.id = p.pack_id WHERE p.code = '8.2'`
-      )
-      .get()?.pack,
-    'probe-a'
+    '  …each under its own pack',
+    db.prepare(`SELECT pack FROM processes WHERE code = '8.2' ORDER BY pack`).all().map((r) => r.pack).join(','),
+    'probe-a,probe-b'
   )
   is(
-    '  …with the duplicate finding gone now that only one pack claims it',
-    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-duplicate-code' AND subject_id = 'proc:8.2'`),
+    '  …and neither is a finding, because neither is wrong',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-duplicate-code'`),
     0
   )
+
+  ingestProcessPack(envelope('probe-b', [{ code: '8.3', name: 'Only B declares this' }]), 'probe-b.json')
+  is('re-ingesting the second pack keeps its own process', n(`SELECT COUNT(*) n FROM processes WHERE code = '8.3'`), 1)
+  is(
+    "  …drops the code it no longer declares, and only its own copy of it",
+    n(`SELECT COUNT(*) n FROM processes WHERE code = '8.2'`),
+    1
+  )
+  is(
+    '  …which is the one the pack that still declares it wrote',
+    db.prepare(`SELECT pack FROM processes WHERE code = '8.2'`).get()?.pack,
+    'probe-a'
+  )
+  is('  …and touches nothing else of the first pack', n(`SELECT COUNT(*) n FROM processes WHERE pack = 'probe-a'`), 3)
+
+  /* ---- what a pack says it covers, and a process that steps outside it.
+
+     Only `node` — where the work happens. An `interaction` leaving the
+     boundary is a handoff and the most valuable thing in a pack; reporting
+     those would bury the one case worth a line under every crossing in the
+     estate. */
+  ingestProcessPack(
+    { ...envelope('probe-covers', [
+        { code: '6', name: 'Probe' },
+        { code: '6.1', name: 'Work that is ours', node: 'svc:reporting-service' },
+        {
+          code: '6.2',
+          name: 'Work we say happens at somebody else’s service',
+          node: 'svc:order-service',
+        },
+        {
+          code: '6.3',
+          name: 'Reaching into somebody else’s, which is what a handoff is',
+          node: 'svc:reporting-service',
+          interaction: {
+            from: 'svc:reporting-service',
+            kind: 'kafka.consume',
+            to: 'topic:orders.matched.v1',
+          },
+        },
+      ]),
+      covers: { team: 'data', services: ['svc:reporting-service'] },
+    },
+    'probe-covers.json'
+  )
+  const outside = db
+    .prepare(`SELECT subject_id, data FROM drift WHERE kind = 'process-outside-covers'`)
+    .all()
+  is('a process whose work happens outside the boundary is reported', outside.length, 1)
+  is('  …the one that named somebody else’s service', outside[0]?.subject_id, 'proc:probe-covers:6.2')
+  is('  …saying who actually runs it', JSON.parse(outside[0]?.data ?? '{}').runBy, 'trading')
+  is(
+    '  …and an interaction that leaves the boundary is not reported, because that is a handoff',
+    outside.some((f) => f.subject_id === 'proc:probe-covers:6.3'),
+    false
+  )
+  db.prepare(`DELETE FROM process_packs WHERE pack = 'probe-covers'`).run()
+  ;(await import('../src/link.js')).linkPass()
+  is(
+    '  …and a pack with no covers is judged by nothing',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-outside-covers'`),
+    0
+  )
+
+  /* ---- a reference into another pack, which a bare code cannot express.
+
+     Two packs both numbering from 1 is the whole point; the cost is that
+     `handsOffTo: '1.1'` can only mean the pack it was written in. `<pack>#<code>`
+     is how a handoff leaves. */
+  ingestProcessPack(
+    envelope('probe-left', [
+      { code: '1', name: 'Upstream', owner: 'trading' },
+      {
+        code: '1.1',
+        name: 'Hands off across the boundary',
+        owner: 'trading',
+        node: 'svc:order-service',
+        handsOffTo: [{ process: 'probe-right#1.1', note: 'over the wall' }],
+      },
+      { code: '1.2', name: 'Its own 1.1-lookalike sibling' },
+    ]),
+    'probe-left.json'
+  )
+  ingestProcessPack(
+    envelope('probe-right', [
+      { code: '1', name: 'Downstream', owner: 'data' },
+      { code: '1.1', name: 'Picks it up', owner: 'data', node: 'svc:reporting-service' },
+    ]),
+    'probe-right.json'
+  )
+  ;(await import('../src/link.js')).linkPass()
+  is(
+    'a handoff written as <pack>#<code> resolves into the other pack',
+    n(
+      `SELECT COUNT(*) n FROM process_links
+       WHERE from_id = 'proc:probe-left:1.1' AND to_id = 'proc:probe-right:1.1' AND declared = 1`
+    ),
+    1
+  )
+  is(
+    '  …and not into this pack’s own process of the same number',
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:probe-left:1.1' AND to_id = 'proc:probe-left:1.1'`),
+    0
+  )
+  // The other half: a bare code stays at home, whatever another pack has.
+  ingestProcessPack(
+    envelope('probe-left', [
+      { code: '1', name: 'Upstream', owner: 'trading' },
+      { code: '1.1', name: 'Hands off at home', owner: 'trading', node: 'svc:order-service', handsOffTo: [{ process: '1.2' }] },
+      { code: '1.2', name: 'Its own sibling', owner: 'trading', node: 'svc:matching-engine' },
+    ]),
+    'probe-left.json'
+  )
+  ;(await import('../src/link.js')).linkPass()
+  is(
+    'a bare code means this pack, never another’s',
+    n(
+      `SELECT COUNT(*) n FROM process_links
+       WHERE from_id = 'proc:probe-left:1.1' AND to_id = 'proc:probe-left:1.2' AND declared = 1`
+    ),
+    1
+  )
+  for (const pack of ['probe-left', 'probe-right']) {
+    db.prepare('DELETE FROM process_packs WHERE pack = ?').run(pack)
+  }
+  ;(await import('../src/link.js')).linkPass()
+
+  /* ---- one code claimed twice INSIDE one pack, which still loses a process:
+     the row can hold only the last writer, and no numbering rule can save it. */
+  ingestProcessPack(
+    envelope('probe-twice', [
+      { code: '8', name: 'Probe' },
+      { code: '8.1', name: 'First' },
+      { code: '8.1', name: 'Second, over the top of the first' },
+    ]),
+    'probe-twice.json'
+  )
+  is(
+    'one code declared twice in one pack raises process-duplicate-code',
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-duplicate-code' AND subject_id = 'proc:probe-twice:8.1'`),
+    1
+  )
+  is(
+    '  …and only one of the two is in the map',
+    n(`SELECT COUNT(*) n FROM processes WHERE pack = 'probe-twice' AND code = '8.1'`),
+    1
+  )
+  // Cascades its processes away with it; the link pass rebuilds the findings.
+  db.prepare(`DELETE FROM process_packs WHERE pack = 'probe-twice'`).run()
+  ;(await import('../src/link.js')).linkPass()
 
   /* ---- a code whose parent was never declared. The finding is the point; a
      phantom parent in the join is not, because no page can open it. */
@@ -1334,19 +1714,19 @@ if (stage === 'packs') {
   )
   is(
     'a code whose parent is missing raises process-orphan-code',
-    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-orphan-code' AND subject_id = 'proc:9.4.1'`),
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-orphan-code' AND subject_id = 'proc:probe-orphan:9.4.1'`),
     1
   )
   is('  …the process itself is still there', n(`SELECT COUNT(*) n FROM processes WHERE code = '9.4.1'`), 1)
   is('  …the parent it named is not invented', n(`SELECT COUNT(*) n FROM processes WHERE code = '9.4'`), 0)
   is(
     '  …and nothing rolls up into it',
-    n(`SELECT COUNT(*) n FROM process_components WHERE process_id = 'proc:9.4'`),
+    n(`SELECT COUNT(*) n FROM process_components WHERE process_id = 'proc:probe-orphan:9.4'`),
     0
   )
   is(
     '  …nor into its grandparent, which is real but not its parent',
-    n(`SELECT COUNT(*) n FROM process_components WHERE process_id = 'proc:9' AND node_id = 'svc:ledger-service'`),
+    n(`SELECT COUNT(*) n FROM process_components WHERE process_id = 'proc:probe-orphan:9' AND node_id = 'svc:ledger-service'`),
     0
   )
   is(
@@ -1363,7 +1743,7 @@ if (stage === 'packs') {
   )
   is(
     'a leaf that binds nothing raises process-no-detail',
-    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-detail' AND subject_id = 'proc:5'`),
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-detail' AND subject_id = 'proc:probe-bare:5'`),
     1
   )
 
@@ -1390,7 +1770,7 @@ if (stage === 'packs') {
         .map((r) => r.process_id)
         .join(' ')
     const baseline = pricingRows()
-    is('pricing-service is reached by the process that calls its endpoint', baseline, 'proc:2 proc:2.1 proc:2.1.2')
+    is('pricing-service is reached by the process that calls its endpoint', baseline, 'proc:order-and-execution:2 proc:order-and-execution:2.1 proc:order-and-execution:2.1.2')
 
     expose('svc:gateway-api', 'gateway-api')
     linkPass()
@@ -1418,39 +1798,33 @@ if (stage === 'packs') {
     is('  …and removing it restores the estate exactly', pricingRows(), baseline)
   }
 
-  /* ---- and removing a pack has the same hole as re-ingesting one: the row
-     it was holding may be a code somebody else still declares. */
+  /* ---- removing a pack takes its own processes and nobody else's, even when
+     two packs use the same number. It used to be able to take a row another
+     pack was still declaring, because the row was the code. */
   ingestProcessPack(
-    envelope('probe-keeper', [{ code: '4', name: 'Shared with a pack about to go' }]),
+    envelope('probe-keeper', [{ code: '4', name: 'Numbered 4 by the pack that stays' }]),
     'probe-keeper.json'
   )
   ingestProcessPack(
-    envelope('probe-leaver', [{ code: '4', name: 'Shared with a pack about to go' }]),
+    envelope('probe-leaver', [{ code: '4', name: 'Numbered 4 by the pack about to go' }]),
     'probe-leaver.json'
   )
-  is(
-    'the later pack holds the shared row',
-    db
-      .prepare(
-        `SELECT pk.pack AS pack FROM processes p JOIN process_packs pk ON pk.id = p.pack_id WHERE p.code = '4'`
-      )
-      .get()?.pack,
-    'probe-leaver'
-  )
+  is('two packs both numbering something 4 are two processes', n(`SELECT COUNT(*) n FROM processes WHERE code = '4'`), 2)
   const { rebuildProcesses } = await import('../src/processes.js')
   const { linkPass } = await import('../src/link.js')
   db.prepare(`DELETE FROM process_packs WHERE pack = 'probe-leaver'`).run()
   rebuildProcesses()
   linkPass()
-  is('deleting it does not take the code the other pack declares', n(`SELECT COUNT(*) n FROM processes WHERE code = '4'`), 1)
+  is('deleting one takes only its own', n(`SELECT COUNT(*) n FROM processes WHERE code = '4'`), 1)
   is(
-    '  …the pack that still declares it now holds it',
-    db
-      .prepare(
-        `SELECT pk.pack AS pack FROM processes p JOIN process_packs pk ON pk.id = p.pack_id WHERE p.code = '4'`
-      )
-      .get()?.pack,
+    '  …leaving the pack that still declares it holding its own',
+    db.prepare(`SELECT pack FROM processes WHERE code = '4'`).get()?.pack,
     'probe-keeper'
+  )
+  is(
+    '  …under its own id',
+    !!db.prepare(`SELECT 1 FROM processes WHERE id = 'proc:probe-keeper:4'`).get(),
+    true
   )
 
   /* ─── layer C: the team and handoff paths the demo estate cannot reach.
@@ -1470,21 +1844,21 @@ if (stage === 'packs') {
     'probe-inherit.json'
   )
   const teamOf = (id) => db.prepare('SELECT team_id, team_via FROM processes WHERE id = ?').get(id)
-  is('a process with an owner uses it', teamOf('proc:7.1')?.team_id, 'wallet')
-  is('  …and says so', teamOf('proc:7.1')?.team_via, 'owner')
-  is('a leaf with no owner inherits the nearest ancestor\'s', teamOf('proc:7.1.1')?.team_id, 'wallet')
-  is('  …and says it was inherited', teamOf('proc:7.1.1')?.team_via, 'inherited')
-  is('  …nearest, not the top', teamOf('proc:7.1.1')?.team_id === 'trading', false)
-  is('two levels up still resolves', teamOf('proc:7.2.1')?.team_id, 'trading')
-  is('  …also as inherited', teamOf('proc:7.2.1')?.team_via, 'inherited')
+  is('a process with an owner uses it', teamOf('proc:probe-inherit:7.1')?.team_id, 'wallet')
+  is('  …and says so', teamOf('proc:probe-inherit:7.1')?.team_via, 'owner')
+  is('a leaf with no owner inherits the nearest ancestor\'s', teamOf('proc:probe-inherit:7.1.1')?.team_id, 'wallet')
+  is('  …and says it was inherited', teamOf('proc:probe-inherit:7.1.1')?.team_via, 'inherited')
+  is('  …nearest, not the top', teamOf('proc:probe-inherit:7.1.1')?.team_id === 'trading', false)
+  is('two levels up still resolves', teamOf('proc:probe-inherit:7.2.1')?.team_id, 'trading')
+  is('  …also as inherited', teamOf('proc:probe-inherit:7.2.1')?.team_via, 'inherited')
   is(
     'a level 2 with no owner is still a finding',
-    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-owner' AND subject_id = 'proc:7.2'`),
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-owner' AND subject_id = 'proc:probe-inherit:7.2'`),
     1
   )
   is(
     '  …but a leaf with no owner is not',
-    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-owner' AND subject_id = 'proc:7.2.1'`),
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-owner' AND subject_id = 'proc:probe-inherit:7.2.1'`),
     0
   )
 
@@ -1501,12 +1875,12 @@ if (stage === 'packs') {
   )
   is(
     'a declared L1 → L1 handoff with nothing direct in common is unsupported',
-    db.prepare(`SELECT support FROM process_links WHERE from_id = 'proc:8' AND to_id = 'proc:9'`).get()?.support,
+    db.prepare(`SELECT support FROM process_links WHERE from_id = 'proc:probe-support:8' AND to_id = 'proc:probe-support:9'`).get()?.support,
     'none'
   )
   is(
     '  …and is reported, which a rolled-up component set would have hidden',
-    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-unsupported' AND subject_id = 'proc:8'`),
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-unsupported' AND subject_id = 'proc:probe-support:8'`),
     1
   )
 
@@ -1538,22 +1912,22 @@ if (stage === 'packs') {
   )
   ok(
     'the leaf handoff is derived',
-    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:11.1' AND to_id = 'proc:12.1' AND derived = 1`) === 1,
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:probe-agree:11.1' AND to_id = 'proc:probe-agree:12.1' AND derived = 1`) === 1,
     'no derived leaf link'
   )
   is(
     'a declaration written a level up marks the rolled-up row as agreed',
-    db.prepare(`SELECT declared FROM process_links WHERE from_id = 'proc:11' AND to_id = 'proc:12' AND kind = 'kafka'`).get()?.declared,
+    db.prepare(`SELECT declared FROM process_links WHERE from_id = 'proc:probe-agree:11' AND to_id = 'proc:probe-agree:12' AND kind = 'kafka'`).get()?.declared,
     1
   )
   is(
     '  …rather than adding a second row beside it',
-    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:11' AND to_id = 'proc:12' AND kind = 'declared'`),
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:probe-agree:11' AND to_id = 'proc:probe-agree:12' AND kind = 'declared'`),
     0
   )
   is(
     '  …and raises nothing, because the topology agrees',
-    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-unsupported' AND subject_id = 'proc:11'`),
+    n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-unsupported' AND subject_id = 'proc:probe-agree:11'`),
     0
   )
 
@@ -1725,17 +2099,17 @@ if (stage === 'org') {
      true facts the author wrote where. */
   ok(
     'a consumer that names the topic in touches is still a handoff',
-    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:2.3.2' AND to_id = 'proc:2.3.3' AND derived = 1`) === 1,
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:order-and-execution:2.3.2' AND to_id = 'proc:order-and-execution:2.3.3' AND derived = 1`) === 1,
     'trading → ledger over orders.matched.v1 is missing'
   )
   ok(
     '  …and so is identity → wallet over users.created.v2',
-    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:1.1.2' AND to_id = 'proc:1.1.3' AND derived = 1`) === 1,
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:onboarding:1.1.2' AND to_id = 'proc:onboarding:1.1.3' AND derived = 1`) === 1,
     'identity → wallet is missing'
   )
   is(
     '  …while a touches entry with no consuming edge derives nothing',
-    n(`SELECT COUNT(*) n FROM process_links WHERE to_id = 'proc:2.3.4'`),
+    n(`SELECT COUNT(*) n FROM process_links WHERE to_id = 'proc:order-and-execution:2.3.4'`),
     0
   )
   ok(
@@ -1749,10 +2123,10 @@ if (stage === 'org') {
      say trading → growth, and wallet → growth is the truth. */
   {
     const rolled = db
-      .prepare(`SELECT from_team_id, to_team_id FROM process_links WHERE from_id = 'proc:2.3' AND to_id = 'proc:2.4'`)
+      .prepare(`SELECT from_team_id, to_team_id FROM process_links WHERE from_id = 'proc:order-and-execution:2.3' AND to_id = 'proc:order-and-execution:2.4'`)
       .get()
     is('a rolled-up handoff keeps the leaf pair\'s team', rolled?.from_team_id, 'wallet')
-    is('  …not the ancestor\'s own owner, which is trading', db.prepare(`SELECT team_id FROM processes WHERE id = 'proc:2.3'`).get()?.team_id, 'trading')
+    is('  …not the ancestor\'s own owner, which is trading', db.prepare(`SELECT team_id FROM processes WHERE id = 'proc:order-and-execution:2.3'`).get()?.team_id, 'trading')
   }
   // 6 derived + 19 of their rollups, plus the declared-only link and the 8
   // ancestor pairs it rolls into (3 froms x 3 tos, less the direct one).
@@ -1761,31 +2135,31 @@ if (stage === 'org') {
   /* the handoff the whole feature exists to produce */
   const fill = db
     .prepare(
-      `SELECT * FROM process_links WHERE from_id = 'proc:2.3.2' AND to_id = 'proc:3.1.2' AND ${direct}`
+      `SELECT * FROM process_links WHERE from_id = 'proc:order-and-execution:2.3.2' AND to_id = 'proc:reporting:3.1.2' AND ${direct}`
     )
     .get()
-  ok('trading hands the fill to reporting', !!fill, 'no proc:2.3.2 → proc:3.1.2 row')
+  ok('trading hands the fill to reporting', !!fill, 'no proc:order-and-execution:2.3.2 → proc:reporting:3.1.2 row')
   is('  …over orders.matched.v1', fill?.via_node, 'topic:orders.matched.v1')
   is('  …derived from the topology', fill?.derived, 1)
   is('  …and the pack says so too', fill?.declared, 1)
   ok('  …citing the publish and the consume', !!fill?.from_edge_id && !!fill?.to_edge_id, JSON.stringify(fill))
-  is('  …so it needs no finding', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-undocumented' AND subject_id = 'proc:2.3.2'`), 0)
+  is('  …so it needs no finding', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-undocumented' AND subject_id = 'proc:order-and-execution:2.3.2'`), 0)
 
   /* rolled up to the level a director reads */
   ok(
     'rolled up, L2 hands off to L3',
-    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:2' AND to_id = 'proc:3'`) > 0,
-    'no proc:2 → proc:3 row'
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:order-and-execution:2' AND to_id = 'proc:reporting:3'`) > 0,
+    'no proc:order-and-execution:2 → proc:reporting:3 row'
   )
   is('  …and nothing hands off to itself', n('SELECT COUNT(*) n FROM process_links WHERE from_id = to_id'), 0)
   is(
     '  …not even the internal handoff inside L2',
-    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:2' AND to_id = 'proc:2'`),
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:order-and-execution:2' AND to_id = 'proc:order-and-execution:2'`),
     0
   )
   ok(
     '  …while the internal leaf handoff is still there',
-    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:2.2.3' AND to_id = 'proc:2.2.4' AND cross_team = 0`) === 1,
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:order-and-execution:2.2.3' AND to_id = 'proc:order-and-execution:2.2.4' AND cross_team = 0`) === 1,
     'the trading-to-trading handoff went missing'
   )
 
@@ -1805,7 +2179,7 @@ if (stage === 'org') {
 
   /* ──────────── §5: which teams a process reaches, which is the HTTP case */
   const reach = db
-    .prepare(`SELECT team_id, via, via_node FROM process_teams WHERE process_id = 'proc:2.1.3' ORDER BY via, via_node`)
+    .prepare(`SELECT team_id, via, via_node FROM process_teams WHERE process_id = 'proc:order-and-execution:2.1.3' ORDER BY via, via_node`)
     .all()
   is('a process reaches its own team as its owner', reach.filter((r) => r.via === 'owner')[0]?.team_id, 'trading')
   ok(
@@ -1815,7 +2189,7 @@ if (stage === 'org') {
   )
   is(
     '  …with no handoff to any identity process, because a call is not a handoff',
-    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:2.1.3'`),
+    n(`SELECT COUNT(*) n FROM process_links WHERE from_id = 'proc:order-and-execution:2.1.3'`),
     0
   )
   is(
@@ -1839,11 +2213,11 @@ if (stage === 'org') {
   is('zero component-no-team', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'component-no-team'`), 0)
   is('zero process-no-owner', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-no-owner'`), 0)
   is('exactly one process-link-unknown-target', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-unknown-target'`), 1)
-  is('  …from 1.2.3, naming L4.1', db.prepare(`SELECT subject_id FROM drift WHERE kind = 'process-link-unknown-target'`).get()?.subject_id, 'proc:1.2.3')
+  is('  …from 1.2.3, naming L4.1', db.prepare(`SELECT subject_id FROM drift WHERE kind = 'process-link-unknown-target'`).get()?.subject_id, 'proc:onboarding:1.2.3')
   is('exactly one process-link-unsupported', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-unsupported'`), 1)
-  is('  …from 1.3.2, which shares nothing with 2.4.2', db.prepare(`SELECT subject_id FROM drift WHERE kind = 'process-link-unsupported'`).get()?.subject_id, 'proc:1.3.2')
+  is('  …from 1.3.2, which shares nothing with 2.4.2', db.prepare(`SELECT subject_id FROM drift WHERE kind = 'process-link-unsupported'`).get()?.subject_id, 'proc:onboarding:1.3.2')
   is('exactly one process-link-undocumented', n(`SELECT COUNT(*) n FROM drift WHERE kind = 'process-link-undocumented'`), 1)
-  is('  …the wallet-to-data one nobody declared', db.prepare(`SELECT subject_id FROM drift WHERE kind = 'process-link-undocumented'`).get()?.subject_id, 'proc:2.3.5')
+  is('  …the wallet-to-data one nobody declared', db.prepare(`SELECT subject_id FROM drift WHERE kind = 'process-link-undocumented'`).get()?.subject_id, 'proc:order-and-execution:2.3.5')
   is(
     '  …and a declared HTTP handoff is never reported as unsupported for being HTTP',
     n(`SELECT COUNT(*) n FROM process_links WHERE declared = 1 AND support = 'component'`),
@@ -1902,7 +2276,7 @@ if (stage === 'org') {
     )
 
     /* the sentence the whole feature exists to produce */
-    const { body: two } = await get('/process?code=2')
+    const { body: two } = await get('/process?pack=order-and-execution&code=2')
     const toReporting = two.links.out.filter((h) => h.to.code === '3')
     // Two rows, not one: the pair hands off over two topics, and the id carries
     // `via_node` precisely so those stay two facts.
@@ -1914,7 +2288,7 @@ if (stage === 'org') {
     is('  …and over wallet.balance.changed.v1, which nobody declared', balance?.declared, false)
 
     /* the list a level 1 would otherwise show nothing in */
-    const { body: one1 } = await get('/process?code=1')
+    const { body: one1 } = await get('/process?pack=onboarding&code=1')
     is('a level 1 sees the handoffs inside it', one1.links.inside.length, 3)
     ok(
       '  …every one of them crossing a team',
@@ -1924,7 +2298,7 @@ if (stage === 'org') {
     is('  …and reaches five other teams', one1.teams.filter((t) => t.via !== 'owner').map((t) => t.id).filter((v, i, a) => a.indexOf(v) === i).length, 5)
 
     /* the HTTP case, on the page */
-    const { body: check } = await get('/process?code=2.1.3')
+    const { body: check } = await get('/process?pack=order-and-execution&code=2.1.3')
     const identity = check.teams.filter((t) => t.id === 'identity')
     ok(
       'a process that calls an endpoint reaches that team through it',
@@ -2523,7 +2897,7 @@ if (stage === 'map') {
       note: null,
       firstSeen: '2026-09-22T00:00:00Z',
     })
-    const process = { id: 'proc:2', code: '2', name: 'Order and execution', teamId: 'trading', teamName: 'trading' }
+    const process = { id: 'proc:order-and-execution:2', code: '2', name: 'Order and execution', teamId: 'trading', teamName: 'trading' }
     const boxes = (src) => new Set((src.match(/H\d+/g) ?? []))
     const arrows = (src) => (src.match(/^ {2}H\d+ -\.?->\|/gm) ?? []).length
 

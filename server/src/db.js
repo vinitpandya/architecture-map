@@ -24,6 +24,60 @@ if (legacy && db.prepare('PRAGMA table_info(processes)').all().some((c) => c.nam
 }
 db.exec('DROP TABLE IF EXISTS process_steps;')
 
+/**
+ * A process used to be identified by its code alone, which made the code a
+ * single estate-wide number line. Packs authored independently — a team at a
+ * time, a repository at a time — all numbered from 1, and the last one
+ * ingested took every code the others had claimed. The identity is
+ * `proc:<pack>:<code>` now, and the uniqueness is per pack.
+ *
+ * That is a changed primary key and a changed constraint, neither of which
+ * ALTER TABLE can do. It costs nothing: `processes` is a pure function of the
+ * active packs, whose bodies are all still in `process_packs.raw`. So the
+ * table goes and is replayed from them — see reconcileProcesses(), which the
+ * flag below asks the next boot to run.
+ */
+export const processIdentityChanged =
+  !!legacy && !db.prepare('PRAGMA table_info(processes)').all().some((c) => c.name === 'pack')
+if (processIdentityChanged) {
+  // Read out before dropping. A process that really was in the table keeps the
+  // day it was first documented; one that was being overwritten by another
+  // pack was never there to have a first_seen, and is stamped fresh.
+  /* Read out before dropping, keyed by the pack that actually held the row.
+     By code alone it would hand every pack's `2` the date belonging to
+     whichever pack's `2` happened to win — a date for a process that was never
+     in that table, which is the kind of invention this whole project exists
+     not to make. Joined to the pack, only the row that really was there keeps
+     its date; everything else is stamped fresh, which is the truth.
+
+     Guarded: this runs on every database of every vintage, and a shape older
+     than any this project shipped would otherwise throw here and take the boot
+     with it. Losing the dates is survivable; not starting is not. */
+  let carried = []
+  try {
+    carried = db
+      .prepare(
+        `SELECT pk.pack AS pack, p.code AS code, p.first_seen AS first_seen
+         FROM processes p JOIN process_packs pk ON pk.id = p.pack_id`
+      )
+      .all()
+  } catch {
+    /* no first_seen to carry */
+  }
+  db.exec('DROP TABLE IF EXISTS processes;')
+  db.exec(`CREATE TABLE IF NOT EXISTS process_first_seen (
+    pack       TEXT NOT NULL,
+    code       TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    PRIMARY KEY (pack, code)
+  );`)
+  const keep = db.prepare(
+    `INSERT INTO process_first_seen (pack, code, first_seen) VALUES (?, ?, ?)
+     ON CONFLICT(pack, code) DO NOTHING`
+  )
+  for (const r of carried) keep.run(r.pack, r.code, r.first_seen)
+}
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS app_config (
   key   TEXT PRIMARY KEY,
@@ -177,10 +231,11 @@ CREATE INDEX IF NOT EXISTS process_packs_pack ON process_packs (pack, status);
 -- so a level 3 is already the atomic unit of work.
 
 CREATE TABLE IF NOT EXISTS processes (
-  id          TEXT PRIMARY KEY,          -- 'proc:2.1.1'
-  code        TEXT NOT NULL UNIQUE,      -- '2.1.1', the L stripped
+  id          TEXT PRIMARY KEY,          -- 'proc:onboarding:2.1.1'
+  pack        TEXT NOT NULL,             -- 'onboarding', the pack's own id
+  code        TEXT NOT NULL,             -- '2.1.1', the L stripped
   level       INTEGER NOT NULL,          -- derived: segment count, 1-3
-  parent_id   TEXT,                      -- derived: 'proc:2.1'; NULL at level 1
+  parent_id   TEXT,                      -- derived: 'proc:onboarding:2.1'; NULL at level 1
   sort_key    TEXT NOT NULL,             -- zero-padded; never order by code
   name        TEXT NOT NULL,
   description TEXT,
@@ -199,9 +254,14 @@ CREATE TABLE IF NOT EXISTS processes (
   source      TEXT,                      -- JSON; the pack's when the process has none
   pack_id     INTEGER NOT NULL REFERENCES process_packs(id) ON DELETE CASCADE,
   first_seen  TEXT NOT NULL,
-  last_seen   TEXT NOT NULL
+  last_seen   TEXT NOT NULL,
+  -- Per pack, not global. A code is a number line, and a number line belongs
+  -- to whoever is numbering: two teams documenting their own processes both
+  -- start at 1 and neither is wrong.
+  UNIQUE (pack, code)
 );
 CREATE INDEX IF NOT EXISTS processes_parent ON processes (parent_id);
+CREATE INDEX IF NOT EXISTS processes_pack   ON processes (pack, sort_key);
 CREATE INDEX IF NOT EXISTS processes_sort   ON processes (sort_key);
 CREATE INDEX IF NOT EXISTS processes_node   ON processes (node_id);
 
@@ -408,6 +468,16 @@ db.exec(`
    row id, because the row is thrown away and rebuilt while the judgement
    about it is not. */
 db.exec(`
+-- Written only by the identity migration above, read once by the rebuild that
+-- follows it, and empty on every database created since. It exists so that a
+-- process documented in March still says March after its id changed.
+CREATE TABLE IF NOT EXISTS process_first_seen (
+  pack       TEXT NOT NULL,
+  code       TEXT NOT NULL,
+  first_seen TEXT NOT NULL,
+  PRIMARY KEY (pack, code)
+);
+
 CREATE TABLE IF NOT EXISTS drift_state (
   fingerprint TEXT PRIMARY KEY,
   state       TEXT NOT NULL,   -- accepted

@@ -98,6 +98,70 @@ contracts" rather than "Everything".
   settled by ingest order, read off the active manifests because the `nodes`
   table only ever holds the winner.
 
+## A process code belongs to its pack
+
+- **`proc:<pack>:<code>`, and `UNIQUE (pack, code)`.** The code alone was the
+  identity, which made it one estate-wide number line that every pack had to be
+  numbered against. That works while one person is numbering. Packs are
+  authored independently — a team at a time, a repository at a time, by
+  somebody who cannot see what anyone else has written — so they all began at
+  1, and the last pack ingested took every code the others had claimed, because
+  `processes.code` was unique and the upsert handed the row to the last writer.
+  Hundreds of authored processes came out as a handful of rows and the only
+  symptom was a short tree.
+- **The alternatives were considered and rejected.** Reserving an L1 block per
+  pack, or having the pack declare a prefix, both keep one number line and both
+  need the authors to coordinate — which is exactly what did not happen and
+  cannot be made to happen when the prompt is run offline or in parallel. Per
+  pack, two teams both starting at 1 are both right and neither has to know the
+  other exists.
+- **What it costs is that a code no longer addresses a process.** Every link,
+  filter and reference carries the pack. `/api/process` still answers a bare
+  `?code=` while exactly one pack uses that number, because people paste codes
+  out of tickets — and answers 409 naming the packs the moment two do, rather
+  than picking one. `/api/processes?root=` requires a pack, because a subtree
+  is a subtree of one hierarchy and mixing two is the original bug in miniature.
+- **A bare code in `handsOffTo` or `next` means the pack it was written in;
+  `<pack>#<code>` means somebody else's.** Same-pack is the overwhelming case,
+  and a team writing its own flow should not have to keep naming itself. A bare
+  code deliberately cannot reach outside its pack: it would silently resolve to
+  this pack's own process of the same number, which is the failure this change
+  exists to remove.
+- **`process-duplicate-code` now means one pack declaring a code twice.** Two
+  packs doing so is no longer anything. Within a pack it still loses a process
+  — the row can only hold the last writer — and no numbering rule can save it.
+- **The `processes` table is dropped and replayed on the first boot after the
+  change.** Its primary key and its uniqueness both changed, neither of which
+  ALTER TABLE can do, and the table is a pure function of `process_packs.raw` —
+  which still holds every process any pack ever declared, including the ones
+  the old scheme was overwriting. `first_seen` is carried across by code, so a
+  process that really was in the table keeps the day it was first documented;
+  one that was being overwritten was never there to have one.
+- **A pack declares `covers`: a team and the services whose work it
+  describes.** It scopes the authoring prompt to that boundary rather than the
+  whole estate, which is most of the prompt's length and every component in it
+  that the team does not run is a chance to bind a process to the wrong
+  service. It also makes `process-outside-covers` derivable.
+- **That finding reads `node` only, never `interaction` or `touches`.** A
+  process reaching into somebody else's service is a handoff and the most
+  valuable thing in a pack; reporting those would report every crossing in the
+  estate. A pack claiming that somebody else's service does its work is the one
+  case worth a line — and it is info, not warn, because either the boundary is
+  out of date or the process belongs in another pack and a person decides which.
+- **The demo packs' `covers` lists every service whose work they claim**, which
+  for `onboarding` is five services across four teams. A domain pack's boundary
+  is a domain, not a team; `team` is who owns the document.
+- **`first_seen` is carried across the migration by `(pack, code)`, not by
+  code.** By code alone every pack's `2` inherited the date of whichever
+  pack's `2` had won the row — a "documented since March" for a process that
+  had never been in the table. The verification stage for the migration is
+  what caught it.
+- **The authoring prompt's code list is the pack's own.** It used to be every
+  code in the estate, headed "so you do not collide" — the right instruction
+  while a code was the whole identity and the wrong one now. What an author
+  needs is what *this* pack already says, so re-authoring it keeps the numbers
+  people have been citing.
+
 ## Link pass and search
 
 - **The search index is rebuilt wholesale after each ingest.** §5 says "for the

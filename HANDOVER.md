@@ -49,8 +49,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 502 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 214 more
+npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 543 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 220 more
 npm run verify:dev                   # the 11 that only fail in dev mode
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
@@ -110,10 +110,11 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 502 assertions across six stages, all passing.**
+**`npm run verify` — 543 assertions across seven stages, all passing.**
 
 *Ingest (58, in-process against a fresh database, with a short HTTP stretch at
-the end for the two routes an operator drives).* `prompts/standalone/` is in
+the end for the two routes an operator drives; `migrate` is its own stage and
+is described under "A process code belongs to its pack").* `prompts/standalone/` is in
 sync with the schemas it inlines, carries no unfilled placeholder, and has the
 README, both schemas and both worked examples beside it — the check that stops
 somebody being handed a copy of a schema that has quietly drifted.
@@ -281,7 +282,7 @@ through 452 server assertions and 191 browser checks, because neither of them
 runs the build that says so. This one opens every page against `npm run dev`
 and fails on any console error.
 
-**`npm run verify:ui` — 214 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 220 checks in Chromium at 1280×900, all passing.**
 
 A finding says how long it has been true rather than "just now", names the team
 that should look at it, and can be accepted with a reason and reopened again —
@@ -549,6 +550,128 @@ Any row with `services > 1` had imports deleting each other. Re-run the scans
 for those services, or re-ingest the manifest files if you still have them;
 nothing needs to be reset.
 
+## A process code belongs to its pack
+
+The same failure as the scans, one layer up, and worse. The author ran the
+authoring prompt against several teams' repositories, a pack at a time. Every
+run numbered from 1, because none of them could see the others. `processes.code`
+was `UNIQUE` across the whole estate and `id` was `proc:<code>`, so the last
+pack ingested took every code the rest had claimed. Hundreds of authored
+processes came out as eight rows, and the only symptom was a short tree.
+
+Nothing was lost: every pack's body is in `process_packs.raw`, which is what
+made the fix cheap.
+
+**A process is `proc:<pack>:<code>` now, and uniqueness is `(pack, code)`.**
+Two teams both starting at 1 are both right, and neither has to know the other
+exists. The alternatives — a reserved L1 block per pack, or a pack-declared
+prefix — both keep one number line and both need the authors to coordinate,
+which is the thing that cannot be made to happen when the prompt is run offline
+or in parallel.
+
+What it costs: a code no longer addresses a process. Every link, filter and
+reference carries the pack.
+
+- `/api/process` takes `?pack=&code=`. A bare `?code=` is still answered while
+  exactly one pack uses that number — people paste codes out of tickets — and
+  is a **409 naming the packs** the moment two do, rather than picking one.
+- `/api/processes?root=` requires exactly one `pack`: a subtree is a subtree of
+  one hierarchy, and mixing two is the original bug in miniature.
+- `/api/graph?process=` takes `<pack>#<code>`.
+- A reference in `handsOffTo` or `next` is a bare code for this pack and
+  `<pack>#<code>` for somebody else's. A bare code deliberately cannot reach
+  outside its pack; it would otherwise resolve to this pack's own process of
+  the same number, silently.
+- `process-duplicate-code` now means **one pack** declaring a code twice, which
+  still loses a process. Two packs doing so is no longer anything.
+
+**On the first boot after this, `processes` is dropped and replayed** from the
+active packs — its primary key and its uniqueness both changed, and ALTER TABLE
+can do neither. `server/src/index.js` prints a line saying how many packs it
+replayed into how many processes. `first_seen` is carried across by code, so a
+process that really was in the table keeps the day it was first documented; one
+that was being overwritten was never there to have one. Accepted findings on
+processes are keyed by a fingerprint that includes the subject id, so those need
+accepting again — the one thing the migration does not preserve.
+
+### A pack now says what it covers
+
+`covers` is a new optional block: the `team` that owns the document, and the
+`services` whose work it describes. It does three things.
+
+It says what the pack is for without opening it. It **scopes the authoring
+prompt** — the components list was the whole estate, which is most of the
+prompt's length, and every component in it the team does not run is a chance to
+bind a process to the wrong service. And it makes `process-outside-covers`
+derivable: a process whose `node` is outside the boundary.
+
+`node` only — where the work happens. An `interaction` leaving the boundary is a
+handoff and the most valuable thing in a pack; reporting those would report
+every crossing in the estate and bury the one case worth a line.
+
+### The prompt changed, and this is the part to re-read
+
+`prompts/author-processes.md` is at `promptVersion: 2026-09-24a`:
+
+- **Number from 1.** The numbering is the pack's own; another team's is not
+  yours to work around. This is the instruction that was wrong before.
+- The codes it lists are **this pack's**, not the estate's, so re-authoring a
+  pack keeps the numbers people are citing.
+- The components it lists are **the boundary's**, with a line saying what it was
+  narrowed to and how much of the estate that is.
+- It asks for `covers`, and says which of `node` and `interaction` should stay
+  inside it.
+- A cross-pack handoff is written `<pack>#<code>`.
+
+On the Scan page's *Processes* tab there is now a team selector beside the pack
+box, for a pack's first run, when there is no stored `covers` to narrow by.
+
+### What was checked
+
+**There is a seventh verification stage, `migrate`, and it is the important
+one.** It builds a database in the old shape by hand — the `processes` table
+with no `pack` column and `code` unique estate-wide — loads three packs each
+numbering from 1, and asserts that the old scheme kept **five of the twelve
+they declare and deleted one pack entirely**. That is the author's bug,
+reproduced. It then opens the same file with the current code and asserts the
+migration replays all twelve, four to a pack, one code now three processes.
+
+It was written by reproducing the failure first, against the previous commit
+in a throwaway worktree: three packs, twelve processes, five rows. The stage
+builds the old shape with raw SQL rather than depending on that commit still
+being reachable.
+
+**That stage caught a defect in the migration.** `first_seen` was carried by
+code alone, which handed every pack's `2` the date belonging to whichever
+pack's `2` had won the row — a documented-since date for a process that had
+never been in the table. It is carried by `(pack, code)` now, so only the row
+that really was there keeps its date.
+
+`/api/graph?process=` takes the same `<pack>#<code>` reference, and a bare code
+that two packs use draws nothing and says which packs it could have meant,
+rather than answering with whichever sorted first.
+
+The rest of the regression tests are in the `packs` stage: two packs each
+declaring `8.2`, both keeping everything they declared, neither raising a
+finding. Beside it: a pack declaring one code twice still loses a process and
+still raises `process-duplicate-code`; deleting a pack takes only its own rows;
+`<pack>#<code>` resolves into the other pack while a bare code stays home even
+when another pack has that number; a `covers` probe where one process names
+another team's service and another merely reaches into one, with only the first
+reported.
+
+### Known gaps
+
+- **The demo estate's three packs still take an L1 each** (1, 2, 3), because
+  that is what they were authored as. They no longer have to, and a new pack
+  should not try to.
+- **`process-outside-covers` is info, and fires on nothing in the demo** — the
+  demo packs' `covers` lists every service whose work they claim. The probe in
+  the `packs` stage is what proves it fires at all.
+- **`covers.repos` is accepted, stored and displayed, and nothing derives
+  anything from it.** It is there because a pack authored by reading code
+  should be able to say which code; joining it to the manifests is not done.
+
 ## What the scale pass found
 
 The demo estate is ten services, sparse, with no node anything else crowds
@@ -656,11 +779,12 @@ committed, being a throwaway.
   asymmetry is the lesson of this build: every defect found by reading rather
   than running lived on a path the demo data does not reach.** The four Layer A
   findings above are the remaining ones, and they are where to look next. The
-  two newest kinds, `scan-refused` and `kind-disagreement`, produce nothing on
-  the demo data either, and are deliberately not in that list: both are
-  asserted in the `ingest` stage against manifests built for them, and
-  `scan-refused` is driven through the ingest log's **Apply anyway** button at
-  the end of the browser suite.
+  three newest kinds — `scan-refused`, `kind-disagreement` and
+  `process-outside-covers` — produce nothing on the demo data either, and are
+  deliberately not in that list: each is asserted against a document built for
+  it (the first two in the `ingest` stage, the third against a probe pack in
+  `packs`), and `scan-refused` is driven through the ingest log's **Apply
+  anyway** button at the end of the browser suite.
 - **A group box is a React Flow node.** Two arrangements draw them, so every
   check that counts "things on the map" goes through `MAP_NODE` in
   `verify-ui.mjs`, which excludes them. If you add a count, use it.
@@ -780,46 +904,37 @@ committed, being a throwaway.
 
 ## What I would do next, in order
 
-1. **A process pack gets no shrink guard, and should.** A re-ingested pack
-   supersedes on its `pack` id, which is the right identity — but a pack
-   rewritten with half its processes dropped applies silently, exactly as a
-   shrinking scan used to. The same rule fits, counted in processes rather than
-   edges, and `ingestProcessPack` is deliberately the same shape as
-   `ingestManifest` so it is a small change. It was left out of this pass
-   because the reported problem was scans, and widening the refusal rule to a
-   document a person authored deserves its own thought: a person deleting half
-   a pack usually means it.
-2. **Route a finding to more than one team.** `drift.team_id` is a single
+1. **Route a finding to more than one team.** `drift.team_id` is a single
    column, so a version skew between two teams and a topic two teams publish
    stay unrouted — 5 of the demo estate's 15. That is honest (more than one
    team *is* the finding) but it means the two most interesting kinds never
    reach an inbox. A join table would fix it; the question is whether the
    finding should then be resolvable by naming an owner, which is item 6 below
    and probably the same piece of work.
-3. **Stale evidence.** Given a checkout, re-read each cited `file:line` and
+2. **Stale evidence.** Given a checkout, re-read each cited `file:line` and
    compare it to the stored snippet. The schema already promises this ("ingest
    re-checks it, and a snippet that no longer matches marks the fact stale") and
    `drift.stale-evidence` is reserved for it. It is what turns the map from "true
    when it was scanned" into "provably still true", and it is the last piece of
    the honesty argument that is missing.
-4. **Pass 2.** `prompts/scan-pass2-link.md` exists and nothing runs it. The
+3. **Pass 2.** `prompts/scan-pass2-link.md` exists and nothing runs it. The
    `near-miss` findings are exactly its input, and reconciling ids across
    manifests is what stops a ten-repo estate becoming ten islands.
-5. **Edge overrides and `hidden`.** `overrides` supports `subject_kind='edge'`
+4. **Edge overrides and `hidden`.** `overrides` supports `subject_kind='edge'`
    and a `hidden` field, `/api/graph` already honours `hidden` on nodes, and no
    screen writes either. A "this edge is wrong" button is a small change with a
    large effect on whether people trust the map enough to correct it.
-6. **Process coverage as a first-class report.** `/api/coverage` and the
+5. **Process coverage as a first-class report.** `/api/coverage` and the
    `process-coverage` widget exist; what is missing is the other direction —
    which processes have gone longest without anybody confirming them. `source.asOf`
    is already stored and the process page already shows its age.
-7. **Team assignment should reach further than a service.** Only a service can
+6. **Team assignment should reach further than a service.** Only a service can
    be put in a team today, because everything else inherits. The cases that
    would want their own are a topic two teams publish (deliberately teamless,
    and `multi-team-topic` says why) and a cache two teams write. Both are real
    findings rather than gaps, so the right move is probably to let the *finding*
    be resolved by naming an owner, not to add a free-floating override.
-8. **A saved map arrangement should be shareable.** It is per browser today.
+7. **A saved map arrangement should be shareable.** It is per browser today.
    The obvious shape is a `layout` field on the widget's options, saved with the
    page like everything else on it, with `localStorage` as the per-person
    override. That is also what would let a team agree on one picture of the

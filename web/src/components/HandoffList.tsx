@@ -63,10 +63,10 @@ export function HandoffList({
 function End({ end }: { end: Handoff['from'] }) {
   return (
     <span className="row" style={{ gap: 6, alignItems: 'baseline' }}>
-      <Link to={processHref(end.code)} className="proc-code">
+      <Link to={processHref(end.pack, end.code)} className="proc-code">
         {displayCode(end.code)}
       </Link>
-      <Link to={processHref(end.code)}>{end.name}</Link>
+      <Link to={processHref(end.pack, end.code)}>{end.name}</Link>
       {end.teamId && (
         <Link to={teamHref(end.teamId)} className="pill">
           {end.teamName ?? end.teamId}

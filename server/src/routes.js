@@ -3,6 +3,9 @@ import path from 'node:path'
 import express from 'express'
 import { ROOT, INBOX_DIR } from './config.js'
 import { db, getConfig, setConfig, hasData } from './db.js'
+// `L2.1.1` and `2.1.1` are the same process, and a process is its pack and its
+// code together. One place for all three rules — see ids.js.
+import { codeOf, normaliseCode, packOf } from './ids.js'
 import {
   editableRegistry,
   registryConfigured,
@@ -319,7 +322,7 @@ router.get('/node', wrap(async (req, res) => {
   // business it belongs to, and both are worth showing.
   const processes = db
     .prepare(
-      `SELECT p.id, p.code, p.name, p.level, p.owner, c.via
+      `SELECT p.id, p.pack, p.code, p.name, p.level, p.owner, c.via
        FROM process_components c JOIN processes p ON p.id = c.process_id
        WHERE c.node_id = ?
        ORDER BY p.level DESC, p.sort_key`
@@ -740,14 +743,34 @@ router.get('/graph', wrap(async (req, res) => {
   // A process is a filter, not a selection: asking for 2 gives the whole of
   // order and execution, 2.1 gives just the estimate. Combined with a focus,
   // the process bounds the graph and the focus picks within it.
-  const processCode = String(req.query.process || '').trim().replace(/^[Ll]/, '')
+  // `process` is `<pack>#<code>` here, the same reference `handsOffTo` and
+  // `next` use, so a caller that has a process in hand can name it one way
+  // everywhere. A bare code is still accepted and means "whichever pack has
+  // it", which is unambiguous for as long as only one does.
+  const processRef = String(req.query.process || '').trim()
+  const processPack = processRef.includes('#') ? processRef.slice(0, processRef.indexOf('#')) : null
+  const processCode = normaliseCode(processRef.slice(processRef.indexOf('#') + 1))
   let withinProcess = null
   if (processCode) {
-    const proc = db.prepare('SELECT id FROM processes WHERE code = ?').get(processCode)
+    const found = processPack
+      ? db.prepare('SELECT id FROM processes WHERE pack = ? AND code = ?').all(processPack, processCode)
+      : db.prepare('SELECT id, pack FROM processes WHERE code = ? ORDER BY pack').all(processCode)
     // An unknown process is an empty graph, not the whole estate — but the
     // response still says which one was asked for, so the caller can tell the
     // difference between "nothing matched" and "no filter".
-    if (!proc) return res.json({ nodes: [], edges: [], process: processCode, unknownProcess: true })
+    if (!found.length) return res.json({ nodes: [], edges: [], process: processRef, unknownProcess: true })
+    // And a bare code that several packs use is not one process. Answering
+    // with whichever sorted first would be a graph of somebody else's work,
+    // drawn with no sign that a choice had been made.
+    if (found.length > 1) {
+      return res.json({
+        nodes: [],
+        edges: [],
+        process: processRef,
+        ambiguousProcess: found.map((r) => r.pack),
+      })
+    }
+    const proc = found[0]
     withinProcess = new Set(
       db.prepare('SELECT node_id FROM process_components WHERE process_id = ?').all(proc.id).map((r) => r.node_id)
     )
@@ -816,7 +839,7 @@ router.get('/graph', wrap(async (req, res) => {
   res.json({
     nodes,
     edges: allEdges.filter((e) => ids.has(e.from_id) && ids.has(e.to_id)).map(edgeRow),
-    process: processCode || null,
+    process: processCode ? processRef : null,
   })
 }))
 
@@ -929,11 +952,43 @@ router.get('/prompt', wrap(async (req, res) => {
     'utf8'
   )
 
-  // Every component in the map, and every code already taken. Without these
-  // the authoring prompt is useless: its central rule is "only reference
-  // components that exist", and it cannot be followed blind.
+  /* The components the author may reference, and the boundary they were
+     narrowed to. Without them the authoring prompt is useless: its central
+     rule is "only reference components that exist", and it cannot be followed
+     blind.
+
+     Narrowed, where there is something to narrow by. A whole estate pasted
+     into the prompt is most of its length, and every component in it that the
+     team does not run is a chance to bind a process to somebody else's
+     service. `covers` on an already-loaded pack is the pack's own answer to
+     "what is this about"; `?team=` is for the first authoring run, when there
+     is no pack yet. Anything outside is still referenceable — a process that
+     crosses a boundary is the interesting kind — so this narrows what is
+     OFFERED, never what is allowed. */
+  const askedTeam = String(one(req.query.team) || '')
+  const packBody = (() => {
+    const row = db
+      .prepare(`SELECT raw FROM process_packs WHERE pack = ? AND status = 'active'`)
+      .get(String(one(req.query.pack) || ''))
+    return row ? parse(row.raw, null) : null
+  })()
+  const covers = packBody?.covers ?? null
+  const boundTeam = askedTeam || covers?.team || ''
+  const boundServices = new Set(Array.isArray(covers?.services) ? covers.services : [])
+
+  const all = db.prepare('SELECT id, kind, name, team_id FROM nodes ORDER BY kind, id').all()
+  // A component is in the boundary if the team runs it or the pack named it.
+  // With neither, every component is, which is what it was before.
+  const bounded = boundTeam || boundServices.size
+    ? all.filter((n) => (boundTeam && n.team_id === boundTeam) || boundServices.has(n.id))
+    : all
+  // …and if that leaves nothing, the boundary is wrong or the estate has not
+  // been scanned. Offering an empty list would be worse than offering all of
+  // it, so it falls back and the note below says so.
+  const offered = bounded.length ? bounded : all
+
   const byKind = new Map()
-  for (const n of db.prepare('SELECT id, kind, name FROM nodes ORDER BY kind, id').all()) {
+  for (const n of offered) {
     if (!byKind.has(n.kind)) byKind.set(n.kind, [])
     byKind.get(n.kind).push(`- \`${n.id}\` · ${n.name}`)
   }
@@ -941,10 +996,38 @@ router.get('/prompt', wrap(async (req, res) => {
     ? [...byKind].map(([kind, lines]) => `**${kind}**\n${lines.join('\n')}`).join('\n\n')
     : '_Nothing has been ingested yet, so there are no components to reference._'
 
-  const taken = db.prepare('SELECT code, name FROM processes ORDER BY sort_key').all()
+  const boundary = !offered.length
+    ? '_Nothing is loaded, so there is no boundary to state yet._'
+    : offered.length === all.length && !(boundTeam || boundServices.size)
+      ? `_No boundary was given, so this is the whole estate — ${all.length} components. ` +
+        'Write `covers` in the pack anyway: it is what narrows this next time._'
+      : bounded.length
+        ? `This is the **${[boundTeam, boundServices.size ? `${boundServices.size} named services` : '']
+            .filter(Boolean)
+            .join(' / ')}** boundary — ${offered.length} of the estate's ${all.length} components. ` +
+          'A process may still reference anything outside it; that crossing is what a handoff is.'
+        : `_The boundary matched nothing, so the whole estate is offered — ${all.length} components. ` +
+          'Either it is spelt differently here, or those services have not been scanned yet._'
+
+  /* This pack's codes, and only this pack's.
+     It used to be every code in the estate, under the heading "so you do not
+     collide" — which was the right instruction while a code was the whole
+     identity, and is now exactly the wrong one. A code belongs to its pack.
+     Listing everybody else's would tell an author to steer around numbers that
+     have nothing to do with them, and authors who could not see the list (a
+     parallel run, the standalone prompt) all began at 1 anyway and overwrote
+     each other. What an author does need is what THIS pack already says, so
+     re-authoring it keeps the numbers people have been citing. */
+  const packId = String(one(req.query.pack) || '')
+  const taken = packId
+    ? db.prepare('SELECT code, name FROM processes WHERE pack = ? ORDER BY sort_key').all(packId)
+    : []
   const processes = taken.length
     ? taken.map((p) => `- \`L${p.code}\` · ${p.name}`).join('\n')
-    : '_No process codes are in use yet._'
+    // Deliberately without the pack id in it: the prompt already says which
+    // pack is being authored, and a second insertion of a value that comes
+    // from a query parameter is a second place for it to go wrong.
+    : '_No process codes are loaded for this pack yet, so every code is free. Start at L1._'
 
   // Every replacement goes in through a function, because in the two-argument
   // string form `$&`, `$\``, `$'`, `$$` and `$1` are expanded as patterns — and
@@ -956,8 +1039,10 @@ router.get('/prompt', wrap(async (req, res) => {
     PACK: String(one(req.query.pack) || '<pack>'),
     COMPONENTS: components,
     PROCESSES: processes,
+    BOUNDARY: boundary,
   }
-  const fill = (part) => part.replace(/\{\{(SCHEMA|REPO|PACK|COMPONENTS|PROCESSES)\}\}/g, (_, k) => values[k])
+  const fill = (part) =>
+    part.replace(/\{\{(SCHEMA|REPO|PACK|COMPONENTS|PROCESSES|BOUNDARY)\}\}/g, (_, k) => values[k])
 
   // Every prompt opens with an HTML comment that documents its placeholders by
   // name. Filling those in destroys the legend and pastes a second copy of the
@@ -1060,9 +1145,11 @@ function withBranches(processes) {
     if (!byFrom.has(r.from_id)) byFrom.set(r.from_id, [])
     byFrom.get(r.from_id).push({
       when: r.condition,
-      // The code rather than the id, because every other process reference in
-      // this API is a code and the client routes on one.
-      to: r.to_id ? r.to_id.replace(/^proc:/, '') : null,
+      // The code and its pack rather than the id, because every other process
+      // reference in this API is a (pack, code) pair and the client routes on
+      // one. A branch may legitimately point into another pack.
+      to: r.to_id ? codeOf(r.to_id) : null,
+      toPack: r.to_id ? packOf(r.to_id) : null,
       toName: r.to_name ?? null,
       // False means the code resolves to nothing. Kept rather than dropped:
       // the branch is still what the author said, and the finding says so.
@@ -1076,6 +1163,9 @@ function withBranches(processes) {
 const processRow = (r) => ({
   id: r.id,
   code: r.code,
+  // The pack is half the identity now, so it rides with the code everywhere:
+  // a client linking to `L2.1` without saying whose has not said which process.
+  pack: r.pack,
   level: r.level,
   parentId: r.parent_id,
   name: r.name,
@@ -1124,6 +1214,11 @@ const PROCESS_SELECT = `
 router.get('/processes', wrap(async (req, res) => {
   const where = []
   const args = []
+  const packs = list(req.query.pack)
+  if (packs.length) {
+    where.push(`p.pack IN (${packs.map(() => '?').join(',')})`)
+    args.push(...packs)
+  }
   if (req.query.root) {
     const root = normaliseCode(one(req.query.root))
     // The second half is a LIKE pattern, so the value has to be a code and not
@@ -1131,6 +1226,13 @@ router.get('/processes', wrap(async (req, res) => {
     // to return a subtree nobody asked for rather than an empty tree.
     if (!/^[1-9][0-9]*(\.[1-9][0-9]*){0,2}$/.test(root)) {
       return res.status(400).json({ error: `\`root\` must be a process code, e.g. 2 or 2.1.1 — got ${root}` })
+    }
+    // A subtree is a subtree of one pack. Without the pack this returned every
+    // pack's 2.x at once, which is the same estate-wide number line the ids
+    // stopped assuming — so a root with no pack to scope it is a 400 rather
+    // than a plausible-looking answer drawn from several hierarchies.
+    if (packs.length !== 1) {
+      return res.status(400).json({ error: '`root` needs exactly one `pack` — a subtree belongs to one pack' })
     }
     where.push('(p.code = ? OR p.code LIKE ?)')
     args.push(root, `${root}.%`)
@@ -1153,30 +1255,55 @@ router.get('/processes', wrap(async (req, res) => {
   res.json({
     processes: db
       .prepare(
-        `${PROCESS_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY p.sort_key LIMIT ?`
+        // By pack first: each pack is its own hierarchy, and interleaving two
+        // of them by number alone reads as one tree with every level doubled.
+        `${PROCESS_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+         ORDER BY p.pack, p.sort_key LIMIT ?`
       )
       .all(...args, Number(req.query.limit) || 2000)
       .map(processRow),
   })
 }))
 
-/** `L2.1.1` and `2.1.1` are the same process; normalise before looking up. */
-const normaliseCode = (code) => String(code ?? '').trim().replace(/^[Ll]/, '')
-
+/**
+ * A process is `?pack=onboarding&code=2.1.1`. `code` alone is still answered
+ * when exactly one pack declares it — every link in the UI carries the pack,
+ * but people type these and paste them into tickets, and a code was the whole
+ * address for as long as there was one number line. Two packs declaring it is
+ * a 409 naming them rather than a silent pick, which is the bug this whole
+ * change is about.
+ */
 router.get('/process', wrap(async (req, res) => {
   const code = normaliseCode(one(req.query.code))
-  const row = db.prepare(`${PROCESS_SELECT} WHERE p.code = ?`).get(code)
+  const pack = one(req.query.pack) ? String(one(req.query.pack)) : null
+  const row = pack
+    ? db.prepare(`${PROCESS_SELECT} WHERE p.pack = ? AND p.code = ?`).get(pack, code)
+    : (() => {
+        const all = db.prepare(`${PROCESS_SELECT} WHERE p.code = ? ORDER BY p.pack`).all(code)
+        return all.length === 1 ? all[0] : all
+      })()
+  if (Array.isArray(row)) {
+    if (!row.length) return res.status(404).json({ error: 'No such process' })
+    return res.status(409).json({
+      error: `${row.length} packs declare L${code} — say which with \`pack\``,
+      packs: row.map((r) => ({ pack: r.pack, name: r.name })),
+    })
+  }
   if (!row) return res.status(404).json({ error: 'No such process' })
   const process = processRow(row)
 
   // Ancestors from the code itself — 2.1.1 → 2.1 → 2 — because the code is the
-  // hierarchy and there is no second parent pointer to disagree with it.
+  // hierarchy and there is no second parent pointer to disagree with it. Inside
+  // the pack, always: 2.1 in another pack is not this one's parent.
   const parts = code.split('.')
   const ancestorCodes = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('.'))
   const ancestors = ancestorCodes.length
     ? db
-        .prepare(`${PROCESS_SELECT} WHERE p.code IN (${ancestorCodes.map(() => '?').join(',')}) ORDER BY p.sort_key`)
-        .all(...ancestorCodes)
+        .prepare(
+          `${PROCESS_SELECT} WHERE p.pack = ? AND p.code IN (${ancestorCodes.map(() => '?').join(',')})
+           ORDER BY p.sort_key`
+        )
+        .all(row.pack, ...ancestorCodes)
         .map(processRow)
     : []
 
@@ -1184,7 +1311,10 @@ router.get('/process', wrap(async (req, res) => {
     db.prepare(`${PROCESS_SELECT} WHERE p.parent_id = ? ORDER BY p.sort_key`).all(row.id).map(processRow)
   )
   const descendants = withBranches(
-    db.prepare(`${PROCESS_SELECT} WHERE p.code LIKE ? ORDER BY p.sort_key`).all(`${code}.%`).map(processRow)
+    db
+      .prepare(`${PROCESS_SELECT} WHERE p.pack = ? AND p.code LIKE ? ORDER BY p.sort_key`)
+      .all(row.pack, `${code}.%`)
+      .map(processRow)
   )
 
   const ov = overrideMap('node')
@@ -1233,9 +1363,10 @@ router.get('/process', wrap(async (req, res) => {
       inside: db
         .prepare(
           `${HANDOFF_SELECT} WHERE l.via = 'interaction'
-             AND a.code LIKE ? AND b.code LIKE ? ORDER BY a.sort_key, b.sort_key`
+             AND a.pack = ? AND b.pack = ? AND a.code LIKE ? AND b.code LIKE ?
+           ORDER BY a.sort_key, b.sort_key`
         )
-        .all(`${code}.%`, `${code}.%`)
+        .all(row.pack, row.pack, `${code}.%`, `${code}.%`)
         .map(handoffRow),
     },
     teams: db
@@ -1264,8 +1395,8 @@ router.get('/process', wrap(async (req, res) => {
 /** A handoff with both ends resolved, so a table needs no second round trip. */
 const HANDOFF_SELECT = `
   SELECT l.*,
-         a.code AS from_code, a.name AS from_name,
-         b.code AS to_code,   b.name AS to_name,
+         a.pack AS from_pack, a.code AS from_code, a.name AS from_name,
+         b.pack AS to_pack,   b.code AS to_code,   b.name AS to_name,
          ta.name AS from_team_name, tb.name AS to_team_name
   FROM process_links l
   JOIN processes a ON a.id = l.from_id
@@ -1275,8 +1406,8 @@ const HANDOFF_SELECT = `
 
 const handoffRow = (r) => ({
   id: r.id,
-  from: { id: r.from_id, code: r.from_code, name: r.from_name, teamId: r.from_team_id, teamName: r.from_team_name },
-  to: { id: r.to_id, code: r.to_code, name: r.to_name, teamId: r.to_team_id, teamName: r.to_team_name },
+  from: { id: r.from_id, pack: r.from_pack, code: r.from_code, name: r.from_name, teamId: r.from_team_id, teamName: r.from_team_name },
+  to: { id: r.to_id, pack: r.to_pack, code: r.to_code, name: r.to_name, teamId: r.to_team_id, teamName: r.to_team_name },
   kind: r.kind,
   viaNode: r.via_node,
   via: r.via,
@@ -1557,8 +1688,18 @@ router.get('/handoffs', wrap(async (req, res) => {
   }
   if (req.query.code) {
     const code = normaliseCode(one(req.query.code))
-    where.push('(a.code = ? OR b.code = ?)')
-    args.push(code, code)
+    const pack = one(req.query.pack) ? String(one(req.query.pack)) : null
+    // Without a pack this matched every pack's 2.1 at once. With one it means
+    // what it says; without one it is still answered, because the caller may
+    // legitimately not know or care which pack — but it is the caller's choice
+    // rather than an accident of there being one number line.
+    if (pack) {
+      where.push('((a.pack = ? AND a.code = ?) OR (b.pack = ? AND b.code = ?))')
+      args.push(pack, code, pack, code)
+    } else {
+      where.push('(a.code = ? OR b.code = ?)')
+      args.push(code, code)
+    }
   }
   res.json({
     handoffs: db
@@ -1586,13 +1727,13 @@ router.get('/coverage', wrap(async (req, res) => {
   const byNode = new Map()
   for (const r of db
     .prepare(
-      `SELECT c.node_id, p.code, p.name, p.level, c.via
+      `SELECT c.node_id, p.pack, p.code, p.name, p.level, c.via
        FROM process_components c JOIN processes p ON p.id = c.process_id
-       ORDER BY p.sort_key`
+       ORDER BY p.pack, p.sort_key`
     )
     .all()) {
     if (!byNode.has(r.node_id)) byNode.set(r.node_id, [])
-    byNode.get(r.node_id).push({ code: r.code, name: r.name, level: r.level, via: r.via })
+    byNode.get(r.node_id).push({ pack: r.pack, code: r.code, name: r.name, level: r.level, via: r.via })
   }
 
   const ov = overrideMap('node')
@@ -1609,12 +1750,20 @@ router.get('/process-packs', wrap(async (req, res) => {
     packs: db
       .prepare(
         `SELECT p.id, p.pack, p.name, p.description, p.authored_at, p.ingested_at, p.prompt_version,
-                p.producer_kind, p.producer_detail, p.source, p.source_file, p.status, p.errors,
+                p.producer_kind, p.producer_detail, p.source, p.source_file, p.status, p.errors, p.raw,
                 (SELECT COUNT(*) FROM processes x WHERE x.pack_id = p.id) AS processes
          FROM process_packs p ORDER BY p.ingested_at DESC, p.id DESC LIMIT ?`
       )
       .all(Number(req.query.limit) || 100)
-      .map((r) => ({ ...r, errors: parse(r.errors, null), source: parse(r.source, null) })),
+      // `covers` off the body rather than out of a column of its own: only
+      // this listing and the link pass read it, and the link pass reads the
+      // body anyway. `raw` never leaves — it is the whole pack.
+      .map(({ raw, ...r }) => ({
+        ...r,
+        errors: parse(r.errors, null),
+        source: parse(r.source, null),
+        covers: parse(raw, null)?.covers ?? null,
+      })),
   })
 }))
 

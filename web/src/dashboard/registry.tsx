@@ -698,7 +698,8 @@ function ContractVersionsBody({ widget }: { widget: WidgetConfig }) {
  */
 const isProcess = (id: string | null | undefined) => !!id?.startsWith('proc:')
 
-const subjectHref = (id: string) => (isProcess(id) ? processHref(id.slice(5)) : nodeHref(id))
+const subjectHref = (id: string) =>
+  isProcess(id) ? processHref(id.split(':')[1], id.split(':')[2]) : nodeHref(id)
 
 const subjectLabel = (id: string) => (isProcess(id) ? displayCode(id.slice(5)) : idValue(id))
 
@@ -1000,9 +1001,19 @@ function UnresolvedBody({ widget }: { widget: WidgetConfig }) {
  * A process code from the widget, or the one in the filter row. Same rule as
  * every other widget: its own option wins when set.
  */
-function useProcessCode(widget: WidgetConfig) {
+/**
+ * The process a widget is pointed at, as `<pack>#<code>`. A bare code is still
+ * accepted — widgets configured before codes became per-pack hold one, and the
+ * API answers it while only one pack uses that number — so this normalises
+ * rather than rejecting, and `pack` comes back empty for the bare case.
+ */
+function useProcessRef(widget: WidgetConfig) {
   const { scope } = useScope()
-  return (widget.options.code || scope.process || '').trim().replace(/^[Ll]/, '')
+  const raw = (widget.options.code || scope.process || '').trim()
+  const hash = raw.indexOf('#')
+  const pack = hash === -1 ? '' : raw.slice(0, hash)
+  const code = raw.slice(hash + 1).replace(/^[Ll]/, '')
+  return { ref: code ? (pack ? `${pack}#${code}` : code) : '', pack, code }
 }
 
 const NO_PACKS = (
@@ -1063,8 +1074,8 @@ function NoSuchProcess({ code, error }: { code: string; error: string }) {
 }
 
 function ProcessChildrenBody({ widget }: { widget: WidgetConfig }) {
-  const code = useProcessCode(widget)
-  const { data, error } = useQuery<ProcessDetail>(code ? '/process' : null, { code })
+  const { ref, pack, code } = useProcessRef(widget)
+  const { data, error } = useQuery<ProcessDetail>(code ? '/process' : null, { code, pack })
 
   if (!code)
     return (
@@ -1095,14 +1106,14 @@ function ProcessChildrenBody({ widget }: { widget: WidgetConfig }) {
           key: 'code',
           label: 'Code',
           value: (p) => p.code,
-          render: (p) => <Link to={processHref(p.code)}>{displayCode(p.code)}</Link>,
+          render: (p) => <Link to={processHref(p.pack, p.code)}>{displayCode(p.code)}</Link>,
         },
         {
           key: 'name',
           label: 'What happens',
           wide: true,
           value: (p) => p.name,
-          render: (p) => <Link to={processHref(p.code)}>{p.name}</Link>,
+          render: (p) => <Link to={processHref(p.pack, p.code)}>{p.name}</Link>,
         },
         {
           key: 'node',
@@ -1141,8 +1152,8 @@ function ProcessChildrenBody({ widget }: { widget: WidgetConfig }) {
 }
 
 function ProcessFlowBody({ widget }: { widget: WidgetConfig }) {
-  const code = useProcessCode(widget)
-  const { data, error } = useQuery<ProcessDetail>(code ? '/process' : null, { code })
+  const { ref, pack, code } = useProcessRef(widget)
+  const { data, error } = useQuery<ProcessDetail>(code ? '/process' : null, { code, pack })
 
   if (!code)
     return (
@@ -1179,7 +1190,7 @@ function ProcessFlowBody({ widget }: { widget: WidgetConfig }) {
 }
 
 function ProcessMapBody({ widget }: { widget: WidgetConfig }) {
-  const code = useProcessCode(widget)
+  const { ref, code } = useProcessRef(widget)
   if (!code)
     return (
       <Empty title="Pick a process">
@@ -1192,13 +1203,13 @@ function ProcessMapBody({ widget }: { widget: WidgetConfig }) {
   // Keyed on the process too: this widget follows the filter row, and an
   // arrangement drawn for one process means nothing on another.
   return (
-    <MapCanvas height={bodyHeight(widget.h)} focus="" depth="all" process={code} storageKey={`w.${widget.i}.${code}`} />
+    <MapCanvas height={bodyHeight(widget.h)} focus="" depth="all" process={ref} storageKey={`w.${widget.i}.${ref}`} />
   )
 }
 
 function ProcessHandoffsBody({ widget }: { widget: WidgetConfig }) {
-  const code = useProcessCode(widget)
-  const { data, error } = useQuery<ProcessDetail>(code ? '/process' : null, { code })
+  const { ref, pack, code } = useProcessRef(widget)
+  const { data, error } = useQuery<ProcessDetail>(code ? '/process' : null, { code, pack })
   if (!code)
     return (
       <Empty title="Pick a process">
@@ -1361,7 +1372,7 @@ function ProcessCoverageBody({ widget }: { widget: WidgetConfig }) {
               return shown.length ? (
                 <span className="proc-chiplist">
                   {shown.slice(0, 4).map((p) => (
-                    <Link key={p.code} to={processHref(p.code)} title={p.name}>
+                    <Link key={p.code} to={processHref(p.pack, p.code)} title={p.name}>
                       {displayCode(p.code)}
                     </Link>
                   ))}
@@ -1400,14 +1411,14 @@ function ProcessListBody({ widget }: { widget: WidgetConfig }) {
           key: 'code',
           label: 'Code',
           value: (p) => p.code,
-          render: (p) => <Link to={processHref(p.code)}>{displayCode(p.code)}</Link>,
+          render: (p) => <Link to={processHref(p.pack, p.code)}>{displayCode(p.code)}</Link>,
         },
         {
           key: 'name',
           label: 'Action',
           wide: true,
           value: (p) => p.name,
-          render: (p) => <Link to={processHref(p.code)}>{p.name}</Link>,
+          render: (p) => <Link to={processHref(p.pack, p.code)}>{p.name}</Link>,
         },
         {
           key: 'node',

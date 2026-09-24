@@ -140,9 +140,17 @@ export function sequenceDiagram(
 
 type Arm = { to: string; label: string | null }
 
+/** `2.1.4` reads `L2.1.4`; `risk#1.2` reads `risk L1.2`, since it is not ours. */
+const danglingLabel = (ref: string) => {
+  const hash = ref.indexOf('#')
+  return hash === -1 ? displayCode(ref) : `${ref.slice(0, hash)} ${displayCode(ref.slice(hash + 1))}`
+}
+
 /** Where each step goes, fall-through included, resolved to node ids. */
 function successors(children: Process[]) {
-  const index = new Map(children.map((c, i) => [c.code, i]))
+  // Keyed by pack and code, not code alone: a branch may leave the pack, and
+  // `foo#2.1.2` is not this pack's 2.1.2 however alike they read.
+  const index = new Map(children.map((c, i) => [`${c.pack}#${c.code}`, i]))
   const ends = new Map<string, string>()
   const dangling = new Map<string, string>()
   const arms = new Map<string, Arm[]>()
@@ -151,9 +159,11 @@ function successors(children: Process[]) {
     if (!ends.has(label)) ends.set(label, `E${ends.size}`)
     return ends.get(label)!
   }
-  const danglingId = (code: string) => {
-    if (!dangling.has(code)) dangling.set(code, `X${dangling.size}`)
-    return dangling.get(code)!
+  // Labelled with the pack when it is somebody else's, because "L1.2 — not
+  // written" beside this pack's own numbering reads as a hole in this pack.
+  const danglingId = (label: string) => {
+    if (!dangling.has(label)) dangling.set(label, `X${dangling.size}`)
+    return dangling.get(label)!
   }
 
   children.forEach((child, i) => {
@@ -173,8 +183,11 @@ function successors(children: Process[]) {
         // leaves it — an error path out of the stage — is drawn as itself,
         // and so is one nobody has written: both are real, and hiding either
         // would make the flow look complete when it is not.
-        const at = b.to !== null ? index.get(b.to) : undefined
-        return { to: at === undefined ? danglingId(b.to ?? '?') : `S${at}`, label }
+        const toPack = b.toPack ?? child.pack
+        const at = b.to !== null ? index.get(`${toPack}#${b.to}`) : undefined
+        if (at !== undefined) return { to: `S${at}`, label }
+        const shown = b.to === null ? '?' : toPack === child.pack ? b.to : `${toPack}#${b.to}`
+        return { to: danglingId(shown), label }
       })
     )
   })
@@ -191,8 +204,8 @@ export function flowDiagram(process: Process, children: Process[]): string {
   lines.push(`  start(["${short(process.trigger ?? 'Start')}"])`)
   children.forEach((c, i) => lines.push(`  S${i}["${stepLabel(c)}"]`))
   for (const [label, id] of ends) lines.push(`  ${id}(["${label}"])`)
-  for (const [code, id] of dangling) {
-    lines.push(`  ${id}["${displayCode(code)} — not written"]`)
+  for (const [ref, id] of dangling) {
+    lines.push(`  ${id}["${danglingLabel(ref)} — not written"]`)
   }
   // Only when something arrives there. Where every arm ends in an outcome the
   // author wrote, a `done` node is an unreachable box floating beside the
@@ -289,7 +302,7 @@ export function laneDiagram(
     lines.push('  end')
   }
   for (const [label, id] of ends) lines.push(`  ${id}(["${label}"])`)
-  for (const [code, id] of dangling) lines.push(`  ${id}["${displayCode(code)} — not written"]`)
+  for (const [ref, id] of dangling) lines.push(`  ${id}["${danglingLabel(ref)} — not written"]`)
   if (reachesDone) lines.push(`  done(["${short(process.outcome ?? 'Done')}"])`)
 
   lines.push(`  start --> S0`)
@@ -389,15 +402,18 @@ export function handoffDiagram(
      row carries. */
   const lane = new Map<string, { name: string; codes: Map<string, string> }>()
   const ids = new Map<string, string>()
+  // Keyed by the process, not by its number: a handoff diagram is the one
+  // place several packs meet, and two of them numbering something 1.1 would
+  // otherwise share a box and lose an end of the crossing.
   const place = (end: Handoff['from']) => {
-    if (ids.has(end.code)) return ids.get(end.code)!
-    const own = end.code === process.code
+    if (ids.has(end.id)) return ids.get(end.id)!
+    const own = end.id === process.id
     const teamId = (own ? process.teamId : end.teamId) ?? '·none'
     const teamName = (own ? process.teamName : end.teamName) ?? 'No team'
     if (!lane.has(teamId)) lane.set(teamId, { name: teamName, codes: new Map() })
     const id = `H${ids.size}`
-    ids.set(end.code, id)
-    lane.get(teamId)!.codes.set(end.code, text(`${displayCode(end.code)} ${end.name}`))
+    ids.set(end.id, id)
+    lane.get(teamId)!.codes.set(end.id, text(`${displayCode(end.code)} ${end.name}`))
     return id
   }
 

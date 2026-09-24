@@ -1,9 +1,19 @@
 {
   "schemaVersion": 1,
-  "promptVersion": "2026-09-21a",
+  "promptVersion": "2026-09-24a",
   "pack": "onboarding",
   "name": "Onboarding and funding",
   "description": "How a customer opens an account, is verified, and gets money onto the platform — the account record, the wallets, the session, the KYC decision and card funding. It stops where trading starts: pricing an order, placing it and settling it belong to order-and-execution. It does not cover withdrawals, refunds, chargebacks or any other reversal of a settled payment, closing an account, or how the verification provider reaches its decision, which happens outside the platform entirely.",
+  "covers": {
+    "team": "identity",
+    "services": [
+      "svc:identity-service",
+      "svc:gateway-api",
+      "svc:wallet-service",
+      "svc:payments-service",
+      "svc:ledger-service"
+    ]
+  },
   "authoredAt": "2026-09-17T15:30:00Z",
   "producer": {
     "kind": "import",
@@ -118,7 +128,7 @@
         },
         {
           "when": "they do not",
-          "process": "L4.2"
+          "process": "risk#1.2"
         }
       ]
     },
@@ -154,7 +164,7 @@
       },
       "handsOffTo": [
         {
-          "process": "L4.1",
+          "process": "risk#1.1",
           "note": "Risk starts monitoring the account once it can trade."
         }
       ]
@@ -192,7 +202,7 @@
       },
       "handsOffTo": [
         {
-          "process": "L2.4.2",
+          "process": "order-and-execution#2.4.2",
           "note": "Payments asks notification-service to confirm the deposit."
         }
       ]

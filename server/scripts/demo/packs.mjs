@@ -23,7 +23,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ROOT } from '../../src/config.js'
 
-const PROMPT_VERSION = '2026-09-21a'
+const PROMPT_VERSION = '2026-09-24a'
 
 /** `svc:x http.call api:y` written the short way, since every one has a from. */
 const on = (from, kind, to) => ({ from, kind, to })
@@ -35,6 +35,25 @@ export const SKELETONS = [
     pack: 'onboarding',
     name: 'Onboarding and funding',
     owner: 'identity',
+    /* What the pack is about. A domain pack, so its boundary is a domain
+        rather than a team: onboarding a customer runs through identity, the
+        gateway, wallet, payments and the ledger, and no one team owns the
+        journey. `team` is who owns the DOCUMENT; `services` is where the work
+        it documents happens.
+
+        These are the services whose work this pack claims — the `node` on its
+        processes. Not the topics and stores it reaches, which are derived, and
+        not the services it merely hands off to. */
+    covers: {
+      team: 'identity',
+      services: [
+        'svc:identity-service',
+        'svc:gateway-api',
+        'svc:wallet-service',
+        'svc:payments-service',
+        'svc:ledger-service',
+      ],
+    },
     authoredAt: '2026-09-17T15:30:00Z',
     source: {
       kind: 'confluence',
@@ -90,9 +109,13 @@ export const SKELETONS = [
         // L1.2.3 hands off to. This is the one `process-flow-unknown-target` —
         // and the case that matters, because a branch to a code that does not
         // exist fails silently: the flow just stops drawing that arm.
+        //
+        // Qualified with the pack it belongs to, because a bare code means
+        // this pack. `risk` has never been authored; when it is, its author
+        // numbers from 1 like everybody else and these resolve.
         next: [
           { when: 'the documents pass', process: 'L1.2.2' },
-          { when: 'they do not', process: 'L4.2' },
+          { when: 'they do not', process: 'risk#1.2' },
         ],
       },
       {
@@ -110,11 +133,11 @@ export const SKELETONS = [
         owner: 'wallet',
         node: 'svc:wallet-service',
         interaction: on('svc:wallet-service', 'kafka.consume', 'topic:kyc.approved.v1'),
-        // Deliberate: L4.1 is the risk team's monitoring process and no pack
+        // Deliberate: risk L1.1 is that team's monitoring process and no pack
         // declares it, so this is the one `process-link-unknown-target`. The
         // common real case — the team at the other end is not on the map yet.
         handsOffTo: [
-          { process: 'L4.1', note: 'Risk starts monitoring the account once it can trade.' },
+          { process: 'risk#1.1', note: 'Risk starts monitoring the account once it can trade.' },
         ],
       },
       { code: '1.3', name: 'Funding the account', owner: 'payments' },
@@ -136,7 +159,10 @@ export const SKELETONS = [
         // component at all, so this is the one `process-link-unsupported` — a
         // handoff that was real and was replaced, with the document left behind.
         handsOffTo: [
-          { process: 'L2.4.2', note: 'Payments asks notification-service to confirm the deposit.' },
+          {
+            process: 'order-and-execution#2.4.2',
+            note: 'Payments asks notification-service to confirm the deposit.',
+          },
         ],
       },
       {
@@ -164,6 +190,9 @@ export const SKELETONS = [
     pack: 'reporting',
     name: 'Reporting',
     owner: 'data',
+    // Narrow, because reporting really is one team's own pipeline — except for
+    // the retrieval path, which a customer reaches through the gateway.
+    covers: { team: 'data', services: ['svc:reporting-service', 'svc:gateway-api'] },
     authoredAt: '2026-09-16T09:45:00Z',
     source: {
       kind: 'confluence',
@@ -373,6 +402,7 @@ export function buildPacks() {
     pack: s.pack,
     name: s.name,
     description: PROSE[s.pack]?.description,
+    covers: s.covers,
     authoredAt: s.authoredAt,
     // Honest about provenance, as the demo manifests are: these come out of
     // the generator in this repository, not out of anybody's Confluence.

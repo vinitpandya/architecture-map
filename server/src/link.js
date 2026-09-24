@@ -1,5 +1,5 @@
 import { db } from './db.js'
-import { linkId, sha1 } from './ids.js'
+import { codeOf, linkId, normaliseCode, packOf, processId, refOf, resolveRef, sha1 } from './ids.js'
 import { aliasMap, canonicalTeam, rebuildTeams, registryConfigured } from './teams.js'
 
 /**
@@ -220,7 +220,7 @@ function resolveTeams() {
      does not fire for a leaf, so nothing would ever say why. */
   db.prepare(`UPDATE processes SET team_id = NULL, team_via = NULL`).run()
   const setProc = db.prepare('UPDATE processes SET team_id = ?, team_via = ? WHERE id = ?')
-  const procs = db.prepare('SELECT id, code, owner FROM processes ORDER BY sort_key').all()
+  const procs = db.prepare('SELECT id, pack, code, owner FROM processes ORDER BY sort_key').all()
   const own = new Map(procs.map((p) => [p.id, canonicalTeam(p.owner, aliases) || null]))
   for (const p of procs) {
     if (own.get(p.id)) {
@@ -228,7 +228,7 @@ function resolveTeams() {
       continue
     }
     // Nearest first, so a level 3 prefers its stage over its level 1.
-    for (const a of ancestorsOf(p.code).reverse()) {
+    for (const a of ancestorsOf(p.pack, p.code).reverse()) {
       if (own.get(a)) {
         setProc.run(own.get(a), 'inherited', p.id)
         break
@@ -290,22 +290,23 @@ function fromActivePacks() {
       continue
     }
     for (const p of parsed.processes ?? []) {
-      const code = String(p.code ?? '').trim().replace(/^[Ll]/, '')
-      const id = `proc:${code}`
+      const code = normaliseCode(p.code)
+      const id = processId(row.pack, code)
       // Counted rather than set-collected: a pack that declares one code twice
-      // silently loses a process, and that is the same error as two packs
-      // colliding — the row can only hold the last writer either way.
-      if (!owners.has(code)) owners.set(code, new Map())
-      const claims = owners.get(code)
-      claims.set(row.pack, (claims.get(row.pack) ?? 0) + 1)
+      // silently loses a process. Two packs doing so is no longer an error at
+      // all — the code is theirs to number — so this is keyed by the pair.
+      const key = `${row.pack}|${code}`
+      if (!owners.has(key)) owners.set(key, { pack: row.pack, code, times: 0 })
+      owners.get(key).times += 1
       // Declared handoffs, read back off the raw body for the same reason
       // `touches` is: only the link pass consumes them, and a column nothing
       // else would ever read is not worth the schema.
       for (const h of p.handsOffTo ?? []) {
-        const to = String(h?.process ?? '').trim().replace(/^[Ll]/, '')
+        // A bare code is this pack's; `<pack>#<code>` is somebody else's.
+        const to = resolveRef(h?.process, row.pack)
         if (!to) continue
         if (!declared.has(id)) declared.set(id, new Map())
-        declared.get(id).set(`proc:${to}`, h?.note ?? null)
+        declared.get(id).set(to, h?.note ?? null)
       }
 
       // Where the flow goes next, for the same reason and off the same body.
@@ -317,7 +318,7 @@ function fromActivePacks() {
           id,
           p.next.map((b) => ({
             when: typeof b?.when === 'string' && b.when.trim() ? b.when.trim() : null,
-            to: b?.process ? `proc:${String(b.process).trim().replace(/^[Ll]/, '')}` : null,
+            to: b?.process ? resolveRef(b.process, row.pack) : null,
             end: typeof b?.end === 'string' && b.end.trim() ? b.end.trim() : null,
           })).filter((b) => b.to || b.end)
         )
@@ -466,10 +467,17 @@ function rebuildProcessRollup() {
 /** kafka beats component beats none, when two links roll into one. */
 const SUPPORT_RANK = { kafka: 0, component: 1, none: 2 }
 
-/** Every strict ancestor of a code, deepest last: 2.3.1 → [proc:2, proc:2.3]. */
-function ancestorsOf(code) {
+/**
+ * Every strict ancestor, deepest last: (onboarding, 2.3.1) →
+ * [proc:onboarding:2, proc:onboarding:2.3].
+ *
+ * Within the pack, always: a hierarchy is a pack's own, and 2.3 in one pack is
+ * no relation at all to 2.3 in another. Taking the pack from the row rather
+ * than the code is the whole of the fix here.
+ */
+function ancestorsOf(pack, code) {
   const parts = String(code).split('.')
-  return parts.slice(0, -1).map((_, i) => `proc:${parts.slice(0, i + 1).join('.')}`)
+  return parts.slice(0, -1).map((_, i) => processId(pack, parts.slice(0, i + 1).join('.')))
 }
 
 function rebuildProcessLinks(now) {
@@ -597,8 +605,8 @@ function rebuildProcessLinks(now) {
   const rollUp = () => {
     for (const r of [...rows.values()]) {
       if (r.via === 'rollup') continue
-      const froms = [r.from_id, ...ancestorsOf(byId.get(r.from_id).code)]
-      const tos = [r.to_id, ...ancestorsOf(byId.get(r.to_id).code)]
+      const froms = [r.from_id, ...ancestorsOf(byId.get(r.from_id).pack, byId.get(r.from_id).code)]
+      const tos = [r.to_id, ...ancestorsOf(byId.get(r.to_id).pack, byId.get(r.to_id).code)]
       for (const f of froms) {
         for (const t of tos) {
           if (f === r.from_id && t === r.to_id) continue
@@ -1119,12 +1127,14 @@ function rebuildDrift(now) {
                                    about who hands off to whom */
 
 function handoffFindings(write) {
-  const procs = db.prepare('SELECT id, code, name, team_id FROM processes').all()
+  const procs = db.prepare('SELECT id, pack, code, name, team_id FROM processes').all()
   if (!procs.length) return
   const byId = new Map(procs.map((p) => [p.id, p]))
   const teams = new Map(db.prepare('SELECT id, name FROM teams').all().map((t) => [t.id, t.name]))
   const teamName = (id) => teams.get(id) ?? id ?? 'nobody'
-  const label = (p) => `L${p.code} ${p.name}`
+  // With the pack, always: two packs both have an L1, and naming one without
+  // saying whose is an instruction to go and look through all of them.
+  const label = (p) => `${refOf(p.pack, p.code)} ${p.name}`
 
   /* a declaration naming a process nobody has written.
 
@@ -1142,9 +1152,9 @@ function handoffFindings(write) {
         'process-link-unknown-target',
         from,
         'warn',
-        `${label(a)} says it hands off to ${to.replace(/^proc:/, 'L')}, and no pack declares that ` +
-          `process. Either the team at the other end has not written theirs yet, or the code has changed.`,
-        { code: a.code, name: a.name, target: to.replace(/^proc:/, ''), note: note ?? null }
+        `${label(a)} says it hands off to ${refOf(packOf(to), codeOf(to))}, and no pack declares ` +
+          `that process. Either the team at the other end has not written theirs yet, or the code has changed.`,
+        { code: a.code, pack: a.pack, name: a.name, target: codeOf(to), targetPack: packOf(to), note: note ?? null }
       )
     }
   }
@@ -1165,10 +1175,13 @@ function handoffFindings(write) {
       'process-flow-unknown-target',
       r.from_id,
       'warn',
-      `${label(a)} continues to ${r.to_id.replace(/^proc:/, 'L')}${
+      `${label(a)} continues to ${refOf(packOf(r.to_id), codeOf(r.to_id))}${
         r.condition ? ` when ${r.condition}` : ''
       }, and no pack declares that process. The branch is drawn as a dead end until one does.`,
-      { code: a.code, name: a.name, target: r.to_id.replace(/^proc:/, ''), condition: r.condition }
+      {
+        code: a.code, pack: a.pack, name: a.name,
+        target: codeOf(r.to_id), targetPack: packOf(r.to_id), condition: r.condition,
+      }
     )
   }
 
@@ -1324,7 +1337,7 @@ function teamFindings(write, { nodes }) {
      level 1 or 2 — the levels a director reads — it should be said out loud. */
   for (const p of db
     .prepare(
-      `SELECT id, code, name, level FROM processes
+      `SELECT id, pack, code, name, level FROM processes
        WHERE level <= 2 AND (team_via IS NULL OR team_via = 'inherited') ORDER BY sort_key`
     )
     .all()) {
@@ -1332,9 +1345,9 @@ function teamFindings(write, { nodes }) {
       'process-no-owner',
       p.id,
       'info',
-      `L${p.code} ${p.name} names no owner. At level ${p.level} that is the question the map exists ` +
-        `to answer — somebody is accountable for it, and the document does not say who.`,
-      { code: p.code, name: p.name, level: p.level }
+      `${refOf(p.pack, p.code)} ${p.name} names no owner. At level ${p.level} that is the question ` +
+        `the map exists to answer — somebody is accountable for it, and the document does not say who.`,
+      { code: p.code, pack: p.pack, name: p.name, level: p.level }
     )
   }
 }
@@ -1356,7 +1369,7 @@ function processFindings(write, { nodes, nameOf, label }) {
   const known = new Set(nodes.map((n) => n.id))
   const byId = new Map(procs.map((p) => [p.id, p]))
   const hasChildren = new Set(procs.map((p) => p.parent_id).filter(Boolean))
-  const named = (p) => `L${p.code} · ${p.name}`
+  const named = (p) => `${refOf(p.pack, p.code)} · ${p.name}`
 
   for (const p of procs) {
     /* a component the document names and the map has never seen */
@@ -1412,8 +1425,10 @@ function processFindings(write, { nodes, nameOf, label }) {
         'process-orphan-code',
         p.id,
         'warn',
-        `${named(p)} is a level ${p.level}, so its parent is ${p.parent_id.slice(5)} — and no pack declares that code.`,
-        { code: p.code, name: p.name, parentCode: p.parent_id.slice(5) }
+        `${named(p)} is a level ${p.level}, so its parent is ${refOf(p.pack, codeOf(p.parent_id))} — ` +
+          `and ${p.pack} does not declare it. A hierarchy belongs to its own pack, so the parent has ` +
+          `to be in this one.`,
+        { code: p.code, pack: p.pack, name: p.name, parentCode: codeOf(p.parent_id) }
       )
     }
 
@@ -1430,21 +1445,72 @@ function processFindings(write, { nodes, nameOf, label }) {
     }
   }
 
-  /* one number, two claims. The processes row can only hold the last writer,
-     so this is read off the packs themselves — including a pack that declares
-     the same code twice, which loses a process just as quietly. */
-  for (const [code, claimed] of owners) {
-    const total = [...claimed.values()].reduce((a, b) => a + b, 0)
-    if (total < 2) continue
-    const packs = [...claimed.keys()].sort()
+  /* a pack saying the work happens at somebody else's service.
+
+     Only `node` — the component a process happens AT. `interaction` and
+     `touches` reach outside the boundary constantly and are supposed to: a
+     publish another team consumes, a call into their endpoint. Firing on those
+     would report every crossing in the estate and bury the one case worth a
+     line, which is a pack claiming somebody else's service does its work.
+
+     Either the boundary is wrong or the process belongs in another pack, and
+     a person decides which — so info, and never a refusal. */
+  const boundaries = new Map()
+  for (const m of db.prepare(`SELECT pack, raw FROM process_packs WHERE status = 'active'`).all()) {
+    let parsed = null
+    try {
+      parsed = JSON.parse(m.raw)
+    } catch {
+      continue
+    }
+    const c = parsed?.covers
+    if (!c || (!c.team && !Array.isArray(c.services))) continue
+    boundaries.set(m.pack, {
+      team: typeof c.team === 'string' ? c.team : null,
+      services: new Set(Array.isArray(c.services) ? c.services : []),
+    })
+  }
+  if (boundaries.size) {
+    const teamOfNode = new Map(nodes.map((x) => [x.id, x.team_id]))
+    for (const p of db.prepare('SELECT * FROM processes WHERE node_id IS NOT NULL').all()) {
+      const b = boundaries.get(p.pack)
+      if (!b) continue
+      // Unknown to the topology is `process-missing-component`'s business, not
+      // this one; reporting it twice says nothing new.
+      if (!teamOfNode.has(p.node_id)) continue
+      if (b.services.has(p.node_id)) continue
+      if (b.team && teamOfNode.get(p.node_id) === b.team) continue
+      write(
+        'process-outside-covers',
+        p.id,
+        'info',
+        `${refOf(p.pack, p.code)} ${p.name} says the work happens at ${label(p.node_id)}, which is ` +
+          `outside what ${p.pack} covers. Either the boundary is out of date, or this process ` +
+          `belongs in the pack of whoever runs it.`,
+        {
+          code: p.code, pack: p.pack, name: p.name, node: p.node_id,
+          covers: { team: b.team, services: [...b.services] },
+          runBy: teamOfNode.get(p.node_id) ?? null,
+        }
+      )
+    }
+  }
+
+  /* one number claimed twice inside one pack.
+
+     Two packs both declaring L1 is no longer anything: a code is a number line
+     and a number line belongs to whoever is numbering. Within a pack it is
+     still a lost process — the row can only hold the last writer — and it is
+     read off the pack body rather than the table for exactly that reason. */
+  for (const { pack, code, times } of owners.values()) {
+    if (times < 2) continue
     write(
       'process-duplicate-code',
-      `proc:${code}`,
+      processId(pack, code),
       'warn',
-      packs.length > 1
-        ? `${andList(packs)} both declare L${code}. Codes are cited in tickets, so one pack has to renumber — a human decides which, and until then only one of the two is in the map.`
-        : `${packs[0]} declares L${code} ${total} times. Only the last one is in the map; the others were quietly overwritten.`,
-      { code, packs, claims: [...claimed].map(([pack, times]) => ({ pack, times })) }
+      `${pack} declares L${code} ${times} times. Only the last one is in the map; the others were ` +
+        `quietly overwritten. Two processes cannot share a number inside one pack — renumber one.`,
+      { code, pack, times }
     )
   }
 

@@ -79,9 +79,11 @@ export function ScopeBar() {
   // Indented by level, because the tree is the point: picking a level 1 gives
   // the whole of it, picking a level 2 narrows to that stage.
   const processOptions: Option[] = processes.map((p) => ({
-    value: p.code,
+    // `<pack>#<code>`: a code alone no longer names one process, and two packs
+    // numbering from 1 would otherwise put two identical rows in this list.
+    value: `${p.pack}#${p.code}`,
     label: `${'\u2003'.repeat(p.level - 1)}${displayCode(p.code)} ${p.name}`,
-    sub: p.owner ?? undefined,
+    sub: p.level === 1 ? p.pack : (p.owner ?? undefined),
     count: p.componentCount,
   }))
 

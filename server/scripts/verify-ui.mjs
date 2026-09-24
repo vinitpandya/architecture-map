@@ -126,6 +126,15 @@ for (let i = 0; i < 100; i++) {
 
 const api = async (p) => (await fetch(`${BASE}/api${p}`)).json()
 
+/**
+ * Which demo pack numbered a code. The demo estate's three packs took an L1
+ * each back when there was one estate-wide number line, and they keep it —
+ * but a code no longer addresses a process on its own, so every URL here has
+ * to say which pack it means.
+ */
+const DEMO_PACK = { 1: 'onboarding', 2: 'order-and-execution', 3: 'reporting' }
+const packOf = (code) => DEMO_PACK[String(code).split('.')[0]]
+
 /* ───────────────────────────────────────────────────────────────── checking */
 
 const executablePath = findChromium() ?? undefined
@@ -234,11 +243,32 @@ const nodePositions = (page) =>
     Object.fromEntries(els.map((e) => [e.getAttribute('data-id'), e.style.transform]))
   )
 
-/** The map opens collapsed to services; most of these checks are about the
- *  scanned topology, which is the other detail level. */
+/**
+ * The map opens collapsed to services; most of these checks are about the
+ * scanned topology, which is the other detail level.
+ *
+ * Waits for the drawing to settle rather than for a fixed time. Switching
+ * detail re-runs the layout in a worker and React Flow mounts the nodes before
+ * the edges, so a flat timeout is a race — and one that resolves differently
+ * on a loaded machine, where it reports a map with no lines on it and every
+ * check about where a line attaches fails at once. Two identical counts a
+ * beat apart, with edges present, is the thing those checks actually need.
+ */
 const showEverything = async (page) => {
   await page.click('.map-detail button:has-text("Everything")')
-  await page.waitForTimeout(1600)
+  const count = () =>
+    page.evaluate(() => ({
+      nodes: document.querySelectorAll('.react-flow__node').length,
+      edges: document.querySelectorAll('.react-flow__edge').length,
+    }))
+  let last = { nodes: -1, edges: -1 }
+  for (let i = 0; i < 60; i++) {
+    await page.waitForTimeout(250)
+    const now = await count()
+    if (now.edges > 0 && now.nodes === last.nodes && now.edges === last.edges) return
+    last = now
+  }
+  throw new Error(`the map never settled at full detail: ${JSON.stringify(last)}`)
 }
 
 const kindsOnScreen = (page) =>
@@ -765,7 +795,7 @@ await setScope('map', null)
 
 console.log('\nSPEC-PROCESSES.md §10 Phase 11 — processes in the browser')
 {
-  const detail = await api('/process?code=2.1')
+  const detail = await api('/process?pack=order-and-execution&code=2.1')
   await setScope('map', {
     focus: '',
     depth: '1',
@@ -789,7 +819,7 @@ console.log('\nSPEC-PROCESSES.md §10 Phase 11 — processes in the browser')
 }
 
 for (const theme of ['light', 'dark']) {
-  const { ctx, page, problems } = await open('/process?code=2.1', theme)
+  const { ctx, page, problems } = await open('/process?pack=order-and-execution&code=2.1', theme)
   await page.waitForSelector('.proc-flow', { timeout: 15000 })
   is(`${theme}: the list shows four actions in order`, (await page.$$('.proc-step')).length, 4)
   const codes = await page.$$eval('.proc-step .proc-code', (els) => els.map((e) => e.textContent))
@@ -812,8 +842,8 @@ for (const theme of ['light', 'dark']) {
 console.log('\nDark mode and layout, every new screen')
 for (const [name, url, selector] of [
   ['processes tree', '/processes', '.proc-tree'],
-  ['process detail', '/process?code=2', '.proc-flow'],
-  ['process leaf', '/process?code=3.2.3', '.proc-binding'],
+  ['process detail', '/process?pack=order-and-execution&code=2', '.proc-flow'],
+  ['process leaf', '/process?pack=reporting&code=3.2.3', '.proc-binding'],
   ['node with processes', `/node?id=${encodeURIComponent('topic:orders.matched.v1')}`, '.card'],
   ['process map page', `/d/${pageId('processes')}`, '.proc-tree'],
   ['health', `/d/${pageId('health')}`, '[data-grid-id]'],
@@ -835,7 +865,7 @@ for (const [name, url, selector] of [
 
 /* ---- an unresolved reference is visible, never hidden */
 {
-  const { ctx, page } = await open('/process?code=3.1.1')
+  const { ctx, page } = await open('/process?pack=reporting&code=3.1.1')
   await page.waitForSelector('.proc-binding', { timeout: 15000 })
   const missing = await page.$$eval('.proc-missing', (els) => els.map((e) => e.textContent))
   ok(
@@ -851,7 +881,7 @@ for (const [name, url, selector] of [
    real and one click away; it is the relationship the code does not have, and
    striking both of them through would be plainly false. */
 {
-  const { ctx, page } = await open('/process?code=3.2.3')
+  const { ctx, page } = await open('/process?pack=reporting&code=3.2.3')
   await page.waitForSelector('.proc-binding', { timeout: 15000 })
   const marked = await page.$$eval('.proc-binding .proc-missing', (els) => els.map((e) => e.textContent))
   ok(
@@ -894,7 +924,7 @@ const openDiagram = async (page, kind) => {
 }
 
 {
-  const { ctx, page, problems } = await open('/process?code=2')
+  const { ctx, page, problems } = await open('/process?pack=order-and-execution&code=2')
   await openDiagram(page)
   const offered = await page.$$eval('select[aria-label="Diagram"] option', (els) => els.map((e) => e.value))
   is('a level 1 offers every diagram', offered.join(','), 'sequence,flow,lanes,handoffs,tree')
@@ -943,7 +973,7 @@ const openDiagram = async (page, kind) => {
    the reader that the diagrams are unreliable. L2.1 is four steps, one team,
    one service, no handoffs and nothing below it. */
 {
-  const { ctx, page } = await open('/process?code=2.1')
+  const { ctx, page } = await open('/process?pack=order-and-execution&code=2.1')
   await openDiagram(page)
   const offered = await page.$$eval('select[aria-label="Diagram"] option', (els) => els.map((e) => e.value))
   is('a stage with one team and no handoffs offers only what it can draw', offered.join(','), 'sequence,flow')
@@ -954,7 +984,7 @@ const openDiagram = async (page, kind) => {
    are terminals, and a branch to a code nobody wrote is a dead end that says
    so rather than an arm that quietly is not drawn. */
 {
-  const { ctx, page } = await open('/process?code=2.1')
+  const { ctx, page } = await open('/process?pack=order-and-execution&code=2.1')
   await openDiagram(page, 'flow')
   const flow = await diagramText(page)
   ok('a decision draws both conditions on its arrows',
@@ -966,11 +996,13 @@ const openDiagram = async (page, kind) => {
 }
 
 {
-  const { ctx, page } = await open('/process?code=1.2')
+  const { ctx, page } = await open('/process?pack=onboarding&code=1.2')
   await openDiagram(page, 'flow')
   const flow = await diagramText(page)
   ok('a branch to a code nobody wrote is drawn as a dead end', flow.includes('not written'), flow.slice(0, 200))
-  ok('  …naming the code it was pointed at', flow.includes('L4.2'))
+  // With the pack, because it is another pack's process: `L1.2 — not written`
+  // beside onboarding's own numbering would read as a hole in onboarding.
+  ok('  …naming the pack and code it was pointed at', flow.includes('risk L1.2'), flow.slice(0, 300))
   await ctx.close()
 }
 
@@ -978,7 +1010,7 @@ const openDiagram = async (page, kind) => {
    L2 draws four boxes". A level 1's stages carry no interaction of their own,
    and the diagram used to be withheld for exactly the case the spec names. */
 for (const [code, expected] of [['2', 4], ['2.1', 4]]) {
-  const { ctx, page, problems } = await open(`/process?code=${code}`)
+  const { ctx, page, problems } = await open(`/process?pack=${packOf(code)}&code=${code}`)
   await page.waitForSelector('.proc-flow', { timeout: 15000 })
   const toggle = await page.$$(`button:has-text("Diagram")`)
   ok(`process ${code} offers the diagram`, toggle.length === 1, `${toggle.length} toggles`)
@@ -1122,7 +1154,7 @@ for (const [code, expected] of [['2', 4], ['2.1', 4]]) {
 
 /* ---- and the same on a process page, which printed the slug too */
 {
-  const { ctx, page } = await open('/process?code=3.2.3')
+  const { ctx, page } = await open('/process?pack=reporting&code=3.2.3')
   await page.waitForSelector('.proc-binding', { timeout: 15000 })
   const text = await page.evaluate(() => document.body.innerText)
   is('a process page names its finding rather than its slug', text.includes('process-missing-interaction'), false)
@@ -1163,12 +1195,12 @@ for (const [code, expected] of [['2', 4], ['2.1', 4]]) {
    rendered it. It must show exactly what /api/process counts, at every level,
    and must NOT inherit whatever the map page's filter row was last set to. */
 for (const code of ['1', '2.1', '2.3.5']) {
-  const { ctx, page, problems } = await open(`/process?code=${code}`)
+  const { ctx, page, problems } = await open(`/process?pack=${packOf(code)}&code=${code}`)
   await page.waitForSelector('.proc-binding, .proc-flow, .card', { timeout: 20000 })
   await page.waitForSelector('.map-node', { timeout: 30000 })
   await page.waitForTimeout(1500)
   const drawn = await page.$$eval(MAP_NODE, (els) => els.length)
-  const expected = (await api(`/process?code=${code}`)).components.length
+  const expected = (await api(`/process?pack=${packOf(code)}&code=${code}`)).components.length
   is(`process ${code}: the map draws every component`, drawn, expected)
   ok(`  …with no console error`, problems.length === 0, problems.join(' | '))
   await ctx.close()
@@ -1177,7 +1209,7 @@ for (const code of ['1', '2.1', '2.3.5']) {
 /* ---- colour by team, which has to be a mode rather than a second encoding:
    node kind already owns six of theme.css's eight categorical slots. */
 {
-  const { ctx, page } = await open('/process?code=2')
+  const { ctx, page } = await open('/process?pack=order-and-execution&code=2')
   await page.waitForSelector('.map-node', { timeout: 30000 })
   await page.waitForTimeout(1200)
   const colourOf = () =>
@@ -1476,6 +1508,41 @@ for (const code of ['1', '2.1', '2.3.5']) {
     0
   )
   ok('no console errors on the ingest log', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+/* ---- the tree is a forest now, one root per pack, and each root says whose.
+
+   With codes per pack, two packs both have an L1 — so a tree that showed the
+   number alone would put two identical-looking rows at the top of a page whose
+   whole job is to say what the business does. */
+{
+  const { ctx, page, problems } = await open('/processes')
+  await page.waitForSelector('.proc-tree .proc-row', { timeout: 20000 })
+  await page.waitForTimeout(500)
+  const packs = await page.$$eval('.proc-pack', (els) => els.map((e) => e.textContent.trim()))
+  is('every top-level process says which pack numbered it', packs.length, 3)
+  is(
+    '  …naming all three demo packs',
+    [...packs].sort().join(','),
+    'onboarding,order-and-execution,reporting'
+  )
+  const packCount = await page.$$eval('.proc-pack', (els) => els.length)
+  const rowCount = await page.$$eval('.proc-tree .proc-row', (els) => els.length)
+  ok('  …and only at the top, not on every row', packCount < rowCount, `${packCount} of ${rowCount}`)
+
+  // The link carries the pack too, or the page it opens is a guess.
+  const href = await page.$eval('.proc-tree a.proc-code', (e) => e.getAttribute('href'))
+  ok('a process link carries its pack as well as its code', /pack=[^&]+&code=/.test(href), href)
+
+  await page.click('.proc-tree a.proc-code')
+  await page.waitForSelector('h1', { timeout: 15000 })
+  ok(
+    '  …and lands on that process',
+    (await page.$eval('h1', (e) => e.textContent)).includes('L1'),
+    await page.$eval('h1', (e) => e.textContent)
+  )
+  ok('no console errors on the process tree', problems.length === 0, problems.join(' | '))
   await ctx.close()
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type ManifestRow, type ProcessPack } from '../lib/api'
+import { idValue } from '../lib/nodes'
 import { useScope } from '../lib/scope'
 import { Banner, Card, Empty } from '../components/ui'
 
@@ -124,6 +125,14 @@ export function ManifestsPage() {
                   {p.source_file ? ` · ${p.source_file}` : ''}
                   {p.prompt_version ? ` · prompt ${p.prompt_version}` : ''}
                 </div>
+                {p.covers && (p.covers.team || p.covers.services?.length) && (
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    covers{p.covers.team ? ` ${p.covers.team}` : ''}
+                    {p.covers.services?.length
+                      ? ` · ${p.covers.services.map((s) => idValue(s)).join(', ')}`
+                      : ''}
+                  </div>
+                )}
                 {p.description && <p style={{ fontSize: 13 }}>{p.description}</p>}
                 {p.source?.title && (
                   <p className="muted" style={{ fontSize: 12, margin: 0 }}>

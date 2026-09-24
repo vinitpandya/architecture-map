@@ -487,6 +487,11 @@ export function rebuildSearch() {
       const body = [
         p.code,
         `L${p.code}`,
+        // And the pack, both as a word and as the way a process is actually
+        // written now — searching `onboarding L2.1` has to find it, and two
+        // packs' L2.1 have to be told apart in the results.
+        p.pack,
+        `${p.pack} L${p.code}`,
         p.name,
         p.description,
         p.trigger,
@@ -505,7 +510,7 @@ export function rebuildSearch() {
         ...components,
         ...components.map((id) => named.get(id)).filter(Boolean),
       ]
-      add.run('process', p.id, `L${p.code} · ${p.name}`, body.filter(Boolean).join('\n'), p.owner ?? '')
+      add.run('process', p.id, `${p.pack} L${p.code} · ${p.name}`, body.filter(Boolean).join('\n'), p.owner ?? '')
     }
 
     /* Teams. A subject kind of its own, because "who owns this" is a thing
@@ -516,7 +521,7 @@ export function rebuildSearch() {
       )
       .all()) {
       const owns = db.prepare('SELECT id, name FROM nodes WHERE team_id = ?').all(t.id)
-      const runs = db.prepare('SELECT code, name FROM processes WHERE team_id = ?').all(t.id)
+      const runs = db.prepare('SELECT pack, code, name FROM processes WHERE team_id = ?').all(t.id)
       const body = [
         t.id,
         t.name,

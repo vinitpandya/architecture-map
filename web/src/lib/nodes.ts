@@ -112,7 +112,14 @@ export const idValue = (id: string) => id.slice(id.indexOf(':') + 1)
 export const nodeHref = (id: string) => `/node?id=${encodeURIComponent(id)}`
 
 /** A code is `2.1.1` — full of dots, and never a path segment. */
-export const processHref = (code: string) => `/process?code=${encodeURIComponent(code)}`
+/**
+ * A process is addressed by its pack and its code together: two packs both
+ * number from 1, so `?code=2.1` on its own no longer says which process. The
+ * API still answers a bare code while exactly one pack uses it — people paste
+ * these into tickets — but nothing in the UI should rely on that.
+ */
+export const processHref = (pack: string, code: string) =>
+  `/process?pack=${encodeURIComponent(pack)}&code=${encodeURIComponent(code)}`
 
 /** People write and say the prefix; only the storage drops it. */
 /**

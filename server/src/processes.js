@@ -1,40 +1,29 @@
 import { PROCESS_SCHEMA_FILE } from './config.js'
 import { db } from './db.js'
 import { compileSchema, edgeId, explainErrors, labelOf, rebuildSearch } from './ingest.js'
+import { levelOf, normaliseCode, parentIdOf, processId, sortKeyOf } from './ids.js'
 import { linkPass } from './link.js'
 
 /* ────────────────────────────────────────────────────── the code
 
-   A process is identified by its code, and the code carries everything: the
-   number of segments is the level, the parent is the code minus its last
-   segment. There is no separate parent pointer to fall out of sync, and "does
-   this code's parent exist" is therefore a checkable invariant rather than a
-   hope.
+   Every rule about a process's identity lives in ids.js, for the reason that
+   module already exists: link.js needs all of it and cannot import this file.
+   Re-exported here because this is where a reader looks for them, and a bare
+   `export … from` re-exports without binding locally — hence the second,
+   ordinary import for this module's own use.
 */
 
-/** `L2.1.1` and `2.1.1` are the same process. The prefix is display, not data. */
-export const normaliseCode = (code) => String(code ?? '').trim().replace(/^[Ll]/, '')
-
-export const processId = (code) => `proc:${normaliseCode(code)}`
-
-export const levelOf = (code) => normaliseCode(code).split('.').length
-
-/** `2.1.1` → `proc:2.1`; null at level 1, which has no parent by construction. */
-export function parentIdOf(code) {
-  const parts = normaliseCode(code).split('.')
-  return parts.length > 1 ? `proc:${parts.slice(0, -1).join('.')}` : null
-}
-
-/**
- * Lexically, `2.10` sorts before `2.9` and `10` before `2`. With processes this
- * granular, ten children is the common case rather than the edge case, so
- * every segment is zero-padded and everything orders by this instead.
- */
-export const sortKeyOf = (code) =>
-  normaliseCode(code)
-    .split('.')
-    .map((seg) => seg.padStart(4, '0'))
-    .join('.')
+export {
+  codeOf,
+  levelOf,
+  normaliseCode,
+  packOf,
+  parentIdOf,
+  processId,
+  refOf,
+  resolveRef,
+  sortKeyOf,
+} from './ids.js'
 
 /* ────────────────────────────────────────────────────── validation */
 
@@ -87,15 +76,16 @@ export function ingestProcessPack(json, sourceFile = null) {
  */
 const upsertProcess = db.prepare(
   `INSERT INTO processes
-     (id, code, level, parent_id, sort_key, name, description, owner, actor, trigger, outcome,
+     (id, pack, code, level, parent_id, sort_key, name, description, owner, actor, trigger, outcome,
       node_id, edge_id, edge_from, edge_kind, edge_to, optional, notes, tags, source,
       pack_id, first_seen, last_seen)
    VALUES
-     (@id, @code, @level, @parent_id, @sort_key, @name, @description, @owner, @actor, @trigger,
+     (@id, @pack, @code, @level, @parent_id, @sort_key, @name, @description, @owner, @actor, @trigger,
       @outcome, @node_id, @edge_id, @edge_from, @edge_kind, @edge_to, @optional, @notes, @tags,
       @source, @pack_id, @first_seen, @now)
    ON CONFLICT(id) DO UPDATE SET
-     code = excluded.code, level = excluded.level, parent_id = excluded.parent_id,
+     pack = excluded.pack, code = excluded.code, level = excluded.level,
+     parent_id = excluded.parent_id,
      sort_key = excluded.sort_key, name = excluded.name, description = excluded.description,
      owner = excluded.owner, actor = excluded.actor, trigger = excluded.trigger,
      outcome = excluded.outcome, node_id = excluded.node_id, edge_id = excluded.edge_id,
@@ -114,11 +104,12 @@ const edgeExists = db.prepare('SELECT 1 FROM edges WHERE id = ?')
  */
 function writeProcesses(json, packId, stamp, wasSeen) {
   const packSource = json.source ? JSON.stringify(json.source) : null
+  const pack = json.pack
   const codes = new Set()
 
   for (const p of json.processes ?? []) {
     const code = normaliseCode(p.code)
-    const id = processId(code)
+    const id = processId(pack, code)
     const i = p.interaction ?? null
     codes.add(code)
 
@@ -129,9 +120,10 @@ function writeProcesses(json, packId, stamp, wasSeen) {
 
     upsertProcess.run({
       id,
+      pack,
       code,
       level: levelOf(code),
-      parent_id: parentIdOf(code),
+      parent_id: parentIdOf(pack, code),
       sort_key: sortKeyOf(code),
       name: p.name,
       description: p.description ?? null,
@@ -149,7 +141,7 @@ function writeProcesses(json, packId, stamp, wasSeen) {
       tags: p.tags?.length ? JSON.stringify(p.tags) : null,
       source: p.source ? JSON.stringify(p.source) : packSource,
       pack_id: packId,
-      first_seen: wasSeen.get(id) ?? stamp,
+      first_seen: wasSeen.get(id) ?? wasSeen.get(`${pack}|${code}`) ?? stamp,
       now: stamp,
     })
 
@@ -163,18 +155,13 @@ function writeProcesses(json, packId, stamp, wasSeen) {
 
 /**
  * `processes` is a pure function of the active packs, so it is rebuilt whole
- * rather than patched — which is the only way the join can be right when two
- * packs declare one code.
+ * rather than patched. Nothing about that changed when codes became per-pack:
+ * a rebuild from the stored bodies is a few hundred rows at estate scale, it
+ * cannot drift from what the packs actually say, and it is what lets the
+ * identity migration in db.js simply drop the table.
  *
- * `processes.code` is unique, so a single row can hold only one of them, and
- * the upsert hands it to whichever pack wrote last. Clearing "this pack's rows"
- * on the next re-ingest would then take away a row the other pack still
- * declares, with nothing to bring it back until that pack happened to be
- * re-ingested. Replaying them all is a few hundred rows at estate scale and
- * cannot drift.
- *
- * Oldest pack first: `process_packs.id` is AUTOINCREMENT, so the pack just
- * ingested always has the largest id and is always the last writer.
+ * Oldest pack first, by AUTOINCREMENT id — which no longer decides anything,
+ * since two packs can no longer claim one row, but keeps the order stable.
  *
  * Returns the codes each pack actually wrote, keyed by pack id.
  */
@@ -184,6 +171,14 @@ export const rebuildProcesses = db.transaction(() => {
   const wasSeen = new Map(
     db.prepare('SELECT id, first_seen FROM processes').all().map((r) => [r.id, r.first_seen])
   )
+  // And across the one rebuild that follows the identity migration, where the
+  // rows are already gone and the ids they were under no longer exist. Keyed
+  // by the pack and code the old row belonged to, so only the process that
+  // really was in that table keeps its date. Only ever non-empty once.
+  for (const r of db.prepare('SELECT pack, code, first_seen FROM process_first_seen').all()) {
+    const key = `${r.pack}|${r.code}`
+    if (!wasSeen.has(key)) wasSeen.set(key, r.first_seen)
+  }
 
   db.prepare('DELETE FROM processes').run()
 
@@ -203,6 +198,27 @@ export const rebuildProcesses = db.transaction(() => {
   }
   return written
 })
+
+/**
+ * Replay every active pack, once, after the identity migration in db.js has
+ * dropped the table. Called at boot rather than from db.js, which cannot
+ * import this module without a cycle and has no business running a link pass.
+ *
+ * Says what it did, because an operator who opens the app and finds their
+ * processes renumbered deserves a line in the log explaining why.
+ */
+export function reconcileProcesses() {
+  const packs = db.prepare(`SELECT COUNT(*) AS n FROM process_packs WHERE status = 'active'`).get().n
+  rebuildProcesses()
+  const n = db.prepare('SELECT COUNT(*) AS n FROM processes').get().n
+  linkPass(new Date().toISOString())
+  rebuildSearch()
+  // Read once and never again: every row in it has been carried into a real
+  // process by the rebuild above, or belongs to a pack that is no longer
+  // active and never will be.
+  db.prepare('DELETE FROM process_first_seen').run()
+  return { packs, processes: n }
+}
 
 const upsertPack = db.transaction((json, sourceFile, now) => {
   const pack = json.pack

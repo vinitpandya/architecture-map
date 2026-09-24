@@ -190,6 +190,12 @@ export type Process = {
   id: string
   /** `2.1.1`, without its `L`. The hierarchy and the order both live here. */
   code: string
+  /**
+   * The pack that numbered it. A code is a number line and a number line
+   * belongs to its pack, so `code` alone does not address a process — two
+   * packs both starting at 1 are both right. Every link goes through both.
+   */
+  pack: string
   level: number
   parentId: string | null
   name: string
@@ -227,6 +233,8 @@ export type Branch = {
   when: string | null
   /** The code it continues to, or null when this arm ends the process. */
   to: string | null
+  /** Its pack — usually this process's own, but a branch may leave the pack. */
+  toPack: string | null
   toName: string | null
   /** False when no pack declares that code — drawn as a dead end, and a finding. */
   resolved: boolean
@@ -237,6 +245,7 @@ export type Branch = {
 export type ProcessTouch = {
   id: string
   code: string
+  pack: string
   name: string
   level: number
   owner: string | null
@@ -275,6 +284,8 @@ export type ProcessPack = {
   status?: 'active' | 'superseded' | 'quarantined'
   errors?: { path: string; message: string }[] | null
   processes?: number
+  /** The boundary the pack documents: whose it is, and where the work happens. */
+  covers?: { team?: string; services?: string[]; repos?: string[] } | null
 }
 
 /**
@@ -319,6 +330,7 @@ export type Team = {
 export type HandoffEnd = {
   id: string
   code: string
+  pack: string
   name: string
   teamId: string | null
   teamName: string | null
@@ -362,7 +374,7 @@ export type TeamDetail = {
 
 export type CoverageRow = {
   node: GraphNode
-  processes: { code: string; name: string; level: number; via: ProcessTouch['via'] }[]
+  processes: { pack: string; code: string; name: string; level: number; via: ProcessTouch['via'] }[]
   covered: boolean
 }
 

@@ -71,18 +71,54 @@ component list is derived by rolling their children up.
 
 ### The code
 
-A process is identified by its **code**: `2`, `2.1`, `2.1.1`, written `L2`,
-`L2.1`, `L2.1.1` when the level prefix helps. The code carries the whole
-hierarchy — the number of segments is the level, the parent is the code minus
-its last segment — so there is no separate parent pointer to fall out of sync,
-and "does this code's parent exist" becomes a checkable invariant.
+A process is identified by its **pack and its code together**: `proc:<pack>:<code>`,
+so `proc:onboarding:2.1.1`. The code carries the whole hierarchy — the number of
+segments is the level, the parent is the code minus its last segment — so there
+is no separate parent pointer to fall out of sync, and "does this code's parent
+exist" becomes a checkable invariant, inside the pack.
 
 An optional leading `L` is accepted on input and stripped: `L2.1.1` and `2.1.1`
 are the same process. Store the code numerically; display it with the prefix,
-since that is how people write it.
+since that is how people write it, and with the pack beside it — `onboarding
+L2.1.1` — since that is what addresses one.
+
+**A code belongs to its pack, and to nothing above it.** This is a correction
+to how it was first built, and the reason is worth stating. The code alone was
+the identity once, which made it a single estate-wide number line that every
+pack had to be numbered against. That works only while one person is numbering.
+Packs are authored independently — a team at a time, a repository at a time, by
+somebody who cannot see what anybody else has written — so they all began at 1,
+and the last pack ingested silently took every code the others had claimed.
+Hundreds of authored processes came out as a handful of rows, and the only
+symptom was a tree that looked short.
+
+Per pack, two teams both starting at 1 are both right and neither has to
+coordinate with the other. What it costs is that a code no longer addresses a
+process on its own: every link, filter and reference carries the pack too.
+
+A reference from one process to another — `handsOffTo`, `next` — is a bare code
+when it stays inside the pack, which is the overwhelming case, and
+`<pack>#<code>` when it leaves. A bare code cannot reach outside its pack.
 
 Codes are stable identifiers. People cite them in tickets and documents, so
 renumbering has a real cost — treat a code as permanent once published.
+
+### What a pack covers
+
+A pack declares `covers`: the `team` that owns the document, and the `services`
+whose work it describes. It is optional, and it does three things.
+
+It says what the pack is for without opening it. It scopes the authoring
+prompt, so the next author is handed that boundary's components rather than the
+whole estate — which is most of the prompt's length, and every component in it
+that the team does not run is a chance to bind a process to the wrong service.
+And it makes `process-outside-covers` derivable: a process whose `node` — where
+the work happens — is outside the boundary.
+
+Only `node`. An `interaction` leaving the boundary is a handoff and the most
+valuable thing in a pack; reporting those would report every crossing in the
+estate and bury the one case worth a line, which is a pack claiming that
+somebody else's service does its work.
 
 ---
 
@@ -178,10 +214,11 @@ CREATE INDEX IF NOT EXISTS process_packs_pack ON process_packs (pack, status);
 --                                    at every level
 
 CREATE TABLE IF NOT EXISTS processes (
-  id          TEXT PRIMARY KEY,          -- 'proc:2.1.1'
-  code        TEXT NOT NULL UNIQUE,      -- '2.1.1', the L stripped
+  id          TEXT PRIMARY KEY,          -- 'proc:onboarding:2.1.1'
+  pack        TEXT NOT NULL,             -- 'onboarding', the pack's own id
+  code        TEXT NOT NULL,             -- '2.1.1', the L stripped
   level       INTEGER NOT NULL,          -- derived: segment count, 1-3
-  parent_id   TEXT,                      -- derived: 'proc:2.1'; NULL at level 1
+  parent_id   TEXT,                      -- derived: 'proc:onboarding:2.1'; NULL at level 1
   sort_key    TEXT NOT NULL,             -- see below — NOT the code
   name        TEXT NOT NULL,
   description TEXT,
@@ -200,8 +237,9 @@ CREATE TABLE IF NOT EXISTS processes (
   source      TEXT,                      -- JSON; the pack's when the process has none
   pack_id     INTEGER NOT NULL REFERENCES process_packs(id) ON DELETE CASCADE,
   first_seen  TEXT NOT NULL,
-  last_seen   TEXT NOT NULL
-);
+  last_seen   TEXT NOT NULL,
+  UNIQUE (pack, code)                    -- per pack: a number line belongs to
+);                                       -- whoever is numbering
 CREATE INDEX IF NOT EXISTS processes_parent ON processes (parent_id);
 CREATE INDEX IF NOT EXISTS processes_sort   ON processes (sort_key);
 CREATE INDEX IF NOT EXISTS processes_node   ON processes (node_id);
@@ -276,8 +314,10 @@ first and follow its shape.
    - Insert the new `process_packs` row as `active`.
    - For each process: strip any leading `L` from the code, derive `level` from
      the segment count, `parent_id` from the code minus its last segment,
-     `sort_key` per §3, and `id` as `proc:<code>`. Fall back to the pack's
-     `source` when the process has none.
+     `sort_key` per §3, and `id` as `proc:<pack>:<code>`. Fall back to the
+     pack's `source` when the process has none.
+   - Resolve `handsOffTo[].process` and `next[].process`: a bare code is this
+     pack's, `<pack>#<code>` is somebody else's.
    - Resolve `interaction` to `edge_id` with `edgeId(from, kind, to)` imported
      from `ingest.js`, and keep `from`/`kind`/`to` in their own columns either
      way, so an unresolved interaction is still displayable.

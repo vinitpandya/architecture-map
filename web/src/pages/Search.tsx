@@ -21,7 +21,7 @@ const hitHref = (h: SearchHit) =>
   h.subject_kind === 'node'
     ? nodeHref(h.subject_id)
     : h.subject_kind === 'process'
-      ? processHref(h.subject_id.slice(5))
+      ? processHref(h.subject_id.split(':')[1], h.subject_id.split(':')[2])
       : h.subject_kind === 'team'
         ? teamHref(h.subject_id.slice(5))
         : h.to

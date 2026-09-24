@@ -156,14 +156,14 @@ export function TeamPage() {
                 key: 'code',
                 label: 'Code',
                 value: (p) => p.code,
-                render: (p) => <Link to={processHref(p.code)}>{displayCode(p.code)}</Link>,
+                render: (p) => <Link to={processHref(p.pack, p.code)}>{displayCode(p.code)}</Link>,
               },
               {
                 key: 'name',
                 label: 'What happens',
                 wide: true,
                 value: (p) => p.name,
-                render: (p) => <Link to={processHref(p.code)}>{p.name}</Link>,
+                render: (p) => <Link to={processHref(p.pack, p.code)}>{p.name}</Link>,
               },
               { key: 'level', label: 'Level', value: (p) => p.level },
             ]}

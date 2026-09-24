@@ -77,6 +77,10 @@ export const DRIFT_KINDS: Record<string, DriftKind> = {
     title: 'Components no documented process touches',
     why: 'Something is running that nobody has written down a reason for. Either a process is missing from the documents, or the component is.',
   },
+  'process-outside-covers': {
+    title: 'Work a pack claims that is not its own',
+    why: "A process says the work happens at a service outside what its pack covers. A process reaching into somebody else's service is normal and is what a handoff is; a process claiming their service does its work is not. Either the boundary is out of date, or this belongs in their pack.",
+  },
   'process-flow-unknown-target': {
     title: 'Branches that lead nowhere',
     why: 'A step says the flow continues at a code nobody has written. Usually a renumbering that a branch did not follow, and it fails quietly — the flowchart simply stops drawing that arm.',

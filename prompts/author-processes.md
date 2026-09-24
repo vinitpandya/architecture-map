@@ -1,13 +1,14 @@
 # Authoring prompt — process pack
 
 <!--
-  promptVersion: 2026-09-21a
+  promptVersion: 2026-09-24a
 
-  Rendered by GET /api/prompt?name=author-processes&pack=<pack>.
+  Rendered by GET /api/prompt?name=author-processes&pack=<pack>&team=<team>.
   {{SCHEMA}}     → schema/process-pack.schema.json
   {{PACK}}       → the pack id being authored
-  {{COMPONENTS}} → every component currently in the map, id and name, by kind
-  {{PROCESSES}}  → the process codes already loaded, so you do not collide
+  {{BOUNDARY}}   → what the component list below was narrowed to, and by what
+  {{COMPONENTS}} → the components inside that boundary, id and name, by kind
+  {{PROCESSES}}  → the codes THIS pack already uses, so a re-author keeps them
 
   Run this with whatever source material describes the processes — a Confluence
   export, a mermaid diagram, a runbook, an interview transcript, or the service
@@ -65,24 +66,37 @@ destroys exactly the signal the tool is built to produce.
    cares about — *Order and execution*, *Onboarding and funding*. Level 2 is a
    stage within it — *Getting estimate*, *Accepting estimate and placing order*.
    Level 3 is one thing that happens — *Get prices from the pricing service*.
-3. **Number them.** Use the existing numbering if the source material has one —
-   people already cite those numbers. Otherwise number in the order things
-   happen, and check against the codes already loaded, below, so you do not
-   collide with another pack. Write them as `L2.1.1` or `2.1.1`; both are read
-   the same way.
-4. **Bind the level 3s.** `node` is the component the work happens at, usually
+3. **Number them, starting at 1.** The numbering is this pack's own. Another
+   team documenting their processes will also have an L1, and neither of you is
+   wrong — a code is read as `{{PACK}} L2.1.1`, and the pack is half of it. So
+   do **not** try to fit around anybody else's numbers. Use the source
+   material's numbering if it has one, since people already cite it; otherwise
+   number in the order things happen. If this pack has been authored before,
+   its codes are listed below and you keep them. Write them as `L2.1.1` or
+   `2.1.1`; both are read the same way.
+4. **Say what the pack covers.** Fill `covers` at the top: the owning `team`,
+   and the `services` this pack documents — the ones that team runs, not every
+   service its processes touch. It is what tells the next author which
+   components are theirs, and what makes a step that reaches outside read as a
+   handoff rather than as an ordinary step.
+5. **Bind the level 3s.** `node` is the component the work happens at, usually
    the service doing it. `interaction` is the relationship it travels over —
    a publish, a consume, an HTTP call, a database or cache access. Take both
    from the component list below. Most level 3s have exactly one of each.
-5. **Leave the higher levels unbound.** A level 1 or 2 rarely names a component
+
+   `node` should normally be inside the boundary — it is where *your* work
+   happens. `interaction` routinely leaves it, and should: a publish another
+   team consumes, a call into their endpoint. That is the crossing, and it is
+   the most valuable thing in the pack.
+6. **Leave the higher levels unbound.** A level 1 or 2 rarely names a component
    of its own; its component list is derived by rolling its children up. Do not
    pick its "main" child's component and copy it upward.
-6. **Mark the branches.** Where the flow does something other than continue at
+7. **Mark the branches.** Where the flow does something other than continue at
    the next number — a decision with two outcomes, an error path that skips
    ahead, a retry that goes back, a step that stops the process — write `next`.
    Leave it out everywhere else; fall-through in numbering order is the default
    and almost every step takes it. See below.
-7. **Attribute it.** Fill `source` with where the knowledge came from and, if
+8. **Attribute it.** Fill `source` with where the knowledge came from and, if
    you can tell, who last confirmed it.
 
 ## Branches: where the flow does not just continue
@@ -146,11 +160,18 @@ no description at all. Filler makes a document look thorough and read as noise.
   `kind` carries the direction. A process where a service consumes an event is
   still `from` the service `to` the topic.
 - Three levels, no more. `2.1.1.4` is not a code.
-- Codes are permanent. Pick the number and keep it.
+- Codes are permanent, and they are this pack's. Pick the number and keep it.
+- A bare code in `handsOffTo` or `next` means **this pack**. To point at another
+  team's process, write `<pack>#<code>` — `order-and-execution#2.4.2`. A bare
+  code cannot reach outside this pack, and writing one that looks like
+  somebody else's number will silently mean your own.
 - Flat list. The hierarchy lives in the codes — do not nest processes inside
   each other.
-- One pack, one domain. Do not reach into another team's processes to make yours
-  look complete.
+- One pack, one domain — the one `covers` names. Do not reach into another
+  team's processes to make yours look complete: name the handoff and stop
+  there. Their pack is theirs to write, and a `handsOffTo` pointing at a pack
+  nobody has written yet is reported as a finding rather than an error, which
+  is exactly the right outcome.
 - When the source material is ambiguous about whether two things are one process
   or two, prefer one. Splitting is cheap later; merging is not, because the codes
   are already in tickets by then.
@@ -160,7 +181,7 @@ no description at all. Filler makes a document look thorough and read as noise.
 ## Output
 
 Return **only** a single JSON object conforming to the schema below. No prose
-before or after, no markdown fence. Set `promptVersion` to `2026-09-21a` and
+before or after, no markdown fence. Set `promptVersion` to `2026-09-24a` and
 `producer` to `{"kind": "claude", "model": "<your model id>"}`.
 
 Write it to `<pack>.json` and drop it in the architecture-map `inbox/`.
@@ -170,11 +191,18 @@ were least confident about, which components you referenced that were not in the
 list, and what the source material did not cover. That note is not part of the
 pack — it is what they need in order to review it.
 
+### What this pack covers
+
+{{BOUNDARY}}
+
 ### Components in the map
 
 {{COMPONENTS}}
 
-### Codes already in use
+### Codes `{{PACK}}` already uses
+
+Only this pack's. Another pack's numbering is not yours to avoid — if this
+section is empty, start at L1.
 
 {{PROCESSES}}
 

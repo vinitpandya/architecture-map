@@ -2,8 +2,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import express from 'express'
 import { PORT, ROOT, DATA_DIR, INBOX_DIR } from './config.js'
-import './db.js'
+import { processIdentityChanged } from './db.js'
 import { seedSystemPages } from './pageTemplates.js'
+import { reconcileProcesses } from './processes.js'
 import { router } from './routes.js'
 
 fs.mkdirSync(INBOX_DIR, { recursive: true })
@@ -11,6 +12,18 @@ fs.mkdirSync(path.join(INBOX_DIR, 'quarantine'), { recursive: true })
 fs.mkdirSync(path.join(INBOX_DIR, 'ingested'), { recursive: true })
 
 seedSystemPages()
+
+/* A process is identified by its pack and its code now, not by its code alone.
+   The table was dropped on the way past db.js because its primary key and its
+   uniqueness both changed; this puts it back from the pack bodies, which have
+   every process any pack ever declared — including the ones an estate-wide
+   number line was quietly overwriting. */
+if (processIdentityChanged) {
+  const { packs, processes } = reconcileProcesses()
+  console.log(
+    `\n  process codes are now per pack — replayed ${packs} pack(s) into ${processes} processes`
+  )
+}
 
 const app = express()
 app.use(express.json({ limit: '16mb' })) // manifests carry evidence snippets
