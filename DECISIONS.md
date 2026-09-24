@@ -162,6 +162,29 @@ contracts" rather than "Everything".
   needs is what *this* pack already says, so re-authoring it keeps the numbers
   people have been citing.
 
+## Finding a node
+
+- **`/api/nodes` leads with the services.** Ordering by kind alone sorts
+  `service` last of the seven, so any estate with more components than one
+  page held back every service — and the filter row's Focus picker, whose
+  whole job is to find one, offered none. A caller that asks for a single
+  kind is unaffected, the term being constant for it.
+- **It searches on the server, and says what it left out.** Filtering a
+  fetched page in the browser is only searching the estate while the estate
+  fits in one page. `total` and `truncated` come back so a truncated list can
+  say so rather than looking complete.
+- **The map's search reads everything the filter row admits, not just what is
+  drawn.** At service level a database is inside a collapsed line: real, on
+  this map, and not a box. Reporting it as absent would be false, so a hit
+  says which it is and one that is not drawn switches to the detail level
+  that draws it.
+- **It is a different control from Focus on purpose.** Focus narrows the map
+  to a thing; the search says where a thing already is. Merging them would
+  make "where is this" cost you the view you were looking at.
+- **A hit shows its id.** Searching `ledger` returns an endpoint named
+  `GET /v1/postings` because its id is `api:ledger-service/…`. Without the id
+  on the row there is nothing on screen to explain why it is there.
+
 ## Link pass and search
 
 - **The search index is rebuilt wholesale after each ingest.** §5 says "for the

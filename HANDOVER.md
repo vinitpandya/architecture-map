@@ -49,8 +49,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 543 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 220 more
+npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 553 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 239 more
 npm run verify:dev                   # the 11 that only fail in dev mode
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
@@ -110,7 +110,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 543 assertions across seven stages, all passing.**
+**`npm run verify` — 553 assertions across seven stages, all passing.**
 
 *Ingest (58, in-process against a fresh database, with a short HTTP stretch at
 the end for the two routes an operator drives; `migrate` is its own stage and
@@ -282,7 +282,7 @@ through 452 server assertions and 191 browser checks, because neither of them
 runs the build that says so. This one opens every page against `npm run dev`
 and fails on any console error.
 
-**`npm run verify:ui` — 220 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 239 checks in Chromium at 1280×900, all passing.**
 
 A finding says how long it has been true rather than "just now", names the team
 that should look at it, and can be accepted with a reason and reopened again —
@@ -671,6 +671,66 @@ reported.
 - **`covers.repos` is accepted, stored and displayed, and nothing derives
   anything from it.** It is there because a pack authored by reading code
   should be able to say which code; joining it to the manifests is not done.
+
+## Finding something, on a map and in the filter row
+
+**The Focus picker was offering no services at all on any real estate.**
+`/api/nodes` ordered `BY n.kind`, and `service` sorts last of the seven kind
+strings — so `LIMIT 500` handed back a list that ran out before it reached
+them. Measured on a synthetic 720-node estate: **0 of 120 services** in the
+first page. The picker whose whole job is to find a service offered none.
+
+Three fixes, because the ordering was only the visible half:
+
+- Services lead the ordering. A caller that asks for one kind is unaffected,
+  the term being constant for it.
+- `?q=` searches name and id on the server, with `%` and `_` escaped so a
+  service called `order_service` finds itself rather than everything.
+- `total` and `truncated` come back, and the picker says "N more — type to
+  narrow". **A truncated list that looks complete is how a whole kind went
+  missing without a sound**, and that is the part worth keeping in mind
+  anywhere else a limit is applied.
+
+The picker searches the server now rather than filtering whatever one page
+held, and keeps its selection in the list so it can still name a selection
+that falls outside the last result set.
+
+### The map has a search of its own
+
+Top-right, in the same column as the isolate banner. It searches everything
+the filter row admits rather than only what is drawn, because at service
+level a database is real, is on this map, and is *inside a line* rather than
+on the canvas — reporting it absent would be false. So a hit says which it
+is: a drawn one selects and is brought into view; one folded into a line
+switches to the detail level that draws it and is revealed once the layout
+has placed it. Enter takes the first hit. A search matching nothing points at
+the estate search rather than stopping.
+
+Deliberately a different question from Focus. Focus narrows the map to a
+thing; this says where a thing already is.
+
+### Two defects the server suite could not see
+
+Both were found by `verify:ui`, and both are worth knowing about before
+adding anything else to that canvas:
+
+- **React Flow pins every `top right` panel to the same absolute point.** The
+  search rendered on top of `map-aside` and swallowed the clicks meant for the
+  isolate banner's way out and the close on "what this line runs through".
+  Measured: the close button at x 870–888 / y 331–347 under the input's box at
+  638–898 / y 324–359, with `elementFromPoint` returning `INPUT`. The search
+  is the first item *in* that column now, and the column is transparent to the
+  pointer with each child taking its own events back — an empty strip of panel
+  over the canvas must not eat a drag on a node underneath it.
+- **A hit gave no reason for being a hit.** Searching `ledger` returns an
+  endpoint named `GET /v1/postings`, correctly — its id is
+  `api:ledger-service/…`. The row showed only the name. The id rides along
+  with the kind now.
+
+**The lesson, stated plainly: three of the four commits in this pass exist
+because the browser suite caught something 553 server assertions could not.**
+`verify:ui` takes about ten minutes and belongs before a push of UI work, not
+after it.
 
 ## What the scale pass found
 
