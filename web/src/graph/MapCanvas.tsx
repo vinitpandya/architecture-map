@@ -995,7 +995,13 @@ export function MapCanvas({
                       }}
                     >
                       <span className="map-find-name">{n.name}</span>
+                      {/* The id too, because a hit has to say why it is a hit.
+                          Searching `ledger` finds an endpoint named
+                          `GET /v1/postings`, which is right — its id is
+                          `api:ledger-service/…` — and reads as an unrelated
+                          row until the thing that matched is on screen. */}
                       <span className="muted map-find-kind">
+                        {idValue(n.id)} ·{' '}
                         {drawn ? KIND_LABEL[n.kind] : `${KIND_LABEL[n.kind]} · inside a line`}
                       </span>
                     </button>
