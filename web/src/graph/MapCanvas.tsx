@@ -79,6 +79,7 @@ const ISOLATE_KEY = 'architecture-map.isolate.'
 const ARRANGE_KEY = 'architecture-map.arrangement.'
 const ARRANGEMENTS: Arrangement[] = ['compact', 'teams', 'columns', 'crossings']
 const SURFACE_KEY = 'architecture-map.surface.'
+const KEY_KEY = 'architecture-map.key.'
 
 /**
  * The map draws the topology; the chord draws the traffic. Past a few dozen
@@ -136,6 +137,33 @@ function write(key: string, value: unknown) {
 const layoutSlot = (storageKey: string, detail: Detail, arrangement: Arrangement) =>
   `${LAYOUT_KEY}${storageKey}.${detail}.${arrangement}`
 
+/**
+ * What the key has switched off, per map and per DETAIL LEVEL. Per level
+ * because the two levels draw different things: `kafka.topic` off means
+ * nothing at service level, where no topic is drawn as a box anyway, and
+ * means most of the canvas at full detail.
+ */
+const keySlot = (storageKey: string, detail: Detail) => `${KEY_KEY}${storageKey}.${detail}`
+
+type KeyState = { kinds: string[]; teams: string[]; relations: string[] }
+const NOTHING_HIDDEN: KeyState = { kinds: [], teams: [], relations: [] }
+
+/**
+ * What full detail opens with, the first time, when nothing has been saved for
+ * it: the services, and every other kind switched off in the key.
+ *
+ * Everything used to open with all of it. On the demo estate that is 35 boxes
+ * and pleasant; on a real one it is several hundred and the first thing anybody
+ * does is start switching things off, every single time, because the key reset
+ * on every switch. Opening with the services and letting the reader add a
+ * layer at a time is the same map arrived at from the other end — and now the
+ * choice is remembered, so it is arrived at once.
+ */
+const servicesOnly = (kinds: Iterable<string>): KeyState => ({
+  ...NOTHING_HIDDEN,
+  kinds: [...new Set(kinds)].filter((k) => k !== 'service'),
+})
+
 /** The key's row for everything the registry does not name an owner for. */
 const TEAMLESS = '·none'
 
@@ -191,7 +219,7 @@ export function MapCanvas({
   const [selected, setSelected] = useState<string | null>(null)
   /** What is typed in the map's own search box, and what it is waiting to reveal. */
   const [find, setFind] = useState('')
-  const [revealing, setRevealing] = useState<string | null>(null)
+  const [revealing, setRevealing] = useState<{ id: string; kind: string } | null>(null)
   const [zoomedOut, setZoomedOut] = useState(false)
   const [open, setOpen] = useState(() => localStorage.getItem(INSPECTOR_KEY) !== 'closed')
   /**
@@ -220,6 +248,13 @@ export function MapCanvas({
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set())
   const [hiddenTeams, setHiddenTeams] = useState<Set<string>>(new Set())
   const [hiddenRelations, setHiddenRelations] = useState<Set<string>>(new Set())
+  /**
+   * Whether the key has been settled for the level now showing. Until it is,
+   * the three sets above are last level's and must not be written back over
+   * this one's — which is the whole reason this is a flag and not a guess at
+   * the sets being empty. Empty is a legitimate state: it is "everything on".
+   */
+  const [keyReady, setKeyReady] = useState(false)
   /** How far from the selection to keep drawing. 0 leaves the map whole. */
   const [isolate, setIsolate] = useState<Hops>(() => {
     const saved = read<number | null>(ISOLATE_KEY + storageKey, null)
@@ -292,6 +327,39 @@ export function MapCanvas({
     setPlacedByHand(read<Record<string, Position>>(layoutSlot(storageKey, detail, arrangement), {}))
     setThrough(null)
   }, [storageKey, detail, arrangement])
+
+  /* What the key has switched off, for the level now showing.
+     Waits for the graph, because the default for full detail is stated in
+     terms of the kinds that are actually in it — there is no point switching
+     off a kind this estate does not have, and the key would not offer a row
+     to switch it back on with. */
+  useEffect(() => {
+    if (!data) return
+    const saved = read<KeyState | null>(keySlot(storageKey, detail), null)
+    const state =
+      saved ?? (detail === 'all' ? servicesOnly(data.nodes.map((n) => n.kind)) : NOTHING_HIDDEN)
+    // Whatever the search is on its way to reveal is not switched off on the
+    // way there: asking to be shown a topic and arriving at a level where
+    // topics are hidden would be the map ignoring what was asked of it.
+    const kinds = new Set(state.kinds)
+    if (revealing) kinds.delete(revealing.kind)
+    setHiddenKinds(kinds)
+    setHiddenTeams(new Set(state.teams))
+    setHiddenRelations(new Set(state.relations))
+    setKeyReady(true)
+    // `data.nodes` is a fresh array each fetch; what matters is having one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey, detail, !!data])
+
+  // And back out again, so a reader who has built the view they want keeps it.
+  useEffect(() => {
+    if (!keyReady) return
+    write(keySlot(storageKey, detail), {
+      kinds: [...hiddenKinds],
+      teams: [...hiddenTeams],
+      relations: [...hiddenRelations],
+    })
+  }, [keyReady, storageKey, detail, hiddenKinds, hiddenTeams, hiddenRelations])
 
   // A selection the graph no longer contains has no neighbours, so every node
   // on the map counts as un-adjacent and the whole canvas dims with nothing
@@ -550,8 +618,16 @@ export function MapCanvas({
         Number(drawn.has(b.id)) - Number(drawn.has(a.id)) || a.name.localeCompare(b.name)
       )
       .slice(0, 40)
-      .map((n) => ({ node: n, drawn: drawn.has(n.id) }))
-  }, [find, all, nodes])
+      .map((n) => ({
+        node: n,
+        drawn: drawn.has(n.id),
+        /* Two reasons for not being drawn, with two different ways back: its
+           kind is switched off in the key — which full detail now does by
+           default — or this level folds it into a line. Calling the first
+           "inside a line" would be plainly wrong. */
+        off: !drawn.has(n.id) && hiddenKinds.has(n.kind),
+      }))
+  }, [find, all, nodes, hiddenKinds])
 
   /** Put it on screen and select it, which is what "find" has to mean. */
   const reveal = useCallback((id: string) => {
@@ -563,12 +639,37 @@ export function MapCanvas({
     )
   }, [])
 
+  /**
+    * Put a hit on screen, clearing whatever is in the way first. Three cases,
+    * and the reader should not have to know which they are in: it is drawn, its
+    * kind is switched off in the key, or this level folds it into a line.
+    */
+  const show = useCallback(
+    ({ node, drawn, off }: { node: GraphNode; drawn: boolean; off: boolean }) => {
+      if (drawn) return reveal(node.id)
+      setRevealing({ id: node.id, kind: node.kind })
+      if (off) {
+        // Already at a level that would draw it; the key is what is hiding it.
+        setHiddenKinds((prev) => {
+          const next = new Set(prev)
+          next.delete(node.kind)
+          return next
+        })
+        return
+      }
+      setKeyReady(false)
+      setDetail('all')
+      write(DETAIL_KEY + storageKey, 'all')
+    },
+    [reveal, storageKey]
+  )
+
   /* Switching detail re-runs the layout, so a node that was not drawn cannot
      be revealed in the same tick it was asked for. This waits for it. */
   useEffect(() => {
     if (!revealing) return
-    if (!nodes.some((n) => n.id === revealing)) return
-    reveal(revealing)
+    if (!nodes.some((n) => n.id === revealing.id)) return
+    reveal(revealing.id)
     setRevealing(null)
     // `nodes` is a fresh array each render; its ids are what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -834,6 +935,9 @@ export function MapCanvas({
                         type="button"
                         aria-pressed={detail === mode}
                         onClick={() => {
+                          // Before the level changes, so the save effect cannot
+                          // write this level's key over the next one's.
+                          setKeyReady(false)
                           setDetail(mode)
                           write(DETAIL_KEY + storageKey, mode)
                         }}
@@ -959,15 +1063,7 @@ export function MapCanvas({
                   if (e.key === 'Escape') setFind('')
                   // Enter takes the first hit, because that is what Enter means
                   // in every other search box a person has ever used.
-                  if (e.key === 'Enter' && hits.length) {
-                    const first = hits[0]
-                    if (first.drawn) reveal(first.node.id)
-                    else {
-                      setRevealing(first.node.id)
-                      setDetail('all')
-                      write(DETAIL_KEY + storageKey, 'all')
-                    }
-                  }
+                  if (e.key === 'Enter' && hits.length) show(hits[0])
                 }}
               />
               {find.trim() && (
@@ -979,20 +1075,12 @@ export function MapCanvas({
                       estate search</Link>.
                     </p>
                   )}
-                  {hits.map(({ node: n, drawn }) => (
+                  {hits.map(({ node: n, drawn, off }) => (
                     <button
                       key={n.id}
                       type="button"
                       className={`map-find-hit${drawn ? '' : ' map-find-hidden'}`}
-                      onClick={() => {
-                        if (drawn) return reveal(n.id)
-                        // Not drawn is not absent: at service level it is inside
-                        // a line. Switch to the level that draws it and reveal it
-                        // once the layout has put it somewhere.
-                        setRevealing(n.id)
-                        setDetail('all')
-                        write(DETAIL_KEY + storageKey, 'all')
-                      }}
+                      onClick={() => show({ node: n, drawn, off })}
                     >
                       <span className="map-find-name">{n.name}</span>
                       {/* The id too, because a hit has to say why it is a hit.
@@ -1002,7 +1090,11 @@ export function MapCanvas({
                           row until the thing that matched is on screen. */}
                       <span className="muted map-find-kind">
                         {idValue(n.id)} ·{' '}
-                        {drawn ? KIND_LABEL[n.kind] : `${KIND_LABEL[n.kind]} · inside a line`}
+                        {drawn
+                          ? KIND_LABEL[n.kind]
+                          : off
+                            ? `${KIND_LABEL[n.kind]} · switched off in the key`
+                            : `${KIND_LABEL[n.kind]} · inside a line`}
                       </span>
                     </button>
                   ))}

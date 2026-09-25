@@ -256,6 +256,18 @@ const nodePositions = (page) =>
  */
 const showEverything = async (page) => {
   await page.click('.map-detail button:has-text("Everything")')
+  /* And switch every key row on, because full detail now opens with the
+     services and the other kinds off — past a few dozen boxes the old
+     everything-at-once was unreadable and the first thing anybody did was
+     start switching things off. The checks below are about the whole scanned
+     topology, so this helper has to mean what its name says. */
+  await page.waitForTimeout(400)
+  for (let i = 0; i < 12; i++) {
+    const off = page.locator('.map-legend .legend-item[aria-pressed="false"]')
+    if ((await off.count()) === 0) break
+    await off.first().click()
+    await page.waitForTimeout(250)
+  }
   const count = () =>
     page.evaluate(() => ({
       nodes: document.querySelectorAll('.react-flow__node').length,
