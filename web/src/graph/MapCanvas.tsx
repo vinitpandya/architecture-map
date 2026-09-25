@@ -336,8 +336,16 @@ export function MapCanvas({
   useEffect(() => {
     if (!data) return
     const saved = read<KeyState | null>(keySlot(storageKey, detail), null)
+    /* Services-only is the ESTATE map's default, and only its default. A
+       process map opens at full detail precisely because collapsing it would
+       leave a diagram of two services, and it is bounded to one process's
+       components — a dozen, not several hundred. Hiding the topics and stores
+       it runs through would empty the one view whose whole job is to show
+       them. Measured: it drew 5 of L1's 14 components before this line. */
+    const bounded = !!process
     const state =
-      saved ?? (detail === 'all' ? servicesOnly(data.nodes.map((n) => n.kind)) : NOTHING_HIDDEN)
+      saved ??
+      (detail === 'all' && !bounded ? servicesOnly(data.nodes.map((n) => n.kind)) : NOTHING_HIDDEN)
     // Whatever the search is on its way to reveal is not switched off on the
     // way there: asking to be shown a topic and arriving at a level where
     // topics are hidden would be the map ignoring what was asked of it.
@@ -349,7 +357,7 @@ export function MapCanvas({
     setKeyReady(true)
     // `data.nodes` is a fresh array each fetch; what matters is having one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storageKey, detail, !!data])
+  }, [storageKey, detail, !!data, process])
 
   // And back out again, so a reader who has built the view they want keeps it.
   useEffect(() => {

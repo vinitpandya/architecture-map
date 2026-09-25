@@ -254,33 +254,47 @@ const nodePositions = (page) =>
  * check about where a line attaches fails at once. Two identical counts a
  * beat apart, with edges present, is the thing those checks actually need.
  */
-const showEverything = async (page) => {
-  await page.click('.map-detail button:has-text("Everything")')
-  /* And switch every key row on, because full detail now opens with the
-     services and the other kinds off — past a few dozen boxes the old
-     everything-at-once was unreadable and the first thing anybody did was
-     start switching things off. The checks below are about the whole scanned
-     topology, so this helper has to mean what its name says. */
-  await page.waitForTimeout(400)
-  for (let i = 0; i < 12; i++) {
-    const off = page.locator('.map-legend .legend-item[aria-pressed="false"]')
-    if ((await off.count()) === 0) break
-    await off.first().click()
-    await page.waitForTimeout(250)
-  }
+/** Wait for the drawing to stop moving. Switching detail or a key row re-runs
+ *  the layout in a worker, and React Flow mounts nodes before edges, so any
+ *  fixed timeout is a race — one that resolves differently on a loaded machine
+ *  and reports a map with no lines on it. */
+const settled = async (page, { wantEdges = true } = {}) => {
   const count = () =>
     page.evaluate(() => ({
       nodes: document.querySelectorAll('.react-flow__node').length,
       edges: document.querySelectorAll('.react-flow__edge').length,
     }))
   let last = { nodes: -1, edges: -1 }
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 80; i++) {
     await page.waitForTimeout(250)
     const now = await count()
-    if (now.edges > 0 && now.nodes === last.nodes && now.edges === last.edges) return
+    if ((!wantEdges || now.edges > 0) && now.nodes === last.nodes && now.edges === last.edges) return now
     last = now
   }
-  throw new Error(`the map never settled at full detail: ${JSON.stringify(last)}`)
+  throw new Error(`the map never settled: ${JSON.stringify(last)}`)
+}
+
+/**
+ * The map opens collapsed to services; most of these checks are about the
+ * scanned topology, which is the other detail level.
+ *
+ * Full detail now opens with the services and every other kind switched off in
+ * the key, so this switches them back on — one at a time, settling between,
+ * because each one re-runs the layout and clicking into an in-flight layout is
+ * how this helper came to report 35 nodes and no edges at all. The first settle
+ * deliberately does not wait for edges: services-only at full detail has none,
+ * every service reaching the next one through an intermediary that is hidden.
+ */
+const showEverything = async (page) => {
+  await page.click('.map-detail button:has-text("Everything")')
+  await settled(page, { wantEdges: false })
+  for (let i = 0; i < 12; i++) {
+    const off = page.locator('.map-legend .legend-item[aria-pressed="false"]')
+    if ((await off.count()) === 0) break
+    await off.first().click()
+    await settled(page, { wantEdges: false })
+  }
+  await settled(page)
 }
 
 const kindsOnScreen = (page) =>
