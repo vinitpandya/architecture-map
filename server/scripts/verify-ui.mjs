@@ -1702,8 +1702,12 @@ console.log('\nGrids: search, sort and group, on every table')
   // is worth knowing about.
   let tables = 0
   const lacking = []
+  // /repos reads the repository's own repos.json, which the run's data
+  // redirection does not cover, so the estate page's repos widget is a table
+  // on a machine that has one and an Empty on a machine that does not.
+  const repoRows = (await api('/repos')).repos.length
   for (const [name, url, ready, expected] of [
-    ['estate', `/d/${pageId('estate')}`, 'table.data', 2], // the repos widget is an Empty without a repos.json
+    ['estate', `/d/${pageId('estate')}`, 'table.data', repoRows ? 3 : 2],
     ['messaging', `/d/${pageId('messaging')}`, 'table.data', 2],
     ['contracts', `/d/${pageId('contracts')}`, 'table.data', 2],
     ['processes', `/d/${pageId('processes')}`, 'table.data', 1],
