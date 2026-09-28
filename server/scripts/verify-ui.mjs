@@ -1693,6 +1693,133 @@ for (const code of ['1', '2.1', '2.3.5']) {
   await ctx.close()
 }
 
+/* ---- every grid can be searched, sorted and grouped */
+
+console.log('\nGrids: search, sort and group, on every table')
+{
+  // Every table the app draws is a DataGrid, so every one must carry the same
+  // three controls. The counts are the demo estate's; a screen losing a grid
+  // is worth knowing about.
+  let tables = 0
+  const lacking = []
+  for (const [name, url, ready, expected] of [
+    ['estate', `/d/${pageId('estate')}`, 'table.data', 2], // the repos widget is an Empty without a repos.json
+    ['messaging', `/d/${pageId('messaging')}`, 'table.data', 2],
+    ['contracts', `/d/${pageId('contracts')}`, 'table.data', 2],
+    ['processes', `/d/${pageId('processes')}`, 'table.data', 1],
+    ['teams', `/d/${pageId('teams')}`, 'table.data', 2],
+    ['health', `/d/${pageId('health')}`, 'table.data', 3],
+    ['teams page', '/teams', 'table.data', 4],
+    ['a team', '/team?id=trading', 'table.data', 2],
+    ['a process', '/process?pack=order-and-execution&code=2', 'table.data', 1],
+    ['a service', `/node?id=${encodeURIComponent('svc:order-service')}`, 'table.data', 7],
+    ['a topic', `/node?id=${encodeURIComponent('topic:orders.matched.v1')}`, 'table.data', 4],
+  ]) {
+    const { ctx, page, problems } = await open(url)
+    await page.waitForSelector(ready, { timeout: 20000 })
+    await page.waitForTimeout(400)
+    const found = await page.$$eval('table.data', (els) =>
+      els.map((t) => {
+        const grid = t.closest('.data-grid')
+        return {
+          search: !!grid?.querySelector('.grid-toolbar input[type="search"]'),
+          sortable: t.querySelectorAll('th.sortable').length > 0,
+          group: !!grid?.querySelector('.grid-toolbar select'),
+        }
+      })
+    )
+    tables += found.length
+    is(`${name}: draws its tables`, found.length, expected)
+    for (const [i, g] of found.entries()) {
+      if (!(g.search && g.sortable && g.group)) lacking.push(`${name}#${i} ${JSON.stringify(g)}`)
+    }
+    ok(`${name}: no console errors`, problems.length === 0, problems.join(' | '))
+    await ctx.close()
+  }
+  ok(`every one of ${tables} tables can be searched, sorted and grouped`, tables > 0 && lacking.length === 0, lacking.join(' | '))
+}
+
+{
+  // The controls themselves, driven on the estate page's list of services.
+  const { ctx, page, problems } = await open(`/d/${pageId('estate')}`)
+  const grid = '[data-grid-id="es-5"] .data-grid'
+  await page.waitForSelector(`${grid} tbody tr`, { timeout: 20000 })
+  const rowsOf = () => page.$$eval(`${grid} tbody tr:not(.group-row)`, (els) => els.map((e) => e.innerText))
+  const all = await rowsOf()
+  ok('the service list has rows to work with', all.length > 3, `${all.length}`)
+
+  await page.fill(`${grid} input[aria-label="Search rows"]`, 'wallet')
+  await page.waitForTimeout(200)
+  const hits = await rowsOf()
+  ok('typing narrows the rows', hits.length > 0 && hits.length < all.length, `${hits.length} of ${all.length}`)
+  ok('  …to rows containing the text', hits.every((r) => r.toLowerCase().includes('wallet')), hits.join(' | '))
+  is('  …and the toolbar says how many', await page.$eval(`${grid} .grid-count`, (e) => e.innerText), `${hits.length} of ${all.length} rows`)
+
+  await page.fill(`${grid} input[aria-label="Search rows"]`, 'no such service anywhere')
+  await page.waitForTimeout(200)
+  ok('a search matching nothing says so, and keeps the search box', (await page.$(`${grid} tr.no-match`)) !== null && (await page.$(`${grid} input[aria-label="Search rows"]`)) !== null)
+
+  await page.press(`${grid} input[aria-label="Search rows"]`, 'Escape')
+  await page.waitForTimeout(200)
+  is('Escape clears the search', (await rowsOf()).length, all.length)
+
+  const firstCells = () => page.$$eval(`${grid} tbody tr:not(.group-row) td:first-child`, (els) => els.map((e) => e.innerText))
+  const sortedAsc = (xs) => xs.slice().sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+  ok('the headers show they can be sorted', (await page.$$(`${grid} th.sortable .sort-mark.idle`)).length >= 3)
+  await page.click(`${grid} th:has-text("Name")`)
+  await page.waitForTimeout(150)
+  is('a click on a header sorts ascending', await page.$eval(`${grid} th:has-text("Name")`, (e) => e.getAttribute('aria-sort')), 'ascending')
+  const asc = await firstCells()
+  ok('  …and the rows follow', asc.join('|') === sortedAsc(asc).join('|'), asc.slice(0, 4).join(' | '))
+  await page.click(`${grid} th:has-text("Name")`)
+  await page.waitForTimeout(150)
+  const desc = await firstCells()
+  ok('a second click sorts descending', desc.join('|') === sortedAsc(desc).reverse().join('|'), desc.slice(0, 4).join(' | '))
+
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForSelector(`${grid} tbody tr`, { timeout: 20000 })
+  is('the sort survives a reload', await page.$eval(`${grid} th:has-text("Name")`, (e) => e.getAttribute('aria-sort')), 'descending')
+  await page.focus(`${grid} th:has-text("Owner") button.sort`)
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(150)
+  is('the keyboard can sort: Enter on a focused header', await page.$eval(`${grid} th:has-text("Owner")`, (e) => e.getAttribute('aria-sort')), 'ascending')
+
+  await page.selectOption(`${grid} .grid-toolbar select`, 'team')
+  await page.waitForTimeout(200)
+  const teams = new Set(await page.$$eval(`${grid} tbody tr:not(.group-row) td:nth-child(2)`, (els) => els.map((e) => e.innerText)))
+  is('grouping by team folds the rows under one row per team', (await page.$$(`${grid} tr.group-row`)).length, teams.size)
+  await page.fill(`${grid} input[aria-label="Search rows"]`, 'wallet')
+  await page.waitForTimeout(200)
+  ok('a search inside a grouping keeps only the groups with a hit', (await page.$$(`${grid} tr.group-row`)).length < teams.size && (await rowsOf()).length === hits.length)
+
+  // Full screen is a second copy of the same grid, mounted over the tile
+  // rather than instead of it, so the two have to agree.
+  await page.selectOption(`${grid} .grid-toolbar select`, '')
+  await page.click(`[data-grid-id="es-5"] button[aria-label="Expand widget to full screen"]`)
+  const fs = '.modal.fs .data-grid'
+  await page.waitForSelector(`${fs} tbody tr`, { timeout: 10000 })
+  is('the full-screen copy opens with the tile’s sort', await page.$eval(`${fs} th:has-text("Owner")`, (e) => e.getAttribute('aria-sort')), 'ascending')
+  await page.fill(`${fs} input[aria-label="Search rows"]`, 'wallet')
+  await page.press(`${fs} input[aria-label="Search rows"]`, 'Escape')
+  await page.waitForTimeout(200)
+  ok('Escape in its search clears the search and leaves the screen open', (await page.$('.modal.fs')) !== null && (await page.$eval(`${fs} input[aria-label="Search rows"]`, (e) => e.value)) === '')
+  await page.press(`${fs} input[aria-label="Search rows"]`, 'Escape')
+  await page.waitForTimeout(200)
+  ok('  …and a second Escape, on an empty box, closes it', (await page.$('.modal.fs')) === null)
+
+  await page.click(`[data-grid-id="es-5"] button[aria-label="Expand widget to full screen"]`)
+  await page.waitForSelector(`${fs} tbody tr`, { timeout: 10000 })
+  await page.click(`${fs} th:has-text("Team")`) // ascending by team, replacing Owner
+  await page.selectOption(`${fs} .grid-toolbar select`, 'ownerRepo')
+  await page.waitForTimeout(200)
+  await page.click('.modal.fs button:has-text("Exit full screen")')
+  await page.waitForTimeout(200)
+  is('a sort chosen in full screen is the tile’s sort when it closes', await page.$eval(`${grid} th:has-text("Team")`, (e) => e.getAttribute('aria-sort')), 'ascending')
+  is('  …and so is the grouping', await page.$eval(`${grid} .grid-toolbar select`, (e) => e.value), 'ownerRepo')
+  ok('no console errors driving a grid', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
 await browser.close()
 console.log(`\n  ${checks - failures}/${checks} checks passed\n`)
 process.exit(failures ? 1 : 0)

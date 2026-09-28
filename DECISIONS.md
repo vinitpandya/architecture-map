@@ -244,6 +244,53 @@ contracts" rather than "Everything".
   than its card scrolls inside the card; the page never scrolls sideways.
   `app.css` and `theme.css` are untouched.
 
+### Grids
+
+- **Every grid can be searched, and the search is not remembered.** Sort and
+  group persist per grid because they are how somebody reads a table; a search
+  is a question asked once, and a filter that survived a reload would read as
+  missing data. `Escape` clears it, and a search matching nothing keeps the
+  box on screen with a row saying so, because the way out of an empty table
+  must be visible on it.
+- **The search reads what the sort reads.** Every column's `value()`, never
+  what the cell renders. A link's id, a number, a confidence are all findable;
+  a badge's tooltip is not. Cheap, predictable, and the one place a column
+  already declares what it is about. A column whose cell shows more than its
+  value — the coverage grid's Processes column is a *count* whose cell lists
+  the codes counted — adds `search` naming the extra text, so a code on screen
+  is a code the search finds.
+- **A grid shown full screen is a second copy, and the two agree.** Full
+  screen mounts the widget again over the tile rather than instead of it, so
+  two grids carry one storage key. Each read its preferences once, which would
+  have left a sort chosen in the overlay gone the moment it closed and
+  overwritten by the tile's next click. Saving announces the change on
+  `window` and every grid with that key adopts it. `Escape` in a search box
+  clears the box and stops there; only an already-empty box lets it go on to
+  close the screen. The map's own search follows the same rule.
+- **A sortable header carries a muted mark before anyone has sorted by it,
+  and is a button.** The controls existed on every grid and were invisible
+  until used: the sort showed only once active, and it was mouse-only. Being
+  told the grids "do not have sorting" was accurate as far as anybody could
+  see, and exactly true from a keyboard. The header's button inherits the
+  header's type and fills the cell, so a click anywhere sorts and Enter does
+  too; the mark is an inline SVG in a fixed box, as the house style has it,
+  so the header does not shift a pixel as a column goes idle → asc → desc.
+  Muted, not faded: a 0.45 opacity read as 2:1 against the dark surface.
+- **A remembered sort or grouping is honoured only while its column exists.**
+  A widget's columns change with its options while its key does not — the
+  list of services has a Team column, the same widget listing topics does
+  not — so a saved `group: 'team'` on a list of topics would hold state the
+  select could not show and re-save it on the next click. Checked on load and
+  whenever a twin's save is adopted.
+- **The Group-by select is named by its visible label.** It had an
+  `aria-label` that did not contain the words on screen, which is what voice
+  control goes by; the wrapping `<label>` already names it.
+- **Every widget grid has a storage key, `w.<widget id>`.** Eleven grids inside
+  widgets had none, so their sort and grouping forgot themselves on the next
+  visit while the same grid on a page remembered. The widget id is what the
+  map already keys its own memory by, under a different prefix; a widget that
+  draws two grids adds a slot (`.producers`, `.consumers`).
+
 ## Layer B — processes (phases 7–11)
 
 ### The migration
@@ -680,9 +727,35 @@ the git log rather than here. Three were judgement calls:
   that is hiding something must stay in front of you. The key is also drawn
   from what the level *could* show rather than what survived the toggles, or a
   row switched off would vanish with no way back.
-- **Nothing hidden is remembered across a reload.** Detail level and hand-placed
-  nodes are; a hidden kind is not. Coming back to a map with half the estate
-  missing and no memory of having done it is the worst of the three.
+- **What the key has off is remembered, per map and per detail level.** An
+  earlier version of this list said the opposite — that coming back to a map
+  with half the estate missing and no memory of having done it was the worst
+  outcome. In use it was the other way round: the key reset on every switch and
+  every reload, so the tidying was redone every single time. Per level because
+  the two levels draw different things: `kafka.topic` off means nothing at
+  service level, where no topic is a box anyway, and most of the canvas at full
+  detail. The key row stays there, switched off, so nothing is lost silently.
+- **Full detail on the estate map opens with the services, everything else
+  off.** Switching to Everything drew the whole scanned topology at once — 35
+  boxes on the demo estate, several hundred on a real one — and the first thing
+  anybody did was start switching kinds off. The map now grows as it is asked
+  to. The default is stated in terms of the kinds actually in the graph, so no
+  row is switched off that the key would not offer a way back on. A process map
+  is exempt: it opens at full detail by design and its components *are* its
+  topics and stores, so a services-only default would draw two boxes.
+- **Services connected only through hidden kinds show no line between them at
+  full detail, for now.** With topics and endpoints switched off, ten services
+  sit on the canvas with nothing joining them, because at full detail a line
+  goes to the topic, not to the other service. The chosen answer is to keep the
+  collapsed service-to-service line drawn while every node it runs through is
+  hidden, and to replace it with the real lines as those kinds are switched on.
+  Not built yet; recorded so the empty canvas is read as a gap, not a design.
+- **The map's search says why a hit is not on screen.** A hit can be absent for
+  two reasons now — folded into a line at service level, or switched off in the
+  key — and they are cleared differently. The row names which, and choosing it
+  clears whichever is in the way: a hidden kind is switched on rather than the
+  detail level changed, and the kind being revealed is never among those the
+  level switches off on the way in.
 - **An arrangement is per map and per detail level.** Two maps on a page are two
   maps, and the two levels do not share a node set, so they cannot share an
   arrangement. `Reset layout` appears only when there is something to reset.

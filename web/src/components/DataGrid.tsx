@@ -1,12 +1,15 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { full } from '../lib/format'
 
 export type GridColumn<T> = {
   key: string
   label: ReactNode
-  /** Sort/group value. Numbers sort numerically; strings by locale. */
+  /** Sort/group/search value. Numbers sort numerically; strings by locale. */
   value: (row: T) => string | number | null | undefined
   render?: (row: T) => ReactNode
+  /** Extra text the search reads, for a cell that shows more than its value —
+   *  a count whose cell lists the things counted. */
+  search?: (row: T) => string
   align?: 'left' | 'right'
   wide?: boolean
   sortable?: boolean
@@ -32,6 +35,13 @@ function loadPrefs(storageKey?: string): Prefs | null {
   }
 }
 
+// A widget blown up to full screen is a second copy of the same grid, mounted
+// while the tile stays mounted underneath; both carry the widget's key. Each
+// read its preferences once, so a sort chosen in the overlay would be gone
+// when it closed and overwritten by the tile's next click. Saving announces
+// the change and every grid with that key adopts it.
+const PREFS_EVENT = 'architecture-map:grid-prefs'
+
 function savePrefs(storageKey: string | undefined, prefs: Prefs) {
   if (!storageKey) return
   try {
@@ -39,6 +49,7 @@ function savePrefs(storageKey: string | undefined, prefs: Prefs) {
   } catch {
     /* ignore */
   }
+  window.dispatchEvent(new CustomEvent(PREFS_EVENT, { detail: { storageKey, prefs } }))
 }
 
 const compare = (a: unknown, b: unknown) => {
@@ -50,9 +61,12 @@ const compare = (a: unknown, b: unknown) => {
 }
 
 /**
- * A sortable, groupable table. Click a header to sort (asc → desc → off);
- * pick a column in "Group by" to fold rows under collapsible group rows that
- * carry subtotals for numeric columns. Preferences persist per `storageKey`.
+ * A searchable, sortable, groupable table. Type in the toolbar to keep only
+ * the rows with a cell containing the text; click a header to sort
+ * (asc → desc → off); pick a column in "Group by" to fold rows under
+ * collapsible group rows that carry subtotals for numeric columns. Sort and
+ * group persist per `storageKey`; the search does not, because a filter that
+ * survives a reload reads as missing data.
  */
 export function DataGrid<T>({
   rows,
@@ -71,10 +85,31 @@ export function DataGrid<T>({
   maxHeight?: number
   emptyText?: string
 }) {
+  // A widget's columns change with its options while its key does not — a
+  // list of services has a Team column, the same list of topics does not —
+  // so a remembered sort or grouping is honoured only while its column exists.
+  const has = (key: string | null | undefined) => !!key && columns.some((c) => c.key === key)
   const initial = useMemo(() => loadPrefs(storageKey), [storageKey])
-  const [sort, setSort] = useState<Sort>(initial?.sort ?? defaultSort)
-  const [group, setGroup] = useState<string | null>(initial?.group ?? null)
+  const [sort, setSort] = useState<Sort>(has(initial?.sort?.key) ? initial!.sort : defaultSort)
+  const [group, setGroup] = useState<string | null>(has(initial?.group) ? initial!.group : null)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [query, setQuery] = useState('')
+
+  useEffect(() => {
+    if (!storageKey) return
+    const adopt = (e: Event) => {
+      const { storageKey: key, prefs } = (e as CustomEvent<{ storageKey: string; prefs: Prefs }>).detail
+      if (key !== storageKey) return
+      setSort(has(prefs.sort?.key) ? prefs.sort : null)
+      setGroup((g) => {
+        const next = has(prefs.group) ? prefs.group : null
+        if (g !== next) setCollapsed(new Set())
+        return next
+      })
+    }
+    window.addEventListener(PREFS_EVENT, adopt)
+    return () => window.removeEventListener(PREFS_EVENT, adopt)
+  }, [storageKey, columns]) // `has` reads the columns of the render that adopts
 
   const colByKey = useMemo(() => new Map(columns.map((c) => [c.key, c])), [columns])
   const groupable = columns.filter((c) => c.groupable ?? c.align !== 'right')
@@ -96,16 +131,32 @@ export function DataGrid<T>({
     savePrefs(storageKey, { sort, group: next })
   }
 
+  // The search reads the same value the sort does, across every column, so a
+  // row is found by whatever it can be ordered by: an id under a link, a
+  // number, a confidence. What a cell renders is not consulted; a column whose
+  // cell shows more than its value says so with `search`.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return rows
+    return rows.filter((row) =>
+      columns.some((col) => {
+        const v = col.value(row)
+        if (v != null && String(v).toLowerCase().includes(q)) return true
+        return !!col.search && col.search(row).toLowerCase().includes(q)
+      })
+    )
+  }, [rows, query, columns])
+
   const sorted = useMemo(() => {
-    if (!sort) return rows
+    if (!sort) return filtered
     const col = colByKey.get(sort.key)
-    if (!col) return rows
+    if (!col) return filtered
     const dir = sort.dir === 'asc' ? 1 : -1
-    return rows
+    return filtered
       .map((row, i) => ({ row, i, v: col.value(row) }))
       .sort((a, b) => compare(a.v, b.v) * dir || a.i - b.i)
       .map((x) => x.row)
-  }, [rows, sort, colByKey])
+  }, [filtered, sort, colByKey])
 
   const groups = useMemo(() => {
     if (!groupCol) return null
@@ -154,13 +205,37 @@ export function DataGrid<T>({
     </tr>
   )
 
+  const narrowed = query.trim() !== ''
+
   return (
-    <div>
-      {groupable.length > 0 && (
-        <div className="grid-toolbar">
+    <div className="data-grid">
+      <div className="grid-toolbar">
+        <input
+          type="search"
+          value={query}
+          placeholder="Search…"
+          aria-label="Search rows"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            // Escape clears the box; only an already-empty box lets it go on
+            // to whatever is listening above — a full-screen widget closes
+            // on it, and clearing a search must not exit the screen.
+            if (e.key === 'Escape' && query) {
+              setQuery('')
+              e.stopPropagation()
+            }
+          }}
+        />
+        {/* Always mounted, so the live region exists before it has anything
+            to say; a region that appears already holding its text is read
+            as nothing. */}
+        <span className="grid-count" aria-live="polite" aria-atomic="true">
+          {narrowed ? `${filtered.length} of ${rows.length} rows` : ''}
+        </span>
+        {groupable.length > 0 && (
           <label>
             Group by{' '}
-            <select value={group ?? ''} onChange={(e) => updateGroup(e.target.value)} aria-label="Group rows by">
+            <select value={group ?? ''} onChange={(e) => updateGroup(e.target.value)}>
               <option value="">— none —</option>
               {groupable.map((c) => (
                 <option key={c.key} value={c.key}>
@@ -169,8 +244,8 @@ export function DataGrid<T>({
               ))}
             </select>
           </label>
-        </div>
-      )}
+        )}
+      </div>
       {/* Only scroll internally when asked; inside widgets the body scrolls. */}
       <div className={maxHeight ? 'table-scroll' : undefined} style={maxHeight ? { maxHeight } : undefined}>
         <table className="data">
@@ -185,53 +260,92 @@ export function DataGrid<T>({
                     className={sortable ? 'sortable' : undefined}
                     style={col.align === 'right' ? { textAlign: 'right' } : undefined}
                     aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : undefined}
-                    onClick={sortable ? () => updateSort(col.key) : undefined}
                   >
-                    {col.label}
-                    {active && <span className="sort-mark">{sort!.dir === 'asc' ? '▲' : '▼'}</span>}
+                    {/* A real button, so the keyboard can sort too; and an idle
+                        mark on every one, so a column reads as sortable before
+                        anyone has sorted by it. */}
+                    {sortable ? (
+                      <button type="button" className="sort" onClick={() => updateSort(col.key)}>
+                        {col.label}
+                        <SortMark dir={active ? sort!.dir : 'idle'} />
+                      </button>
+                    ) : (
+                      col.label
+                    )}
                   </th>
                 )
               })}
             </tr>
           </thead>
           <tbody>
-            {groups
-              ? groups.map(([label, members]) => {
-                  const open = !collapsed.has(label)
-                  return [
-                    <tr
-                      key={`g:${label}`}
-                      className="group-row"
-                      onClick={() =>
-                        setCollapsed((s) => {
-                          const next = new Set(s)
-                          if (next.has(label)) next.delete(label)
-                          else next.add(label)
-                          return next
-                        })
-                      }
-                    >
-                      {columns.map((col, ci) => (
-                        <td key={col.key} className={cellClass(col)}>
-                          {ci === 0 ? (
-                            <>
-                              <span className="group-toggle">{open ? '▾' : '▸'}</span>
-                              {label}
-                              <span className="muted" style={{ fontWeight: 400 }}>{` · ${members.length}`}</span>
-                            </>
-                          ) : (
-                            aggregateOf(col, members) ?? ''
-                          )}
-                        </td>
-                      ))}
-                    </tr>,
-                    ...(open ? members.map((row, i) => renderRow(row, i)) : []),
-                  ]
-                })
-              : sorted.map((row, i) => renderRow(row, i))}
+            {sorted.length === 0 ? (
+              <tr className="no-match">
+                <td colSpan={columns.length} className="muted">
+                  No rows match “{query.trim()}”
+                </td>
+              </tr>
+            ) : groups ? (
+              groups.map(([label, members]) => {
+                const open = !collapsed.has(label)
+                return [
+                  <tr
+                    key={`g:${label}`}
+                    className="group-row"
+                    onClick={() =>
+                      setCollapsed((s) => {
+                        const next = new Set(s)
+                        if (next.has(label)) next.delete(label)
+                        else next.add(label)
+                        return next
+                      })
+                    }
+                  >
+                    {columns.map((col, ci) => (
+                      <td key={col.key} className={cellClass(col)}>
+                        {ci === 0 ? (
+                          <>
+                            <span className="group-toggle">{open ? '▾' : '▸'}</span>
+                            {label}
+                            <span className="muted" style={{ fontWeight: 400 }}>{` · ${members.length}`}</span>
+                          </>
+                        ) : (
+                          aggregateOf(col, members) ?? ''
+                        )}
+                      </td>
+                    ))}
+                  </tr>,
+                  ...(open ? members.map((row, i) => renderRow(row, i)) : []),
+                ]
+              })
+            ) : (
+              sorted.map((row, i) => renderRow(row, i))
+            )}
           </tbody>
         </table>
       </div>
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------ icons */
+
+/** Two stacked chevrons; the one for the active direction is filled in. A
+ *  fixed 9×9 box, so the header does not shift as a column goes idle → asc →
+ *  desc the way glyphs from a fallback font would make it. */
+function SortMark({ dir }: { dir: 'asc' | 'desc' | 'idle' }) {
+  const up = dir === 'asc' ? 1 : 0.35
+  const down = dir === 'desc' ? 1 : 0.35
+  return (
+    <svg
+      className={dir === 'idle' ? 'sort-mark idle' : 'sort-mark'}
+      width="9"
+      height="9"
+      viewBox="0 0 9 9"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M4.5 0.5 L8 4 H1 Z" fill="currentColor" opacity={dir === 'idle' ? 1 : up} />
+      <path d="M4.5 8.5 L1 5 H8 Z" fill="currentColor" opacity={dir === 'idle' ? 1 : down} />
+    </svg>
   )
 }

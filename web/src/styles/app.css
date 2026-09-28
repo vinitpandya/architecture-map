@@ -1013,17 +1013,49 @@ select.rag-paused { color: var(--text-muted); }
 
 .grid-toolbar {
   display: flex;
+  flex-wrap: wrap; /* a three-column widget is ~210px wide; the label drops whole */
   justify-content: flex-end;
   align-items: center;
-  gap: 6px;
+  gap: 4px 10px;
   font-size: 12px;
   color: var(--text-muted);
   margin-bottom: 6px;
+}
+.grid-toolbar label {
+  white-space: nowrap;
 }
 .grid-toolbar select {
   font-size: 12px;
   padding: 2px 6px;
   margin-left: 4px;
+}
+/* Small at rest — it sits above two-row tables as often as long ones — and
+   given room once it has something in it. */
+.grid-toolbar input[type='search'] {
+  font-size: 12px;
+  padding: 3px 8px;
+  flex: 0 1 112px;
+  width: 112px;
+  min-width: 96px;
+  transition: width 120ms ease;
+}
+.grid-toolbar input[type='search']:focus,
+.grid-toolbar input[type='search']:not(:placeholder-shown) {
+  flex-basis: 176px;
+  width: 176px;
+}
+.grid-toolbar .grid-count {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* Always mounted so the live region exists before it speaks; empty, it must
+   not also take a gap of its own. */
+.grid-toolbar .grid-count:empty {
+  margin-left: -10px;
+}
+table.data tr.no-match td {
+  white-space: normal;
+  padding: 10px 0;
 }
 table.data th.sortable {
   cursor: pointer;
@@ -1033,10 +1065,41 @@ table.data th.sortable {
 table.data th.sortable:hover {
   color: var(--text-primary);
 }
+/* The header's button is the header: it inherits the th's type and colour
+   and fills the cell, so a click anywhere in it sorts and the keyboard can. */
+table.data th.sortable button.sort {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+table.data th.sortable button.sort:hover:not(:disabled) {
+  background: none;
+}
 table.data .sort-mark {
   margin-left: 4px;
-  font-size: 9px;
+  vertical-align: -1px;
   color: var(--accent);
+}
+/* Muted until the column is sorted by, and firmer under the pointer or the
+   focus ring, so the header reads as a control without the row turning into
+   a picket fence. */
+table.data .sort-mark.idle {
+  color: var(--text-muted);
+}
+table.data th.sortable:hover .sort-mark.idle,
+table.data th.sortable button.sort:focus-visible .sort-mark.idle {
+  color: var(--text-secondary);
 }
 table.data tr.group-row td {
   background: var(--surface-2);

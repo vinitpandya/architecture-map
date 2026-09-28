@@ -1068,7 +1068,12 @@ export function MapCanvas({
                 aria-label="Find on this map"
                 onChange={(e) => setFind(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Escape') setFind('')
+                  // Same rule as a grid's search: clear, and only an empty box
+                  // lets Escape go on to close a full-screen widget.
+                  if (e.key === 'Escape' && find) {
+                    setFind('')
+                    e.stopPropagation()
+                  }
                   // Enter takes the first hit, because that is what Enter means
                   // in every other search box a person has ever used.
                   if (e.key === 'Enter' && hits.length) show(hits[0])

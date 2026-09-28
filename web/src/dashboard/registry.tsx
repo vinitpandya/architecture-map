@@ -459,7 +459,7 @@ export function WidgetBody({ widget }: { widget: WidgetConfig }) {
     case 'contract-versions': return <ContractVersionsBody widget={widget} />
     case 'drift': return <DriftBody widget={widget} />
     case 'unresolved': return <UnresolvedBody widget={widget} />
-    case 'repos': return <ReposBody />
+    case 'repos': return <ReposBody widget={widget} />
     case 'process-tree': return <ProcessTreeBody widget={widget} />
     case 'process-children': return <ProcessChildrenBody widget={widget} />
     case 'process-flow': return <ProcessFlowBody widget={widget} />
@@ -467,8 +467,8 @@ export function WidgetBody({ widget }: { widget: WidgetConfig }) {
     case 'process-list': return <ProcessListBody widget={widget} />
     case 'process-map': return <ProcessMapBody widget={widget} />
     case 'process-handoffs': return <ProcessHandoffsBody widget={widget} />
-    case 'team-list': return <TeamListBody />
-    case 'team-handoffs': return <TeamMatrixBody />
+    case 'team-list': return <TeamListBody widget={widget} />
+    case 'team-handoffs': return <TeamMatrixBody widget={widget} />
     default: return <Empty title={`Unknown widget "${widget.type}"`} />
   }
 }
@@ -570,6 +570,7 @@ function NodeListBody({ widget }: { widget: WidgetConfig }) {
     <DataGrid
       rows={data.nodes}
       rowKey={(n) => n.id}
+      storageKey={`w.${widget.i}`}
       columns={[
         { key: 'name', label: 'Name', value: (n) => n.name, render: (n) => <NodeLink id={n.id} label={n.name} /> },
         ...(kind === 'service'
@@ -604,6 +605,7 @@ function EdgeListBody({ widget }: { widget: WidgetConfig }) {
     <DataGrid
       rows={data.edges}
       rowKey={(e) => e.id}
+      storageKey={`w.${widget.i}`}
       columns={[
         { key: 'from', label: 'From', value: (e) => idValue(e.from), render: (e) => <NodeLink id={e.from} /> },
         { key: 'to', label: 'To', value: (e) => idValue(e.to), render: (e) => <NodeLink id={e.to} /> },
@@ -624,13 +626,14 @@ function TopicFlowBody({ widget }: { widget: WidgetConfig }) {
   </Empty>
   if (!data) return null
 
-  const side = (label: string, rows: TopicFlow['producers']) => (
+  const side = (label: string, slot: string, rows: TopicFlow['producers']) => (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div className="nav-group-label">{label}</div>
       {rows.length ? (
         <DataGrid
           rows={rows}
           rowKey={(e) => e.id}
+          storageKey={`w.${widget.i}.${slot}`}
           columns={[
             {
               key: 'from',
@@ -649,8 +652,8 @@ function TopicFlowBody({ widget }: { widget: WidgetConfig }) {
 
   return (
     <div className="row" style={{ gap: 16, alignItems: 'flex-start' }}>
-      {side('Producers', data.producers)}
-      {side('Consumers', data.consumers)}
+      {side('Producers', 'producers', data.producers)}
+      {side('Consumers', 'consumers', data.consumers)}
     </div>
   )
 }
@@ -666,6 +669,7 @@ function ContractVersionsBody({ widget }: { widget: WidgetConfig }) {
     <DataGrid
       rows={data.contracts}
       rowKey={(c) => c.contractId}
+      storageKey={`w.${widget.i}`}
       columns={[
         {
           key: 'contractId',
@@ -986,6 +990,7 @@ function UnresolvedBody({ widget }: { widget: WidgetConfig }) {
     <DataGrid
       rows={data.unresolved}
       rowKey={(u) => u.id}
+      storageKey={`w.${widget.i}`}
       columns={[
         { key: 'repo', label: 'Repo', value: (u) => u.repo },
         { key: 'expected', label: 'Expected', value: (u) => u.expected },
@@ -1100,12 +1105,14 @@ function ProcessChildrenBody({ widget }: { widget: WidgetConfig }) {
     <DataGrid
       rows={data.children}
       rowKey={(p) => p.id}
+      storageKey={`w.${widget.i}`}
       defaultSort={null}
       columns={[
         {
           key: 'code',
           label: 'Code',
           value: (p) => p.code,
+          search: (p) => displayCode(p.code),
           render: (p) => <Link to={processHref(p.pack, p.code)}>{displayCode(p.code)}</Link>,
         },
         {
@@ -1232,7 +1239,7 @@ function ProcessHandoffsBody({ widget }: { widget: WidgetConfig }) {
   )
 }
 
-function TeamListBody() {
+function TeamListBody({ widget }: { widget: WidgetConfig }) {
   const { data } = useQuery<{ configured: boolean; departments: Department[]; teams: Team[] }>('/teams')
   if (!data) return null
   if (!data.teams.length)
@@ -1248,6 +1255,7 @@ function TeamListBody() {
     <DataGrid
       rows={data.teams}
       rowKey={(t) => t.id}
+      storageKey={`w.${widget.i}`}
       columns={[
         {
           key: 'name',
@@ -1275,7 +1283,7 @@ function TeamListBody() {
  * house style has a table, and a cell that is a link is worth more than a cell
  * that is a shade.
  */
-function TeamMatrixBody() {
+function TeamMatrixBody({ widget }: { widget: WidgetConfig }) {
   const { data } = useQuery<{ handoffs: Handoff[] }>('/handoffs', { crossTeam: 'true' })
   if (!data) return null
   if (!data.handoffs.length)
@@ -1305,6 +1313,7 @@ function TeamMatrixBody() {
     <DataGrid
       rows={rows as Record<string, string | number>[]}
       rowKey={(r) => String(r.from)}
+      storageKey={`w.${widget.i}`}
       columns={[
         {
           key: 'from',
@@ -1347,6 +1356,7 @@ function ProcessCoverageBody({ widget }: { widget: WidgetConfig }) {
       <DataGrid
         rows={data.components}
         rowKey={(c) => c.node.id}
+        storageKey={`w.${widget.i}`}
         columns={[
           {
             key: 'name',
@@ -1359,6 +1369,8 @@ function ProcessCoverageBody({ widget }: { widget: WidgetConfig }) {
             label: 'Processes',
             wide: true,
             value: (c) => c.processes.length,
+            // The cell shows codes, so a code typed into the search finds it.
+            search: (c) => c.processes.map((p) => `${displayCode(p.code)} ${p.code} ${p.name}`).join(' '),
             render: (c) => {
               // The rollup means a component reached by a level 3 is also
               // listed under its level 2 and level 1, so only the most
@@ -1405,12 +1417,14 @@ function ProcessListBody({ widget }: { widget: WidgetConfig }) {
     <DataGrid
       rows={leaves}
       rowKey={(p) => p.id}
+      storageKey={`w.${widget.i}`}
       defaultSort={null}
       columns={[
         {
           key: 'code',
           label: 'Code',
           value: (p) => p.code,
+          search: (p) => displayCode(p.code),
           render: (p) => <Link to={processHref(p.pack, p.code)}>{displayCode(p.code)}</Link>,
         },
         {
@@ -1439,7 +1453,7 @@ function ProcessListBody({ widget }: { widget: WidgetConfig }) {
   )
 }
 
-function ReposBody() {
+function ReposBody({ widget }: { widget: WidgetConfig }) {
   const { data } = useQuery<{ repos: RepoRow[]; configured: boolean }>('/repos')
   if (!data) return null
   if (!data.repos.length) {
@@ -1452,12 +1466,14 @@ function ReposBody() {
     <DataGrid
       rows={data.repos}
       rowKey={(r) => r.repo}
+      storageKey={`w.${widget.i}`}
       columns={[
         { key: 'repo', label: 'Repository', value: (r) => r.repo },
         {
           key: 'commit',
           label: 'Commit',
           value: (r) => r.commit ?? '',
+          search: (r) => (r.commit ? '' : 'never scanned'),
           render: (r) => (r.commit ? <code>{r.commit}</code> : 'never scanned'),
         },
         { key: 'scannedAt', label: 'Scanned', value: (r) => r.scannedAt ?? '' },

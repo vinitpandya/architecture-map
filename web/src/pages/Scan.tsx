@@ -86,12 +86,14 @@ export function ScanPage() {
         {repos.length ? (
           <DataGrid
             rows={repos}
+            storageKey="scan-repos"
             columns={[
               { key: 'repo', label: 'Repository', value: (r) => r.repo },
               {
                 key: 'commit',
                 label: 'Last scanned commit',
                 value: (r) => r.commit ?? '',
+                search: (r) => (r.commit ? '' : 'never scanned'),
                 render: (r) => (r.commit ? <code>{r.commit}</code> : <span className="muted">never scanned</span>),
               },
               {
@@ -101,6 +103,7 @@ export function ScanPage() {
                 // value and the tooltip, because "7 days ago" is the answer to
                 // "is this stale" and the timestamp is the answer to "when".
                 value: (r) => r.scannedAt ?? '',
+                search: (r) => (r.scannedAt ? relative(Date.parse(r.scannedAt)) : 'never scanned'),
                 render: (r) =>
                   r.scannedAt ? (
                     <span title={r.scannedAt}>{relative(Date.parse(r.scannedAt))}</span>

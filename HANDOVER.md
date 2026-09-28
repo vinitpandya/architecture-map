@@ -50,7 +50,7 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 
 ```bash
 npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 553 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 239 more
+npm run build && npm run verify:ui   # the checks that need a browser — 282 more
 npm run verify:dev                   # the 11 that only fail in dev mode
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
@@ -282,7 +282,7 @@ through 452 server assertions and 191 browser checks, because neither of them
 runs the build that says so. This one opens every page against `npm run dev`
 and fails on any console error.
 
-**`npm run verify:ui` — 239 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 282 checks in Chromium at 1280×900, all passing.**
 
 A finding says how long it has been true rather than "just now", names the team
 that should look at it, and can be accepted with a reason and reopened again —
@@ -732,6 +732,92 @@ because the browser suite caught something 553 server assertions could not.**
 `verify:ui` takes about ten minutes and belongs before a push of UI work, not
 after it.
 
+## The key is remembered, Everything opens with the services, and every grid has a search
+
+Three changes to what is on screen, in the order they were asked for.
+
+### Full detail opens with the services
+
+Switching the map to Everything drew the whole scanned topology at once — 35
+boxes on the demo estate, several hundred on a real one — and the first thing
+anybody did was start switching kinds off in the key. Every single time,
+because the key was held in plain `useState` and reset on every switch and
+every reload.
+
+- Full detail on the **estate** map now opens with the services and every
+  other kind switched off in the key. The map grows as it is asked to. Measured
+  on the demo estate: Everything went from 35 nodes to 10; adding databases
+  gave 18, adding topics 27.
+- What the key has off is saved **per map and per detail level**
+  (`architecture-map.key.<map>.<level>`). 27 survived both a reload and a round
+  trip through Services, where before each of those reset to 35.
+- A **process map is exempt** and still opens whole: it opens at full detail by
+  design, and its components *are* its topics and stores. The first cut applied
+  the services-only default to process maps too and drew 5 of 14; the browser
+  suite caught it (236/239) and `bounded = !!process` is the fix.
+- The map's search says which of two reasons a hit is not drawn — `switched
+  off in the key` or `inside a line` — and choosing it clears whichever is in
+  the way, switching a kind on rather than changing the level.
+
+**Known gap, and the author's stated choice for it:** with topics and
+endpoints off, services connected only through them sit on the canvas with
+no line between them (10 boxes, 0 lines on the demo estate), because at full
+detail a line goes to the topic and not to the other service. The decision is
+to **keep the collapsed service-to-service line drawn while every node it runs
+through is hidden**, replacing it with the real lines as those kinds are
+switched on. `collapse.ts` already computes those lines with their `through`
+lists; the work is to draw them at full detail for hidden intermediaries. Not
+started. `showEverything()` in the browser suite switches every key row on
+and settles between toggles, so the dozen checks that reason about the whole
+topology still mean what they say.
+
+Also chosen and not started: **a saved view per map widget** — detail level,
+key, colour-by and arrangement (not positions) saved on the page with an
+explicit *Save view*, with the person's own `localStorage` state winning
+until *Reset to the page's view*. `patchWidget` in `Pages.tsx` is the write
+path; `WidgetBody` does not receive it yet.
+
+### Every grid can be searched, sorted and grouped
+
+Every table in the app is the one `DataGrid` component, and sorting and
+grouping were already on all of them — measured before touching anything:
+32 grids on screen across the pages, 32 with a Group-by select, 32 with
+sortable headers, **0 with a search**. The controls were also invisible until
+used: the sort mark appeared only once a column was sorted, so being told the
+grids "do not have sorting" was accurate as far as anybody could see.
+
+- A **search box on every grid**, in the toolbar, filtering across every
+  column's `value()` before the sort and the grouping; `N of M` beside it; a
+  row saying `No rows match` that keeps the box on screen; `Escape` clears.
+  Not persisted — a filter that survived a reload would read as missing data.
+- A **faint ↕ on every sortable header**, firming up under the pointer.
+- **Eleven widget grids had no storage key** and forgot their sort and
+  grouping on the next visit while the same grid on a page remembered. They
+  are keyed `w.<widget id>` now (`.producers` / `.consumers` for the topic-flow
+  widget's pair), and the Scan page's repositories grid is `scan-repos`.
+- **Full screen is a second copy of the same grid** — the overlay mounts the
+  widget again over the tile, not instead of it — which the storage key turned
+  into two writers of one key. A save now announces itself and every grid with
+  that key adopts it, so a sort or grouping chosen full screen is the tile's
+  when the screen closes. Found by the adversarial review, not by the suite;
+  the suite now covers it.
+- A column whose cell shows more than its value can say so with `search`:
+  the coverage grid's Processes column is a count whose cell lists codes, and
+  `2.1` typed into the search found nothing until it did.
+
+The browser suite sweeps eleven screens and asserts every `table.data` sits in
+a `.data-grid` with the search, sortable headers and the Group-by select, with
+an exact table count per screen so a screen losing a grid is noticed; then it
+drives the estate page's services list: typing narrows to rows containing the
+text with the count agreeing, a miss keeps the box, Escape restores, a header
+click sorts ascending then descending with the rows following, the sort
+survives a reload, Enter on a focused header sorts from the keyboard, grouping
+by team folds to one row per team, and a search inside a grouping keeps only
+the groups with a hit. Then full screen: the copy
+opens with the tile's sort, `Escape` in its search clears the box and leaves
+the screen open while a second `Escape` on the empty box closes it, and a sort
+and grouping chosen full screen are the tile's when it closes.
+
 ## What the scale pass found
 
 The demo estate is ten services, sparse, with no node anything else crowds
@@ -964,6 +1050,9 @@ committed, being a throwaway.
 
 ## What I would do next, in order
 
+0. **The two chosen map changes above**, in this order: the collapsed line at
+   full detail while what carries it is hidden (the canvas is ten unconnected
+   boxes without it), then *Save view* on the map widget.
 1. **Route a finding to more than one team.** `drift.team_id` is a single
    column, so a version skew between two teams and a topic two teams publish
    stay unrouted — 5 of the demo estate's 15. That is honest (more than one

@@ -304,6 +304,7 @@ function Processes({ detail }: { detail: NodeDetail }) {
               key: 'code',
               label: 'Code',
               value: (p) => p.code,
+              search: (p) => displayCode(p.code),
               render: (p) => <Link to={processHref(p.pack, p.code)}>{displayCode(p.code)}</Link>,
             },
             {
