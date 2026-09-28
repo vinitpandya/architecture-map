@@ -689,6 +689,11 @@
   background: var(--hover-wash);
 }
 
+/* An ancestor kept so a filtered tree is still a tree. Faded rather than
+   hidden, and only its own line — what is beneath it is what was asked for. */
+.proc-row.context > .proc-line {
+  opacity: 0.5;
+}
 .proc-row.level-1 > .proc-line {
   font-size: 14px;
   font-weight: 620;

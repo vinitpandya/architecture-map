@@ -1053,6 +1053,15 @@ select.rag-paused { color: var(--text-muted); }
 .grid-toolbar .grid-count:empty {
   margin-left: -10px;
 }
+/* A row kept for what is beneath it, not for itself. */
+table.data tr.context td {
+  opacity: 0.5;
+}
+/* "2 of 5 parts — the rest are outside this page's filter." */
+.filtered-note {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
 table.data tr.no-match td {
   white-space: normal;
   padding: 10px 0;

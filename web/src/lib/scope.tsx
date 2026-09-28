@@ -68,6 +68,21 @@ type Ctx = {
 
 const ScopeContext = createContext<Ctx | null>(null)
 
+/**
+ * Whether what is rendering sits under a filter row. Only a page's own grid
+ * does. The scope is one piece of state, kept from whichever page set it last,
+ * and every query used to send it — so the Teams page listed only the services
+ * of whatever team the last page was filtered to, with no filter row on screen
+ * to say so or to clear it. A screen without a filter row reads the estate.
+ */
+const FilterRowContext = createContext(false)
+
+export function UnderFilterRow({ children }: { children: ReactNode }) {
+  return <FilterRowContext.Provider value={true}>{children}</FilterRowContext.Provider>
+}
+
+const NO_FILTER: Record<string, string> = {}
+
 export function ScopeProvider({ children }: { children: ReactNode }) {
   const [scope, setScopeState] = useState<Scope>(loadScope)
   const [revision, setRevision] = useState(0)
@@ -228,14 +243,16 @@ export function useScope() {
 }
 
 /**
- * Fetch for the current scope. Previous data is held while a refetch is in
- * flight so widgets dim rather than collapsing into a skeleton.
+ * Fetch for the current scope — under a filter row; everywhere else, for the
+ * whole estate. Previous data is held while a refetch is in flight so widgets
+ * dim rather than collapsing into a skeleton.
  */
 export function useQuery<T>(
   path: string | null,
   extra?: Record<string, unknown>
 ): { data: T | null; loading: boolean; error: string | null } {
-  const { params, revision } = useScope()
+  const { params: scoped, revision } = useScope()
+  const params = useContext(FilterRowContext) ? scoped : NO_FILTER
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)

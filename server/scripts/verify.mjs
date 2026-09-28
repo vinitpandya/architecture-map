@@ -51,7 +51,7 @@ if (!stage) {
   const registry = path.join(tmp, 'teams.json')
   fs.copyFileSync(path.join(ROOT, 'demo', 'teams.json'), registry)
   let bad = 0
-  for (const s of ['ingest', 'estate', 'processes', 'packs', 'migrate', 'org', 'map']) {
+  for (const s of ['ingest', 'estate', 'processes', 'packs', 'migrate', 'org', 'scope', 'map']) {
     const res = spawnSync(process.execPath, [fileURLToPath(import.meta.url), `--stage=${s}`], {
       stdio: 'inherit',
       env: {
@@ -2694,6 +2694,202 @@ if (stage === 'org') {
     0
   )
 
+  done()
+}
+
+/* ─────────────────────────── stage: scope — every widget follows the filter row
+
+   A page's filter row is one rule, applied by every endpoint a widget reads.
+   Before it was, a page filtered to a team drew that team's map beside an
+   estate-wide process tree, estate-wide counts and every team in the org.
+   Each answer here is checked against something computed another way — the
+   estate's own /status, the team's own page, the map's own /graph, the
+   database — so the rule cannot agree with itself and be wrong. */
+
+if (stage === 'scope') {
+  console.log('\nThe filter row, on every endpoint a widget reads')
+  const seed = spawnSync(process.execPath, [path.join(HERE, 'seed-demo.mjs')], { encoding: 'utf8', env: process.env })
+  if (seed.status !== 0) {
+    console.log(`  ✗ seed:demo failed\n${seed.stdout}${seed.stderr}`)
+    process.exit(1)
+  }
+  const express = (await import('express')).default
+  const { router } = await import('../src/routes.js')
+  const { db } = await import('../src/db.js')
+  const app = express()
+  app.use('/api', router)
+  const server = app.listen(0)
+  await new Promise((r) => server.once('listening', r))
+  const base = `http://127.0.0.1:${server.address().port}/api`
+  const get = async (p) => (await fetch(`${base}${p}`)).json()
+  const sorted = (xs) => [...xs].sort().join(',')
+  const componentsOf = (id) =>
+    db.prepare('SELECT node_id FROM process_components WHERE process_id = ?').all(id).map((r) => r.node_id)
+
+  /* ---- with no filter, nothing moves */
+  const status = await get('/status')
+  const all = await get('/counts')
+  is('with no filter, /counts is not filtered', all.filtered, false)
+  const moved = []
+  for (const [k, v] of Object.entries(all.counts)) if (status.counts[k] !== v) moved.push(`${k} ${status.counts[k]}→${v}`)
+  for (const g of ['coverage', 'teams', 'handoffs'])
+    for (const [k, v] of Object.entries(all[g])) if (status[g][k] !== v) moved.push(`${g}.${k} ${status[g][k]}→${v}`)
+  ok('  …and every number is /status’s', moved.length === 0, moved.join(', '))
+  is('  …the process tree is every process', (await get('/processes')).processes.length, status.counts.processes)
+  is('  …the teams list is every team', (await get('/teams')).teams.length, status.teams.total)
+  is('  …and a process keeps all of itself', (await get('/process?pack=order-and-execution&code=2')).inScope, null)
+
+  /* ---- a team: what it owns, and its ancestors as context */
+  const wallet = await get('/processes?teams=wallet')
+  const hits = wallet.processes.filter((p) => !p.context)
+  const context = wallet.processes.filter((p) => p.context)
+  const own = (await get('/team?id=wallet')).processes
+  is('filtered to a team, the tree says it is filtered', wallet.filtered, true)
+  is('  …and holds the processes the team’s own page lists', sorted(hits.map((p) => p.id)), sorted(own.map((p) => p.id)))
+  ok('  …every one of them the team’s', hits.length > 0 && hits.every((p) => p.teamId === 'wallet'), hits.map((p) => `${p.code}:${p.teamId}`).join(' '))
+  ok(
+    '  …with every ancestor of them as context, and nothing else',
+    context.length > 0 &&
+      context.every((c) => c.teamId !== 'wallet' && hits.some((h) => h.pack === c.pack && h.code.startsWith(`${c.code}.`))),
+    context.map((p) => `${p.code}:${p.teamId}`).join(' ')
+  )
+  ok(
+    '  …so no hit is missing its parent',
+    hits.every((h) => !h.parentId || wallet.processes.some((p) => p.id === h.parentId)),
+    hits.filter((h) => h.parentId && !wallet.processes.some((p) => p.id === h.parentId)).map((h) => h.code).join(' ')
+  )
+  const counted = await get('/counts?teams=wallet')
+  is('  …and the Processes tile counts the hits, not the context', counted.counts.processes, hits.length)
+  is('  …the Atomic actions tile the hits that are leaves', counted.counts.processLeaves, hits.filter((p) => p.childCount === 0).length)
+  is('  …the tiles say they are filtered', counted.filtered, true)
+
+  const services = (await get('/nodes?kinds=service&teams=wallet')).nodes
+  is('the Services tile is the services list', counted.counts.services, services.length)
+  ok('  …which is the team’s', services.length > 0 && services.every((n) => n.teamId === 'wallet'), services.map((n) => n.id).join(' '))
+
+  const teams = await get('/teams?teams=wallet')
+  is('the teams list is the team', teams.teams.map((t) => t.id).join(','), 'wallet')
+  is('  …and so is the Teams tile', counted.teams.total, 1)
+  const whole = (await get('/teams')).teams.find((t) => t.id === 'wallet')
+  is('  …shown whole: its counts are the team’s, not the filter’s', JSON.stringify(teams.teams[0]), JSON.stringify(whole))
+
+  const crossing = (await get('/handoffs?crossTeam=true&teams=wallet')).handoffs
+  ok(
+    'the handoff matrix keeps a crossing with the team at either end',
+    crossing.length > 0 && crossing.every((h) => h.from.teamId === 'wallet' || h.to.teamId === 'wallet'),
+    crossing.map((h) => `${h.from.teamId}>${h.to.teamId}`).join(' ')
+  )
+  ok('  …both ways round', crossing.some((h) => h.from.teamId === 'wallet') && crossing.some((h) => h.to.teamId === 'wallet'))
+  is('  …and the Cross-team handoffs tile is its length', counted.handoffs.crossTeam, crossing.length)
+
+  const flow = await get('/topic-flow?id=topic:users.created.v2&teams=wallet')
+  const flowAll = await get('/topic-flow?id=topic:users.created.v2')
+  ok(
+    'a topic’s flow keeps only the team’s services',
+    [...flow.producers, ...flow.consumers].every((e) => db.prepare('SELECT team_id FROM nodes WHERE id = ?').get(e.from)?.team_id === 'wallet'),
+    [...flow.producers, ...flow.consumers].map((e) => e.from).join(' ')
+  )
+  is('  …and says how many there were before', flow.total.consumers, flowAll.consumers.length)
+  ok('  …which is more than it shows', flow.consumers.length < flow.total.consumers, `${flow.consumers.length} of ${flow.total.consumers}`)
+
+  const contracts = await get('/contract-versions?teams=wallet')
+  const contractsAll = await get('/contract-versions')
+  const walletServices = new Set(services.map((n) => n.id))
+  ok(
+    'a contract stays in when one of the team’s services binds it',
+    contracts.contracts.length > 0 &&
+      contracts.contracts.length < contractsAll.contracts.length &&
+      contracts.contracts.every((c) => c.bindings.some((b) => walletServices.has(b.serviceId))),
+    contracts.contracts.map((c) => c.contractId).join(' ')
+  )
+  ok(
+    '  …and is shown whole, every binding and so every skew',
+    contracts.contracts.every(
+      (c) => JSON.stringify(c) === JSON.stringify(contractsAll.contracts.find((x) => x.contractId === c.contractId))
+    )
+  )
+
+  const coverage = (await get('/coverage?kinds=service&teams=wallet')).components
+  is('coverage lists the team’s components', sorted(coverage.map((c) => c.node.id)), sorted(walletServices))
+
+  const drift = (await get('/drift?teams=wallet')).findings
+  ok('findings are the ones routed to the team', drift.length > 0 && drift.every((d) => d.team_id === 'wallet'), `${drift.length}`)
+  is('  …and the Drift tile counts them', counted.counts.drift, drift.length)
+
+  const produced = (await get('/edges?kinds=kafka.produce&teams=wallet')).edges
+  const teamOf = (id) => db.prepare('SELECT team_id FROM nodes WHERE id = ?').get(id)?.team_id
+  ok(
+    'a relationship needs only one end in the team',
+    produced.length > 0 && produced.every((e) => teamOf(e.from) === 'wallet' || teamOf(e.to) === 'wallet'),
+    produced.map((e) => e.id).join(' ')
+  )
+
+  /* ---- one process, thinned but not cut */
+  const two = await get('/process?pack=order-and-execution&code=2&teams=wallet')
+  is('a process filtered to a team keeps all its parts for the diagrams', two.children.length, 4)
+  is('  …and says none of them is the team’s own', two.inScope.children.length, 0)
+  is(
+    '  …but keeps the part the team’s work is beneath, as context',
+    two.inScope.context.map((id) => two.children.find((c) => c.id === id)?.code).join(','),
+    '2.3'
+  )
+  ok(
+    '  …and its handoffs to the ones with the team at an end',
+    two.inScope.links.length > 0 &&
+      [...two.links.out, ...two.links.in, ...two.links.inside]
+        .filter((l) => two.inScope.links.includes(l.id))
+        .every((l) => l.from.teamId === 'wallet' || l.to.teamId === 'wallet')
+  )
+
+  /* ---- a focus: the map's neighbourhood, everywhere */
+  const focus = 'focus=svc:order-service&depth=1'
+  const graph = await get(`/graph?${focus}&kinds=service,kafka.topic,database,cache,endpoint,contract,external`)
+  const onMap = new Set(graph.nodes.map((n) => n.id))
+  for (const kind of ['service', 'kafka.topic', 'database']) {
+    is(
+      `a list of ${kind} under a focus is the map's ${kind} nodes`,
+      sorted((await get(`/nodes?${focus}&kinds=${kind}`)).nodes.map((n) => n.id)),
+      sorted(graph.nodes.filter((n) => n.kind === kind).map((n) => n.id))
+    )
+  }
+  const near = (await get(`/edges?${focus}`)).edges
+  ok('a relationship under a focus has both ends on the map', near.length > 0 && near.every((e) => onMap.has(e.from) && onMap.has(e.to)), `${near.length}`)
+  is('  …and there are as many as the map draws', near.length, graph.edges.length)
+  const focusCounts = await get(`/counts?${focus}`)
+  is('the Services tile under a focus counts the map’s services', focusCounts.counts.services, graph.nodes.filter((n) => n.kind === 'service').length)
+  const touching = (await get(`/processes?${focus}`)).processes.filter((p) => !p.context)
+  ok(
+    'a process under a focus is one that touches the neighbourhood',
+    touching.length > 0 && touching.every((p) => componentsOf(p.id).some((id) => onMap.has(id))),
+    `${touching.length}`
+  )
+  ok('  …and not every process', touching.length < status.counts.processes, `${touching.length} of ${status.counts.processes}`)
+  ok(
+    'a list of services under a focus is services, even with a topic at the centre',
+    (await get('/nodes?focus=topic:orders.matched.v1&depth=1&kinds=service')).nodes.every((n) => n.kind === 'service')
+  )
+
+  /* ---- the filter row's process: a subtree for processes, a region for the rest */
+  const sub = await get('/processes?process=order-and-execution%232.1')
+  is('the filter row’s process roots the tree', sorted(sub.processes.filter((p) => !p.context).map((p) => p.code)), '2.1,2.1.1,2.1.2,2.1.3,2.1.4')
+  is('  …with the way down to it as context', sub.processes.filter((p) => p.context).map((p) => p.code).join(','), '2')
+  is('  …and the tiles count the same five', (await get('/counts?process=order-and-execution%232.1')).counts.processes, 5)
+  const inside = new Set(componentsOf('proc:order-and-execution:2.1'))
+  const listed = (await get('/nodes?process=order-and-execution%232.1&kinds=service,kafka.topic,database,cache,endpoint')).nodes
+  ok('  …and a node list holds only its components', listed.length > 0 && listed.every((n) => inside.has(n.id)), listed.map((n) => n.id).join(' '))
+  const own1 = await get('/processes?root=1&pack=onboarding&process=order-and-execution%232')
+  ok('a widget’s own "Start at" wins over the filter row’s process', own1.processes.length > 0 && own1.processes.every((p) => p.pack === 'onboarding'), own1.processes.map((p) => p.code).join(' '))
+  const owned = await get('/processes?owner=wallet&teams=trading')
+  ok('a widget’s own owner wins over the filter row’s teams', owned.processes.filter((p) => !p.context).every((p) => p.owner === 'wallet') && owned.processes.length > 0)
+  const nowhere = await get('/counts?process=no-such-pack%239')
+  is('an unknown process counts nothing, not everything', nowhere.counts.services + nowhere.counts.processes, 0)
+
+  /* ---- a repo places what has no node of its own */
+  const repoTeams = (await get('/teams?repos=wallet-service')).teams.map((t) => t.id)
+  const repoOwners = db.prepare(`SELECT DISTINCT team_id FROM nodes WHERE owner_repo = 'wallet-service' AND team_id IS NOT NULL`).all().map((r) => r.team_id)
+  is('filtered to a repo, the teams are the ones owning something in it', sorted(repoTeams), sorted(repoOwners))
+
+  server.close()
   done()
 }
 

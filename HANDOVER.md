@@ -49,8 +49,8 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 ```
 
 ```bash
-npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 553 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 282 more
+npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 604 assertions
+npm run build && npm run verify:ui   # the checks that need a browser — 292 more
 npm run verify:dev                   # the 11 that only fail in dev mode
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
@@ -110,7 +110,7 @@ participating parties and the code that proves each, rather than a table.
 
 ## What was actually run
 
-**`npm run verify` — 553 assertions across seven stages, all passing.**
+**`npm run verify` — 604 assertions across eight stages, all passing.**
 
 *Ingest (58, in-process against a fresh database, with a short HTTP stretch at
 the end for the two routes an operator drives; `migrate` is its own stage and
@@ -282,7 +282,7 @@ through 452 server assertions and 191 browser checks, because neither of them
 runs the build that says so. This one opens every page against `npm run dev`
 and fails on any console error.
 
-**`npm run verify:ui` — 282 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 292 checks in Chromium at 1280×900, all passing.**
 
 A finding says how long it has been true rather than "just now", names the team
 that should look at it, and can be accepted with a reason and reopened again —
@@ -817,6 +817,64 @@ the groups with a hit. Then full screen: the copy
 opens with the tile's sort, `Escape` in its search clears the box and leaves
 the screen open while a second `Escape` on the empty box closes it, and a sort
 and grouping chosen full screen are the tile's when it closes.
+
+## Every widget follows the filter row
+
+Asked because the process tree ignored a page filtered to a team. It was not
+alone. Measured by reading every widget's endpoint, on a page filtered to a
+team:
+
+- **Ignored the filter entirely:** stat tiles (all twenty measures, read off
+  `/status`), process tree, process actions, process coverage, contract
+  versions, topic flow, the teams list, repositories — and the team handoff
+  matrix, whose endpoint reads `team` while the page sends `teams`.
+- **Cleared it on purpose:** the process-on-the-map widget, which was built for
+  the process page, where there is no filter row.
+- **Honoured part of it:** node, relationship, drift and unresolved lists read
+  teams and repos but not Focus, Depth or Process — only the map read those.
+- **Leaked it:** `useQuery` sent the last dashboard's filter from every screen.
+  The Teams page's services grid — the screen for putting every service in a
+  team — listed only the services of whatever team the last page was filtered
+  to, with no filter row on it to show or clear that.
+- **A regression of mine:** since process codes became per pack, the tree's
+  "Start at" sent a code with no pack, got a 400, and left the widget blank.
+
+What changed:
+
+- **One rule.** `/graph`'s node filter is lifted out as `readScope` in
+  `routes.js`, and every endpoint a widget reads applies it: Focus + Depth and
+  Process bound a region (both ends of a line inside it), teams / repos /
+  External pick within it (one end is enough), Show is what the map draws.
+  Things without a node are placed through the nodes they touch.
+- **Processes filtered by team are the ones it owns**, with ancestors kept and
+  dimmed so the tree stays a tree, and "2 of 5 parts" on a row whose parts were
+  thinned. The filter row's process is a subtree.
+- **Widgets about one process or one topic thin their lists and say so**
+  ("1 of 4 parts — the rest are outside this page's filter"); the diagrams and
+  the process map draw the whole process.
+- **Stat tiles** read a new `/api/counts` and say "of N across the estate".
+- **Only a page with a filter row sends the filter** (`UnderFilterRow`).
+- **Every list says when the filter emptied it**, rather than "No services yet".
+- **"Start at" takes `<pack>#<code>`**, and a bare one is looked up.
+
+Checked by an eighth server stage, `scope` (51 assertions, each against an
+answer computed another way — `/status`, the team's own page, the map's own
+`/graph`, the database): with no filter `/counts` is `/status` number for
+number; filtered to wallet, the tree holds exactly the four processes
+wallet's own page lists plus their ancestors as context; the tiles, the teams
+list, the matrix, topic flow, contracts, coverage and findings all agree with
+each other; under a focus every list is the map's nodes of that kind and the
+relationship list is exactly the map's edges; the filter row's process roots
+the tree; a widget's own "Start at" and owner win. Run against the previous
+`routes.js`, 16 of them fail before it stops on a field that did not exist.
+The browser suite drives the Process map page filtered to wallet and process
+2 — the tree's rows and dimmed rows, the tile, the parts note and its dimmed
+row — then clicks through to the Teams page and counts all ten services.
+
+**Known gaps.** The map widget's search box overlaps its key when the widget is
+narrow (seen on the Process map page at 7 columns with the inspector open);
+it predates this change. The filter row's Process picker does not narrow to
+the team selected beside it.
 
 ## What the scale pass found
 

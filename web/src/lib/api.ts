@@ -114,6 +114,15 @@ export type Evidence = {
   snippet: string
 }
 
+/** What a stat tile counts, inside the page's filter row — /status's shape. */
+export type Counts = {
+  filtered: boolean
+  counts: Partial<Status['counts']>
+  coverage: Status['coverage']
+  teams: Status['teams']
+  handoffs: Status['handoffs']
+}
+
 export type Status = {
   ready: boolean
   counts: {
@@ -225,6 +234,11 @@ export type Process = {
    * Empty is the common case and means fall-through in numbering order.
    */
   next?: Branch[]
+  /**
+   * In a filtered list: not what the filter asked for, but an ancestor of
+   * something that is — there so a tree stays a tree.
+   */
+  context?: boolean
 }
 
 /** One arm of a decision, or one jump. Exactly one of `to` and `end`. */
@@ -264,6 +278,12 @@ export type ProcessDetail = {
   services: ProcessComponent[]
   /** Handoffs out of, into, and entirely inside this process. */
   links: { out: Handoff[]; in: Handoff[]; inside: Handoff[] }
+  /**
+   * What the page's filter row keeps of this process, by id; null when it keeps
+   * everything. `context` is a part kept only because something beneath it is.
+   * The lists above stay whole, because the diagrams draw from them.
+   */
+  inScope?: { children: string[]; context: string[]; links: string[] } | null
   teams: TeamReach[]
   drift: DriftFinding[]
   pack: ProcessPack | null
@@ -403,6 +423,9 @@ export type TopicFlow = {
   topic: { id: string; name: string } | null
   producers: (GraphEdge & { serviceName: string | null; team: string | null })[]
   consumers: (GraphEdge & { serviceName: string | null; team: string | null })[]
+  /** How many there are before the page's filter row. */
+  total?: { producers: number; consumers: number }
+  filtered?: boolean
 }
 
 export type ContractVersions = {
@@ -413,6 +436,7 @@ export type ContractVersions = {
     versions: (string | null)[]
     skew: boolean
   }[]
+  filtered?: boolean
 }
 
 export type SearchHit = {

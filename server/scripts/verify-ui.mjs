@@ -1693,6 +1693,71 @@ for (const code of ['1', '2.1', '2.3.5']) {
   await ctx.close()
 }
 
+/* ---- every widget follows its page's filter row */
+
+console.log('\nEvery widget follows the filter row')
+{
+  // Wallet owns four actions, all beneath other teams' processes, so the tree
+  // has to keep their ancestors to stay a tree — and process 2 is a process
+  // where none of the parts are wallet's own but one of them contains its work.
+  const scope = { teams: ['wallet'], process: 'order-and-execution#2' }
+  await setScope('processes', scope)
+  const q = 'teams=wallet&process=order-and-execution%232'
+  const expected = await api(`/processes?${q}`)
+  const hits = expected.processes.filter((p) => !p.context)
+  const context = expected.processes.filter((p) => p.context)
+  const counts = await api(`/counts?${q}`)
+  const status = await api('/status')
+
+  const { ctx, page, problems } = await open(`/d/${pageId('processes')}`)
+  await page.waitForSelector('[data-grid-id="pr-5"] .proc-tree .proc-row', { timeout: 20000 })
+  await page.waitForSelector('[data-grid-id="pr-7"] table.data', { timeout: 20000 })
+  await page.waitForTimeout(500)
+  const tree = await page.$$eval('[data-grid-id="pr-5"] .proc-row', (els) =>
+    els.map((e) => ({ code: e.querySelector(':scope > .proc-line .proc-code')?.textContent?.trim(), context: e.classList.contains('context') }))
+  )
+  is(
+    'the process tree on a page filtered to a team draws what the team owns',
+    tree.filter((r) => !r.context).map((r) => r.code).join(','),
+    hits.map((p) => `L${p.code}`).join(',')
+  )
+  is('  …and the way down to it, dimmed', tree.filter((r) => r.context).map((r) => r.code).join(','), context.map((p) => `L${p.code}`).join(','))
+  ok(
+    '  …a dimmed row says why it is there',
+    ((await page.getAttribute('[data-grid-id="pr-5"] .proc-row.context > .proc-line', 'title')) ?? '').includes('filter')
+  )
+  const parts = await page.$eval('[data-grid-id="pr-5"] .proc-row.context .proc-count', (e) => e.textContent.trim())
+  ok('  …and counts its parts out of how many it has', / of \d+ parts?$/.test(parts), parts)
+
+  const tile = await page.$eval('[data-grid-id="pr-1"]', (e) => e.innerText)
+  ok(
+    'the Processes tile counts inside the filter, out of the estate',
+    tile.includes(String(counts.counts.processes)) && tile.includes(`of ${status.counts.processes} across the estate`),
+    tile.replace(/\s+/g, ' ')
+  )
+  is('  …which is the tree’s count', counts.counts.processes, hits.length)
+
+  const note = await page.$eval('[data-grid-id="pr-7"] .filtered-note', (e) => e.textContent)
+  ok('the parts of one process say how many the filter kept', /^1 of 4 parts/.test(note), note)
+  is('  …and dim the one kept for what is beneath it', (await page.$$('[data-grid-id="pr-7"] tr.context')).length, 1)
+  ok('no console errors on a filtered page', problems.length === 0, problems.join(' | '))
+
+  // The page's filter is remembered as the working scope, and the next screen
+  // without a filter row used to inherit it. The Teams page — whose job is to
+  // put every service in a team — listed only the filter's.
+  const services = (await api('/nodes?kinds=service')).nodes.length
+  await page.click('a[href="/teams"]')
+  await page.waitForSelector('.card:has(h2:has-text("Services and their teams")) table.data tbody tr', { timeout: 20000 })
+  await page.waitForTimeout(500)
+  is(
+    'a screen without a filter row reads the whole estate, whatever the last page was filtered to',
+    (await page.$$('.card:has(h2:has-text("Services and their teams")) table.data tbody tr')).length,
+    services
+  )
+  await ctx.close()
+  await setScope('processes', null)
+}
+
 /* ---- every grid can be searched, sorted and grouped */
 
 console.log('\nGrids: search, sort and group, on every table')

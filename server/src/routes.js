@@ -42,6 +42,302 @@ const list = (v) =>
 /** The same hazard where one value is wanted: the last one repeated wins. */
 const one = (v) => (Array.isArray(v) ? v[v.length - 1] : v)
 
+/* ───────────────────────────────────────────────────────── the filter row
+
+   A page's filter row, as the one rule every endpoint a widget can sit on
+   applies. /graph was the only reader of focus, depth and process; the rest
+   read some of teams, repos and external and none of the others — so a page
+   filtered to one team drew that team's map beside an estate-wide process
+   tree, estate-wide counts and every team in the org.
+
+   Two halves, because they combine differently:
+
+   - the REGION — focus + depth, and a process. They bound a piece of the
+     graph, so anything with two ends must have both inside it, which is what
+     the map draws.
+   - the PICKS — teams, repos, external. They choose among nodes, and a
+     relationship needs only one end chosen: a line that leaves the team is
+     the reason to filter by one.
+
+   `kinds` is neither. It says what the map draws, and a widget that lists or
+   counts one kind has already chosen its own.
+
+   Things that are not nodes are placed through the nodes they touch, and the
+   filter drops what it cannot place — "show me this team's", never "this
+   team's plus everything unattributable". A request with none of it reads the
+   whole estate, which is all a page without a filter row ever sends. */
+
+const keepAll = () => true
+
+function readScope(query) {
+  const focus = String(one(query.focus) || '')
+  const asked = Number(one(query.depth))
+  // 'all' and 0 both mean the whole connected component; anything else is a
+  // hop count, defaulting to the focus plus its direct neighbours.
+  const depth =
+    one(query.depth) === 'all' || asked === 0 ? Infinity : Number.isFinite(asked) && asked > 0 ? asked : 1
+  const kinds = list(query.kinds)
+  const repos = list(query.repos)
+  const teams = list(query.teams)
+  const includeExternal = one(query.includeExternal) !== 'false'
+
+  // A process is a filter, not a selection: asking for 2 gives the whole of
+  // order and execution, 2.1 gives just the estimate. Combined with a focus,
+  // the process bounds the graph and the focus picks within it.
+  // `process` is `<pack>#<code>`, the same reference `handsOffTo` and `next`
+  // use, so a caller that has a process in hand can name it one way
+  // everywhere. A bare code is still accepted and means "whichever pack has
+  // it", which is unambiguous for as long as only one does.
+  const processRef = String(one(query.process) || '').trim()
+  const processPack = processRef.includes('#') ? processRef.slice(0, processRef.indexOf('#')) : null
+  const processCode = normaliseCode(processRef.slice(processRef.indexOf('#') + 1))
+  let process = null
+  let unknownProcess = false
+  let ambiguousProcess = null
+  let withinProcess = null
+  if (processCode) {
+    const found = processPack
+      ? db.prepare('SELECT id, pack, code FROM processes WHERE pack = ? AND code = ?').all(processPack, processCode)
+      : db.prepare('SELECT id, pack, code FROM processes WHERE code = ? ORDER BY pack').all(processCode)
+    // An unknown process is an empty region, not the whole estate; and a bare
+    // code several packs use is not one process — answering with whichever
+    // sorted first would be somebody else's work with no sign a choice had
+    // been made. Both leave nothing inside, and say why.
+    if (!found.length) unknownProcess = true
+    else if (found.length > 1) ambiguousProcess = found.map((r) => r.pack)
+    else process = found[0]
+    withinProcess = new Set(
+      process
+        ? db.prepare('SELECT node_id FROM process_components WHERE process_id = ?').all(process.id).map((r) => r.node_id)
+        : []
+    )
+  }
+
+  let edgeRows = null
+  const edges = () => (edgeRows ??= db.prepare('SELECT * FROM edges').all())
+
+  // Inside a process, the walk is over the process's own edges. Walking the
+  // whole estate and clipping afterwards counts hops through components that
+  // are not in the process, so depth=2 could return a node whose only route to
+  // the focus went outside and arrives with no edge at all — a node floating
+  // unconnected on the overlay — and depth=all made the focus a no-op, because
+  // the global walk reaches everything and the clip leaves the whole process.
+  // §8: "the existing focus/depth controls still work within that subgraph".
+  //
+  // A focus the process does not contain selects nothing, so the process
+  // stands alone — "the process wins as the filter and `focus` only selects",
+  // with nothing to select.
+  let near = null
+  if (focus && (!withinProcess || withinProcess.has(focus))) {
+    const walk = withinProcess
+      ? edges().filter((e) => withinProcess.has(e.from_id) && withinProcess.has(e.to_id))
+      : edges()
+    near = new Set([focus])
+    for (let hop = 0; hop < depth && hop < 12; hop++) {
+      // Each hop's finds are collected separately and merged at the end of the
+      // pass. Adding them to `near` as we go would let one pass walk the whole
+      // graph, and depth would stop meaning anything.
+      const next = new Set()
+      for (const e of walk) {
+        if (near.has(e.from_id) === near.has(e.to_id)) continue
+        next.add(near.has(e.from_id) ? e.to_id : e.from_id)
+      }
+      if (!next.size) break
+      for (const id of next) near.add(id)
+    }
+  }
+
+  let nodeRows = null
+  /** Every node, by id, with just what the filter reads. */
+  const nodes = () =>
+    (nodeRows ??= new Map(
+      db.prepare('SELECT id, kind, owner_repo, team_id, orphan FROM nodes').all().map((n) => [n.id, n])
+    ))
+
+  // The process filter is absolute — not exempted by being the focus.
+  const inRegion = (id) => (!withinProcess || withinProcess.has(id)) && (!near || near.has(id))
+  const repoOk = (n) => !repos.length || repos.includes(n?.owner_repo)
+  // A teamless node is dropped by a team filter rather than kept: "show me
+  // trading's estate" should not include everything nobody owns.
+  const teamOk = (n) => !teams.length || teams.includes(n?.team_id)
+  const outside = (n) => !!n && (!!n.orphan || n.kind === 'external')
+  // The focus is exempt from the picks, as it always was on the map: the thing
+  // a page is centred on stays on it whatever the rest of the filter says.
+  const picks = (n) => n.id === focus || (repoOk(n) && teamOk(n) && (includeExternal || !outside(n)))
+
+  const scope = {
+    focus,
+    kinds,
+    repos,
+    teams,
+    includeExternal,
+    processRef,
+    processCode,
+    process,
+    unknownProcess,
+    ambiguousProcess,
+    withinProcess,
+    near,
+    bounded: !!(withinProcess || near),
+    /** Anything but `kinds` set — whether an answer can differ from the estate's. */
+    narrows: !!(withinProcess || near || repos.length || teams.length || !includeExternal),
+    edges,
+    nodes,
+    inRegion,
+    repoOk,
+    teamOk,
+    outside,
+    picks,
+    /**
+     * A node, as the map would judge it. `kinds` replaces the request's own —
+     * a list or a count of one kind has chosen for itself — and only the map
+     * applies §8's "absent means everything but contracts", or keeps a focus
+     * whose kind is switched off: a list of services with a topic in it is
+     * wrong whoever it is centred on.
+     */
+    admits(n, { kinds: only = kinds, map = false } = {}) {
+      if (!inRegion(n.id) || !picks(n)) return false
+      if (only.length) return only.includes(n.kind) || (map && n.id === focus)
+      return !(map && n.kind === 'contract' && n.id !== focus)
+    },
+    /** A process beneath the filter row's, or anything when it names none. */
+    inSubtree(p) {
+      if (!withinProcess) return true
+      if (!process) return false
+      return p.pack === process.pack && (p.code === process.code || p.code.startsWith(`${process.code}.`))
+    },
+  }
+  return scope
+}
+
+/** process id → the ids of the components it reaches, rolled up. */
+const componentsByProcess = () => {
+  const by = new Map()
+  for (const r of db.prepare('SELECT process_id, node_id FROM process_components').all()) {
+    if (!by.has(r.process_id)) by.set(r.process_id, [])
+    by.get(r.process_id).push(r.node_id)
+  }
+  return by
+}
+
+/**
+ * A relationship: both ends inside the region, and at least one end picked.
+ * An edge's repo is the manifest that declared it — the repo whose code holds
+ * the call — not either end's owner.
+ */
+function edgePlacer(scope) {
+  const { repos, teams, includeExternal } = scope
+  if (!scope.bounded && !repos.length && !teams.length && includeExternal) return keepAll
+  const nodes = scope.nodes()
+  return (e) =>
+    scope.inRegion(e.from_id) &&
+    scope.inRegion(e.to_id) &&
+    (!repos.length || repos.includes(e.repo)) &&
+    (!teams.length || teams.includes(nodes.get(e.from_id)?.team_id) || teams.includes(nodes.get(e.to_id)?.team_id)) &&
+    (includeExternal || (!scope.outside(nodes.get(e.from_id)) && !scope.outside(nodes.get(e.to_id))))
+}
+
+/**
+ * A process, placed by who owns it and what it touches. A team filter means
+ * the team that OWNS it, inherited owner included — the list the team's own
+ * page shows — because a process has an owner and a repo does not: a repo, a
+ * focus, reach a process only through its components. The filter row's
+ * process is a subtree, the same as `root`; `subtree: false` is for a caller
+ * whose subject is already chosen.
+ */
+function processPlacer(scope, { teams = scope.teams, subtree = true } = {}) {
+  const byComponents = !!scope.near || scope.repos.length > 0
+  const bySubtree = subtree && !!scope.withinProcess
+  if (!teams.length && !byComponents && !bySubtree) return keepAll
+  const comps = byComponents ? componentsByProcess() : null
+  const nodes = byComponents ? scope.nodes() : null
+  return (p) =>
+    (!teams.length || teams.includes(p.team_id)) &&
+    (!bySubtree || scope.inSubtree(p)) &&
+    (!byComponents ||
+      (comps.get(p.id) ?? []).some((id) => (!scope.near || scope.near.has(id)) && scope.repoOk(nodes.get(id))))
+}
+
+/**
+ * A handoff: a team filter matches either end, the way the team matrix reads
+ * it; a focus or a repo places it by the topic that carries it, so a declared
+ * handoff with nothing carrying it cannot be placed by one; the filter row's
+ * process keeps the handoffs with an end beneath it.
+ */
+function handoffPlacer(scope, { subtree = true } = {}) {
+  const { teams, repos } = scope
+  const byNode = !!scope.near || repos.length > 0
+  const bySubtree = subtree && !!scope.withinProcess
+  if (!teams.length && !byNode && !bySubtree) return keepAll
+  const nodes = byNode ? scope.nodes() : null
+  return (l) =>
+    (!teams.length || teams.includes(l.from_team_id) || teams.includes(l.to_team_id)) &&
+    (!byNode || (!!l.via_node && (!scope.near || scope.near.has(l.via_node)) && scope.repoOk(nodes.get(l.via_node)))) &&
+    (!bySubtree ||
+      scope.inSubtree({ pack: l.from_pack, code: l.from_code }) ||
+      scope.inSubtree({ pack: l.to_pack, code: l.to_code }))
+}
+
+/**
+ * A finding, by what it is about. A team filter reads the team it is routed
+ * to; a node subject is placed as a node; a process subject by its subtree and
+ * what it touches; anything else — a team, a pack — cannot be placed inside a
+ * region or a repo, and is dropped by one.
+ */
+function findingPlacer(scope) {
+  const { repos, teams, includeExternal } = scope
+  if (!scope.bounded && !repos.length && !teams.length && includeExternal) return keepAll
+  const nodes = scope.nodes()
+  let procs = null
+  let comps = null
+  return (d) => {
+    if (teams.length && !teams.includes(d.team_id)) return false
+    const n = nodes.get(d.subject_id)
+    if (n) return scope.inRegion(n.id) && scope.repoOk(n) && (includeExternal || !scope.outside(n) || n.id === scope.focus)
+    if (repos.length) return false
+    if (!scope.bounded) return true
+    procs ??= new Map(db.prepare('SELECT id, pack, code FROM processes').all().map((p) => [p.id, p]))
+    const p = procs.get(d.subject_id)
+    if (!p || !scope.inSubtree(p)) return false
+    if (!scope.near) return true
+    comps ??= componentsByProcess()
+    return (comps.get(p.id) ?? []).some((id) => scope.near.has(id))
+  }
+}
+
+/**
+ * Something that belongs to a repo and has no node of its own — an
+ * unresolved reference, a quarantined manifest, a configured repo — placed
+ * through the nodes that repo owns.
+ */
+function repoPlacer(scope) {
+  const { repos, teams } = scope
+  const byNodes = scope.bounded || teams.length > 0
+  if (!repos.length && !byNodes) return keepAll
+  const held = new Set()
+  if (byNodes) for (const n of scope.nodes().values()) if (scope.inRegion(n.id) && scope.teamOk(n)) held.add(n.owner_repo)
+  return (repo) => (!repos.length || repos.includes(repo)) && (!byNodes || held.has(repo))
+}
+
+/**
+ * A team: named by the filter, and holding something inside the rest of it —
+ * a component in the region or the repos, or a process beneath the filter
+ * row's.
+ */
+function teamPlacer(scope) {
+  const { teams, repos } = scope
+  const byNodes = scope.bounded || repos.length > 0
+  if (!teams.length && !byNodes) return keepAll
+  const held = new Set()
+  if (byNodes) {
+    for (const n of scope.nodes().values()) if (scope.inRegion(n.id) && scope.repoOk(n)) held.add(n.team_id)
+    if (scope.process && !scope.near && !repos.length) {
+      for (const p of db.prepare('SELECT pack, code, team_id FROM processes').all()) if (scope.inSubtree(p)) held.add(p.team_id)
+    }
+  }
+  return (id) => (!teams.length || teams.includes(id)) && (!byNodes || held.has(id))
+}
+
 /* ───────────────────────────────────────────────────────── overrides */
 
 /** subject_kind|subject_id → {field: value}, applied on top of derived rows. */
@@ -216,6 +512,98 @@ router.get('/status', wrap(async (req, res) => {
   })
 }))
 
+/**
+ * What a stat tile counts, inside the page's filter row. Every number comes
+ * through the same rule as the list it summarises — the services tile is the
+ * services list's length, the handoffs tile the matrix's total — so a tile and
+ * the table beside it cannot disagree. With no filter every rule keeps
+ * everything, and the numbers are /status's; the check that says so is in the
+ * suite. /status itself stays the estate: it is what a filtered number is
+ * "out of".
+ */
+router.get('/counts', wrap(async (req, res) => {
+  const scope = readScope(req.query)
+  const placed = [...scope.nodes().values()].filter((n) => scope.inRegion(n.id) && scope.picks(n))
+  const byKind = {}
+  for (const n of placed) byKind[n.kind] = (byKind[n.kind] ?? 0) + 1
+
+  const findings = db
+    .prepare('SELECT d.*, s.state FROM drift d LEFT JOIN drift_state s ON s.fingerprint = d.fingerprint')
+    .all()
+    .filter(findingPlacer(scope))
+  const inRepo = repoPlacer(scope)
+
+  const keepProcess = processPlacer(scope)
+  const processes = db.prepare('SELECT id, pack, pack_id, code, team_id FROM processes').all().filter(keepProcess)
+  const parents = new Set(
+    db.prepare('SELECT DISTINCT parent_id FROM processes WHERE parent_id IS NOT NULL').all().map((r) => r.parent_id)
+  )
+  const activePacks = db.prepare(`SELECT id FROM process_packs WHERE status = 'active'`).all()
+  // A pack is in the filter when something in it is; with no filter, every
+  // active pack, including one that declares nothing yet.
+  const holding = new Set(processes.map((p) => p.pack_id))
+
+  const documented = new Set(db.prepare('SELECT DISTINCT node_id FROM process_components').all().map((r) => r.node_id))
+  const coverable = placed.filter((n) => n.kind === 'service' || n.kind === 'kafka.topic')
+
+  const keepTeam = teamPlacer(scope)
+  const teams = db.prepare('SELECT id, registered, department_id FROM teams').all().filter((t) => keepTeam(t.id))
+
+  const links = db
+    .prepare(
+      `SELECT l.*, a.pack AS from_pack, a.code AS from_code, b.pack AS to_pack, b.code AS to_code
+       FROM process_links l
+       LEFT JOIN processes a ON a.id = l.from_id
+       LEFT JOIN processes b ON b.id = l.to_id
+       WHERE l.via = 'interaction'`
+    )
+    .all()
+    .filter(handoffPlacer(scope))
+
+  res.json({
+    filtered: scope.narrows,
+    counts: {
+      services: byKind['service'] ?? 0,
+      topics: byKind['kafka.topic'] ?? 0,
+      databases: byKind['database'] ?? 0,
+      caches: byKind['cache'] ?? 0,
+      contracts: byKind['contract'] ?? 0,
+      endpoints: byKind['endpoint'] ?? 0,
+      externals: byKind['external'] ?? 0,
+      orphans: placed.filter((n) => n.orphan).length,
+      edges: scope.edges().filter(edgePlacer(scope)).length,
+      unresolved: db.prepare('SELECT repo FROM unresolved').all().filter((u) => inRepo(u.repo)).length,
+      drift: findings.length,
+      driftOpen: findings.filter((d) => d.state == null).length,
+      driftWarn: findings.filter((d) => d.severity === 'warn').length,
+      quarantined: db
+        .prepare(`SELECT repo FROM manifests WHERE status = 'quarantined'`)
+        .all()
+        .filter((m) => inRepo(m.repo)).length,
+      processes: processes.length,
+      processLeaves: processes.filter((p) => !parents.has(p.id)).length,
+      processPacks: keepProcess === keepAll ? activePacks.length : activePacks.filter((p) => holding.has(p.id)).length,
+    },
+    coverage: { total: coverable.length, covered: coverable.filter((n) => documented.has(n.id)).length },
+    teams: {
+      total: teams.length,
+      registered: teams.filter((t) => t.registered).length,
+      unregistered: teams.filter((t) => !t.registered).length,
+      departments:
+        keepTeam === keepAll
+          ? db.prepare('SELECT COUNT(*) AS n FROM departments').get().n
+          : new Set(teams.map((t) => t.department_id).filter(Boolean)).size,
+    },
+    // Over the direct rows: a rolled-up handoff is the same fact one level up,
+    // and counting them would treble a single crossing.
+    handoffs: {
+      total: links.length,
+      crossTeam: links.filter((l) => l.cross_team).length,
+      undocumented: links.filter((l) => l.derived && !l.declared && l.cross_team).length,
+    },
+  })
+}))
+
 /** A subject's findings, carrying whatever somebody decided about each — so a
  *  node page cannot show as open what the findings list shows as accepted. */
 const findingsAbout = (subjectId) =>
@@ -230,27 +618,16 @@ const findingsAbout = (subjectId) =>
 /* ───────────────────────────────────────────────────────── nodes & edges */
 
 router.get('/nodes', wrap(async (req, res) => {
-  const kinds = list(req.query.kinds)
-  const repos = list(req.query.repos)
-  const teams = list(req.query.teams)
+  const scope = readScope(req.query)
   const where = []
   const args = []
-  if (kinds.length) {
-    where.push(`n.kind IN (${kinds.map(() => '?').join(',')})`)
-    args.push(...kinds)
+  // The filter row as /graph applies it, so a list beside the map holds what
+  // the map draws — focus and process included, which it used to ignore.
+  if (scope.narrows || scope.kinds.length) {
+    const ids = [...scope.nodes().values()].filter((n) => scope.admits(n)).map((n) => n.id)
+    where.push('n.id IN (SELECT value FROM json_each(?))')
+    args.push(JSON.stringify(ids))
   }
-  if (repos.length) {
-    where.push(`n.owner_repo IN (${repos.map(() => '?').join(',')})`)
-    args.push(...repos)
-  }
-  /* A teamless node is dropped by a team filter rather than kept, the same
-     way /graph drops it: "show me trading's estate" should not hand back
-     everything nobody owns. */
-  if (teams.length) {
-    where.push(`n.team_id IN (${teams.map(() => '?').join(',')})`)
-    args.push(...teams)
-  }
-  if (req.query.includeExternal === 'false') where.push(`n.orphan = 0 AND n.kind != 'external'`)
 
   /* A name or an id, for a caller with more nodes than it can hold at once.
      LIKE with the operand escaped: `%` and `_` are wildcards, and a service
@@ -289,6 +666,7 @@ router.get('/nodes', wrap(async (req, res) => {
     nodes: rows.map(nodeRow).map((n) => applyNodeOverrides(n, ov)).filter((n) => !n.hidden),
     total,
     truncated: total > rows.length,
+    filtered: scope.narrows,
   })
 }))
 
@@ -393,47 +771,20 @@ function bindingsFor(row, viaContract, into) {
 }
 
 router.get('/edges', wrap(async (req, res) => {
+  const scope = readScope(req.query)
+  // `kinds` here is an edge kind — the relationship list names its own — so
+  // it is read directly rather than as the filter row's node kinds.
   const kinds = list(req.query.kinds)
-  const repos = list(req.query.repos)
-  const teams = list(req.query.teams)
-  const where = []
-  const args = []
-  if (kinds.length) {
-    where.push(`e.kind IN (${kinds.map(() => '?').join(',')})`)
-    args.push(...kinds)
-  }
-  // An edge's repo is the manifest that declared it, which is the repo whose
-  // code actually contains the call — not either endpoint's owner.
-  if (repos.length) {
-    where.push(`e.repo IN (${repos.map(() => '?').join(',')})`)
-    args.push(...repos)
-  }
-  /* A connection belongs to a team if either end does. Requiring both would
-     hide exactly the rows worth looking at: a line that leaves the team is
-     the whole reason to filter by one. */
-  if (teams.length) {
-    where.push(
-      `EXISTS (SELECT 1 FROM nodes n
-               WHERE n.id IN (e.from_id, e.to_id)
-                 AND n.team_id IN (${teams.map(() => '?').join(',')}))`
-    )
-    args.push(...teams)
-  }
-  if (req.query.includeExternal === 'false') {
-    where.push(
-      `NOT EXISTS (SELECT 1 FROM nodes n
-                   WHERE n.id IN (e.from_id, e.to_id)
-                     AND (n.orphan = 1 OR n.kind = 'external'))`
-    )
-  }
+  const keep = edgePlacer(scope)
   const rows = db
     .prepare(
       `SELECT e.* FROM edges e
-       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY e.from_id, e.kind LIMIT ?`
+       ${kinds.length ? `WHERE e.kind IN (${kinds.map(() => '?').join(',')})` : ''}
+       ORDER BY e.from_id, e.kind`
     )
-    .all(...args, Number(req.query.limit) || 500)
-  res.json({ edges: rows.map(edgeRow) })
+    .all(...kinds)
+    .filter(keep)
+  res.json({ edges: rows.slice(0, Number(req.query.limit) || 500).map(edgeRow), filtered: scope.narrows })
 }))
 
 router.get('/edge', wrap(async (req, res) => {
@@ -455,7 +806,13 @@ router.get('/edge', wrap(async (req, res) => {
  * to answer, so it gets its own endpoint rather than making the UI derive it.
  */
 router.get('/topic-flow', wrap(async (req, res) => {
-  const id = String(req.query.id || '')
+  const id = String(one(req.query.id) || '')
+  const scope = readScope(req.query)
+  const nodes = scope.nodes()
+  // One topic, so its rows are filtered and the count before is kept: a
+  // topic with two producers shown as one is a different topic unless the
+  // widget says the other was filtered out.
+  const inScope = (r) => scope.inRegion(r.from_id) && scope.picks(nodes.get(r.from_id) ?? { id: r.from_id })
   const side = (kind) =>
     db
       .prepare(
@@ -464,15 +821,21 @@ router.get('/topic-flow', wrap(async (req, res) => {
          WHERE e.to_id = ? AND e.kind = ? ORDER BY n.name`
       )
       .all(id, kind)
+  const producers = side('kafka.produce')
+  const consumers = side('kafka.consume')
+  const shape = (r) => ({ ...edgeRow(r), serviceName: r.service_name, team: r.team })
   res.json({
     topic: db.prepare('SELECT * FROM nodes WHERE id = ?').get(id) ?? null,
-    producers: side('kafka.produce').map((r) => ({ ...edgeRow(r), serviceName: r.service_name, team: r.team })),
-    consumers: side('kafka.consume').map((r) => ({ ...edgeRow(r), serviceName: r.service_name, team: r.team })),
+    producers: producers.filter(inScope).map(shape),
+    consumers: consumers.filter(inScope).map(shape),
+    total: { producers: producers.length, consumers: consumers.length },
+    filtered: scope.narrows,
   })
 }))
 
 /** Every service binding of every contract, with a skew flag per contract. */
 router.get('/contract-versions', wrap(async (req, res) => {
+  const scope = readScope(req.query)
   const rows = db
     .prepare(
       `SELECT b.contract_id, b.service_id, b.version, n.name AS contract_name
@@ -487,22 +850,32 @@ router.get('/contract-versions', wrap(async (req, res) => {
     }
     byContract.get(r.contract_id).bindings.push({ serviceId: r.service_id, version: r.version })
   }
-  const contracts = [...byContract.values()].map((c) => ({
-    ...c,
-    versions: [...new Set(c.bindings.map((b) => b.version))],
-    skew: new Set(c.bindings.map((b) => b.version)).size > 1,
-  }))
-  res.json({ contracts: req.query.skewOnly === 'true' ? contracts.filter((c) => c.skew) : contracts })
+  // A contract is in the filter when any service inside it binds one — and
+  // then it is shown whole. Skew is a fact about the contract across the
+  // estate: filtered to one team, the other team's older version is exactly
+  // the thing worth seeing, and trimming it would hide the skew it causes.
+  const nodes = scope.nodes()
+  const bound = (b) => scope.inRegion(b.serviceId) && scope.picks(nodes.get(b.serviceId) ?? { id: b.serviceId })
+  const contracts = [...byContract.values()]
+    .filter((c) => !scope.narrows || c.bindings.some(bound))
+    .map((c) => ({
+      ...c,
+      versions: [...new Set(c.bindings.map((b) => b.version))],
+      skew: new Set(c.bindings.map((b) => b.version)).size > 1,
+    }))
+  res.json({
+    contracts: req.query.skewOnly === 'true' ? contracts.filter((c) => c.skew) : contracts,
+    filtered: scope.narrows,
+  })
 }))
 
 router.get('/drift', wrap(async (req, res) => {
   const where = []
   const args = []
   // Through list(), so asking for two kinds is an IN rather than a bind error.
+  // `kind` is a finding's kind, not the filter row's node kinds.
   const kinds = list(req.query.kind)
   const severities = list(req.query.severity)
-  const repos = list(req.query.repos)
-  const teams = list(req.query.teams)
   if (kinds.length) {
     where.push(`d.kind IN (${kinds.map(() => '?').join(',')})`)
     args.push(...kinds)
@@ -510,22 +883,6 @@ router.get('/drift', wrap(async (req, res) => {
   if (severities.length) {
     where.push(`d.severity IN (${severities.map(() => '?').join(',')})`)
     args.push(...severities)
-  }
-  /* A finding is filtered by whatever it is about. Not every subject is a
-     node — a process or a team has no repo and no owner_repo to match — so
-     these filters drop what they cannot place, which is the same thing the
-     filter row means everywhere else: show me this team's, not show me this
-     team's plus everything unattributable. */
-  if (repos.length) {
-    where.push(
-      `EXISTS (SELECT 1 FROM nodes n
-               WHERE n.id = d.subject_id AND n.owner_repo IN (${repos.map(() => '?').join(',')}))`
-    )
-    args.push(...repos)
-  }
-  if (teams.length) {
-    where.push(`d.team_id IN (${teams.map(() => '?').join(',')})`)
-    args.push(...teams)
   }
   /* Everything comes back by default, accepted or not — a finding somebody
      decided to live with has not stopped being true, and the caller is better
@@ -535,15 +892,18 @@ router.get('/drift', wrap(async (req, res) => {
   if (state === 'open') where.push('s.state IS NULL')
   if (state === 'accepted') where.push('s.state IS NOT NULL')
 
+  const scope = readScope(req.query)
   const rows = db
     .prepare(
       `SELECT d.*, s.state, s.note AS state_note, s.author AS state_author, s.updated_at AS state_at
        FROM drift d LEFT JOIN drift_state s ON s.fingerprint = d.fingerprint
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY d.severity DESC, d.kind, d.subject_id LIMIT ?`
+       ORDER BY d.severity DESC, d.kind, d.subject_id`
     )
-    .all(...args, Number(req.query.limit) || 500)
-  res.json({ findings: rows.map((r) => ({ ...r, data: parse(r.data, null) })) })
+    .all(...args)
+    .filter(findingPlacer(scope))
+    .slice(0, Number(req.query.limit) || 500)
+  res.json({ findings: rows.map((r) => ({ ...r, data: parse(r.data, null) })), filtered: scope.narrows })
 }))
 
 /**
@@ -585,31 +945,18 @@ router.put('/finding-state', wrap(async (req, res) => {
 }))
 
 router.get('/unresolved', wrap(async (req, res) => {
-  const repos = list(req.query.repos)
-  const teams = list(req.query.teams)
-  const where = []
-  const args = []
-  if (repos.length) {
-    where.push(`u.repo IN (${repos.map(() => '?').join(',')})`)
-    args.push(...repos)
-  }
-  /* An expectation that never resolved has no node to carry a team, so the
-     team comes from the repo that wrote it down — which is the team that
-     would have to go and look. */
-  if (teams.length) {
-    where.push(
-      `EXISTS (SELECT 1 FROM nodes n
-               WHERE n.owner_repo = u.repo AND n.team_id IN (${teams.map(() => '?').join(',')}))`
-    )
-    args.push(...teams)
-  }
+  /* An expectation that never resolved has no node to carry a team or sit in
+     a region, so it is placed by the repo that wrote it down — which is the
+     team that would have to go and look. */
+  const scope = readScope(req.query)
+  const keep = repoPlacer(scope)
   res.json({
     unresolved: db
-      .prepare(
-        `SELECT u.* FROM unresolved u ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-         ORDER BY u.repo, u.expected LIMIT ?`
-      )
-      .all(...args, Number(req.query.limit) || 500),
+      .prepare('SELECT u.* FROM unresolved u ORDER BY u.repo, u.expected')
+      .all()
+      .filter((u) => keep(u.repo))
+      .slice(0, Number(req.query.limit) || 500),
+    filtered: scope.narrows,
   })
 }))
 
@@ -747,89 +1094,14 @@ function subjectKind(row) {
 /* ───────────────────────────────────────────────────────── graph */
 
 router.get('/graph', wrap(async (req, res) => {
-  const focus = String(req.query.focus || '')
-  const asked = Number(req.query.depth)
-  // 'all' and 0 both mean the whole connected component; anything else is a
-  // hop count, defaulting to the focus plus its direct neighbours.
-  const depth =
-    req.query.depth === 'all' || asked === 0 ? Infinity : Number.isFinite(asked) && asked > 0 ? asked : 1
-  const kinds = list(req.query.kinds)
-  const repos = list(req.query.repos)
-  const teams = list(req.query.teams)
-  const includeExternal = req.query.includeExternal !== 'false'
-  // §8: "Default: all but `contract`" — contracts clutter the default view and
-  // are opt-in. An explicit `kinds` says exactly what it wants; an absent one
-  // means everything a person would expect to see on a map.
-  const hideContracts = !kinds.length
-
-  const allEdges = db.prepare('SELECT * FROM edges').all()
-  let keep = null
-
-  // A process is a filter, not a selection: asking for 2 gives the whole of
-  // order and execution, 2.1 gives just the estimate. Combined with a focus,
-  // the process bounds the graph and the focus picks within it.
-  // `process` is `<pack>#<code>` here, the same reference `handsOffTo` and
-  // `next` use, so a caller that has a process in hand can name it one way
-  // everywhere. A bare code is still accepted and means "whichever pack has
-  // it", which is unambiguous for as long as only one does.
-  const processRef = String(req.query.process || '').trim()
-  const processPack = processRef.includes('#') ? processRef.slice(0, processRef.indexOf('#')) : null
-  const processCode = normaliseCode(processRef.slice(processRef.indexOf('#') + 1))
-  let withinProcess = null
-  if (processCode) {
-    const found = processPack
-      ? db.prepare('SELECT id FROM processes WHERE pack = ? AND code = ?').all(processPack, processCode)
-      : db.prepare('SELECT id, pack FROM processes WHERE code = ? ORDER BY pack').all(processCode)
-    // An unknown process is an empty graph, not the whole estate — but the
-    // response still says which one was asked for, so the caller can tell the
-    // difference between "nothing matched" and "no filter".
-    if (!found.length) return res.json({ nodes: [], edges: [], process: processRef, unknownProcess: true })
-    // And a bare code that several packs use is not one process. Answering
-    // with whichever sorted first would be a graph of somebody else's work,
-    // drawn with no sign that a choice had been made.
-    if (found.length > 1) {
-      return res.json({
-        nodes: [],
-        edges: [],
-        process: processRef,
-        ambiguousProcess: found.map((r) => r.pack),
-      })
-    }
-    const proc = found[0]
-    withinProcess = new Set(
-      db.prepare('SELECT node_id FROM process_components WHERE process_id = ?').all(proc.id).map((r) => r.node_id)
-    )
-  }
-
-  // Inside a process, the walk is over the process's own edges. Walking the
-  // whole estate and clipping afterwards counts hops through components that
-  // are not in the process, so depth=2 could return a node whose only route to
-  // the focus went outside and arrives with no edge at all — a node floating
-  // unconnected on the overlay — and depth=all made the focus a no-op, because
-  // the global walk reaches everything and the clip leaves the whole process.
-  // §8: "the existing focus/depth controls still work within that subgraph".
-  const walkEdges = withinProcess
-    ? allEdges.filter((e) => withinProcess.has(e.from_id) && withinProcess.has(e.to_id))
-    : allEdges
-
-  //
-  // A focus the process does not contain selects nothing, so the filter stands
-  // alone and the whole process comes back — "the process wins as the filter
-  // and `focus` only selects", with nothing to select.
-  if (focus && (!withinProcess || withinProcess.has(focus))) {
-    keep = new Set([focus])
-    for (let hop = 0; hop < depth && hop < 12; hop++) {
-      // Each hop's finds are collected separately and merged at the end of the
-      // pass. Adding them to `keep` as we go would let one pass walk the whole
-      // graph, and depth would stop meaning anything.
-      const next = new Set()
-      for (const e of walkEdges) {
-        if (keep.has(e.from_id) === keep.has(e.to_id)) continue
-        next.add(keep.has(e.from_id) ? e.to_id : e.from_id)
-      }
-      if (!next.size) break
-      for (const id of next) keep.add(id)
-    }
+  const scope = readScope(req.query)
+  // An unknown process is an empty graph, not the whole estate — but the
+  // response still says which one was asked for, so the caller can tell the
+  // difference between "nothing matched" and "no filter". A bare code several
+  // packs use says which packs it could have meant.
+  if (scope.unknownProcess) return res.json({ nodes: [], edges: [], process: scope.processRef, unknownProcess: true })
+  if (scope.ambiguousProcess) {
+    return res.json({ nodes: [], edges: [], process: scope.processRef, ambiguousProcess: scope.ambiguousProcess })
   }
 
   const nodeRows = db
@@ -842,29 +1114,22 @@ router.get('/graph', wrap(async (req, res) => {
        FROM nodes n LEFT JOIN teams t ON t.id = n.team_id`
     )
     .all()
-    .filter((n) => {
-      // The process filter is absolute — everything outside it is dropped, not
-      // dimmed, and not exempted by being the focus.
-      if (withinProcess && !withinProcess.has(n.id)) return false
-      if (keep && !keep.has(n.id)) return false
-      if (kinds.length && !kinds.includes(n.kind) && n.id !== focus) return false
-      if (hideContracts && n.kind === 'contract' && n.id !== focus) return false
-      if (repos.length && !repos.includes(n.owner_repo) && n.id !== focus) return false
-      // A teamless node is dropped by a team filter rather than kept: "show me
-      // trading's estate" should not include everything nobody owns.
-      if (teams.length && !teams.includes(n.team_id) && n.id !== focus) return false
-      if (!includeExternal && (n.orphan || n.kind === 'external') && n.id !== focus) return false
-      return true
-    })
+    .filter((n) => scope.admits(n, { map: true }))
 
   const ov = overrideMap('node')
-  const nodes = nodeRows.map(nodeRow).map((n) => applyNodeOverrides(n, ov)).filter((n) => !n.hidden || n.id === focus)
+  const nodes = nodeRows
+    .map(nodeRow)
+    .map((n) => applyNodeOverrides(n, ov))
+    .filter((n) => !n.hidden || n.id === scope.focus)
   const ids = new Set(nodes.map((n) => n.id))
 
   res.json({
     nodes,
-    edges: allEdges.filter((e) => ids.has(e.from_id) && ids.has(e.to_id)).map(edgeRow),
-    process: processCode ? processRef : null,
+    edges: scope
+      .edges()
+      .filter((e) => ids.has(e.from_id) && ids.has(e.to_id))
+      .map(edgeRow),
+    process: scope.processCode ? scope.processRef : null,
   })
 }))
 
@@ -947,10 +1212,12 @@ router.get('/repos', wrap(async (req, res) => {
       .all()
       .map((r) => [r.repo, r])
   )
+  const keep = repoPlacer(readScope(req.query))
   res.json({
     workspace: config.workspace ?? null,
     configured: fs.existsSync(file),
-    repos: (config.repos ?? []).map((r) => {
+    filtered: keep !== keepAll,
+    repos: (config.repos ?? []).filter((r) => keep(r.repo)).map((r) => {
       const s = scanned.get(r.repo)
       return {
         ...r,
@@ -1277,16 +1544,45 @@ router.get('/processes', wrap(async (req, res) => {
     where.push(`p.owner IN (${owners.map(() => '?').join(',')})`)
     args.push(...owners)
   }
+  const rows = db
+    .prepare(
+      // By pack first: each pack is its own hierarchy, and interleaving two
+      // of them by number alone reads as one tree with every level doubled.
+      `${PROCESS_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY p.pack, p.sort_key`
+    )
+    .all(...args)
+  const limit = Number(req.query.limit) || 2000
+
+  // The filter row: owned by its teams, beneath its process, touching its
+  // focus or its repos. A widget's own `owner` or `root` has already chosen
+  // and wins over the row's teams or process, as every widget's own option
+  // does.
+  const scope = readScope(req.query)
+  const keep = processPlacer(scope, {
+    teams: owners.length ? [] : scope.teams,
+    subtree: !req.query.root,
+  })
+  if (keep === keepAll) return res.json({ processes: rows.slice(0, limit).map(processRow), filtered: false })
+
+  // What matched, and every ancestor of it as context — dimmed on screen,
+  // but there — so a tree filtered to one team is still a tree rather than a
+  // scatter of L3s with nowhere to hang.
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const hit = new Set(rows.filter(keep).map((r) => r.id))
+  const context = new Set()
+  for (const id of hit) {
+    for (let up = byId.get(id).parent_id; up && byId.has(up) && !hit.has(up) && !context.has(up); ) {
+      context.add(up)
+      up = byId.get(up).parent_id
+    }
+  }
   res.json({
-    processes: db
-      .prepare(
-        // By pack first: each pack is its own hierarchy, and interleaving two
-        // of them by number alone reads as one tree with every level doubled.
-        `${PROCESS_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-         ORDER BY p.pack, p.sort_key LIMIT ?`
-      )
-      .all(...args, Number(req.query.limit) || 2000)
-      .map(processRow),
+    processes: rows
+      .filter((r) => hit.has(r.id) || context.has(r.id))
+      .slice(0, limit)
+      .map((r) => ({ ...processRow(r), context: context.has(r.id) })),
+    filtered: true,
   })
 }))
 
@@ -1332,15 +1628,12 @@ router.get('/process', wrap(async (req, res) => {
         .map(processRow)
     : []
 
-  const children = withBranches(
-    db.prepare(`${PROCESS_SELECT} WHERE p.parent_id = ? ORDER BY p.sort_key`).all(row.id).map(processRow)
-  )
-  const descendants = withBranches(
-    db
-      .prepare(`${PROCESS_SELECT} WHERE p.pack = ? AND p.code LIKE ? ORDER BY p.sort_key`)
-      .all(row.pack, `${code}.%`)
-      .map(processRow)
-  )
+  const childRows = db.prepare(`${PROCESS_SELECT} WHERE p.parent_id = ? ORDER BY p.sort_key`).all(row.id)
+  const children = withBranches(childRows.map(processRow))
+  const descendantRows = db
+    .prepare(`${PROCESS_SELECT} WHERE p.pack = ? AND p.code LIKE ? ORDER BY p.sort_key`)
+    .all(row.pack, `${code}.%`)
+  const descendants = withBranches(descendantRows.map(processRow))
 
   const ov = overrideMap('node')
   const components = db
@@ -1362,6 +1655,38 @@ router.get('/process', wrap(async (req, res) => {
     .all(row.id)
     .map((r) => ({ ...edgeRow(r), via: r.via }))
 
+  const linkRows = {
+    out: db.prepare(`${HANDOFF_SELECT} WHERE l.from_id = ? ORDER BY b.sort_key`).all(row.id),
+    in: db.prepare(`${HANDOFF_SELECT} WHERE l.to_id = ? ORDER BY a.sort_key`).all(row.id),
+    inside: db
+      .prepare(
+        `${HANDOFF_SELECT} WHERE l.via = 'interaction'
+           AND a.pack = ? AND b.pack = ? AND a.code LIKE ? AND b.code LIKE ?
+         ORDER BY a.sort_key, b.sort_key`
+      )
+      .all(row.pack, row.pack, `${code}.%`, `${code}.%`),
+  }
+
+  // The subject is already chosen — by this widget, or by the filter row's
+  // process — so the row's process does not bound its own parts.
+  const scope = readScope(req.query)
+  const keepPart = processPlacer(scope, { subtree: false })
+  const keepLink = handoffPlacer(scope, { subtree: false })
+  // A part the filter does not keep but whose own parts it does is context,
+  // the same as in the tree: 2.3 is trading's, 2.3.4 beneath it is wallet's,
+  // and filtered to wallet the list of 2's parts is not "none".
+  const hitCodes = descendantRows.filter(keepPart).map((r) => r.code)
+  const inScope =
+    keepPart === keepAll && keepLink === keepAll
+      ? null
+      : {
+          children: childRows.filter(keepPart).map((r) => r.id),
+          context: childRows
+            .filter((c) => !keepPart(c) && hitCodes.some((h) => h.startsWith(`${c.code}.`)))
+            .map((r) => r.id),
+          links: [...linkRows.out, ...linkRows.in, ...linkRows.inside].filter(keepLink).map((l) => l.id),
+        }
+
   res.json({
     process: withBranches([process])[0],
     ancestors,
@@ -1377,23 +1702,15 @@ router.get('/process', wrap(async (req, res) => {
     // contains the other, so without it a level 1 that crosses four teams shows
     // no handoffs at all.
     links: {
-      out: db
-        .prepare(`${HANDOFF_SELECT} WHERE l.from_id = ? ORDER BY b.sort_key`)
-        .all(row.id)
-        .map(handoffRow),
-      in: db
-        .prepare(`${HANDOFF_SELECT} WHERE l.to_id = ? ORDER BY a.sort_key`)
-        .all(row.id)
-        .map(handoffRow),
-      inside: db
-        .prepare(
-          `${HANDOFF_SELECT} WHERE l.via = 'interaction'
-             AND a.pack = ? AND b.pack = ? AND a.code LIKE ? AND b.code LIKE ?
-           ORDER BY a.sort_key, b.sort_key`
-        )
-        .all(row.pack, row.pack, `${code}.%`, `${code}.%`)
-        .map(handoffRow),
+      out: linkRows.out.map(handoffRow),
+      in: linkRows.in.map(handoffRow),
+      inside: linkRows.inside.map(handoffRow),
     },
+    // What the page's filter row keeps of this one process, for the widgets
+    // that list its parts or its handoffs; null when it keeps everything. The
+    // lists above stay whole, because the diagrams draw from them, and a
+    // sequence with steps cut out of it is a false sequence.
+    inScope,
     teams: db
       .prepare(
         `SELECT pt.team_id AS id, t.name, pt.via, pt.via_node AS viaNode, t.registered
@@ -1476,6 +1793,7 @@ const TEAM_SELECT = `
   FROM teams t LEFT JOIN departments d ON d.id = t.department_id`
 
 router.get('/teams', wrap(async (req, res) => {
+  const keep = teamPlacer(readScope(req.query))
   res.json({
     // Same shape as /api/repos: the app works without a registry and says so,
     // rather than pretending an empty org chart.
@@ -1484,10 +1802,14 @@ router.get('/teams', wrap(async (req, res) => {
     // drift and could not catch it in its own contents.
     problems: registryProblems(),
     departments: db.prepare('SELECT id, name, description FROM departments ORDER BY name').all(),
+    // Each team whole — its counts are facts about the team, not about the
+    // filter — but only the teams the filter row admits.
     teams: db
       .prepare(`${TEAM_SELECT} ORDER BY t.registered DESC, t.name`)
       .all()
+      .filter((t) => keep(t.id))
       .map(teamRow),
+    filtered: keep !== keepAll,
   })
 }))
 
@@ -1726,11 +2048,17 @@ router.get('/handoffs', wrap(async (req, res) => {
       args.push(code, code)
     }
   }
+  // `team` is this endpoint's own parameter; `teams` and the rest are the
+  // page's filter row, which the team matrix sits under.
+  const scope = readScope(req.query)
   res.json({
     handoffs: db
-      .prepare(`${HANDOFF_SELECT} WHERE ${where.join(' AND ')} ORDER BY a.sort_key, b.sort_key LIMIT ?`)
-      .all(...args, Number(one(req.query.limit)) || 500)
+      .prepare(`${HANDOFF_SELECT} WHERE ${where.join(' AND ')} ORDER BY a.sort_key, b.sort_key`)
+      .all(...args)
+      .filter(handoffPlacer(scope))
+      .slice(0, Number(one(req.query.limit)) || 500)
       .map(handoffRow),
+    filtered: scope.narrows,
   })
 }))
 
@@ -1740,7 +2068,10 @@ router.get('/handoffs', wrap(async (req, res) => {
  * a quarter and cannot otherwise answer.
  */
 router.get('/coverage', wrap(async (req, res) => {
+  // `kinds` is the widget's own; the rest of the filter row places the
+  // components. Which processes account for one stays whole.
   const kinds = list(req.query.kinds)
+  const scope = readScope(req.query)
   const rows = db
     .prepare(
       `SELECT * FROM nodes
@@ -1748,6 +2079,7 @@ router.get('/coverage', wrap(async (req, res) => {
        ORDER BY kind, name`
     )
     .all(...kinds)
+    .filter((n) => scope.inRegion(n.id) && scope.picks(n))
 
   const byNode = new Map()
   for (const r of db
@@ -1767,6 +2099,7 @@ router.get('/coverage', wrap(async (req, res) => {
       const processes = byNode.get(r.id) ?? []
       return { node: applyNodeOverrides(nodeRow(r), ov), processes, covered: processes.length > 0 }
     }),
+    filtered: scope.narrows,
   })
 }))
 

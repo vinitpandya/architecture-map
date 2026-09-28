@@ -26,6 +26,7 @@ import { HandoffList } from '../components/HandoffList'
 import { teamHref } from '../lib/nodes'
 import type {
   ContractVersions,
+  Counts,
   CoverageRow,
   Department,
   DriftFinding,
@@ -477,14 +478,46 @@ function NodeLink({ id, label }: { id: string; label?: string }) {
   return <Link to={nodeHref(id)}>{label ?? idValue(id)}</Link>
 }
 
+/**
+ * Empty because of the page's filter row, which is a different fact from an
+ * empty estate: "No services yet" on a page filtered to a team with none sends
+ * somebody off to run a scan that would change nothing.
+ */
+const filteredOut = (what: string) => (
+  <Empty title={`No ${what} inside this page's filter`}>
+    <span className="muted" style={{ fontSize: 12 }}>
+      Widen or clear the filter row to see more.
+    </span>
+  </Empty>
+)
+
+/**
+ * For a widget about one thing — a topic, a process — whose rows the filter
+ * row has thinned. A topic with three consumers listed as one is a different
+ * topic unless something says the other two were filtered out.
+ */
+function FilteredNote({ shown, total, what, context = 0 }: { shown: number; total: number; what: string; context?: number }) {
+  if (shown >= total) return null
+  return (
+    <p className="muted filtered-note">
+      {shown} of {total} {what} — the rest are outside this page's filter.
+      {context > 0 && ' A dimmed one is here for what is beneath it.'}
+    </p>
+  )
+}
+
 function StatBody({ widget }: { widget: WidgetConfig }) {
   const { status } = useScope()
-  if (!status) return null
+  // What the page's filter row admits. /status stays the estate, and is what
+  // a filtered number is said to be out of.
+  const { data } = useQuery<Counts>('/counts')
+  if (!status || !data) return null
   const kind = widget.options.kind || 'services'
+  const outOf = (estate: number) => `of ${full(estate)} across the estate`
 
   // Coverage is a ratio rather than a count, and reads as one.
   if (kind === 'coverage') {
-    const { covered, total } = status.coverage ?? { covered: 0, total: 0 }
+    const { covered, total } = data.coverage
     return (
       <div>
         <div className="value" style={{ fontSize: 30, fontWeight: 650, letterSpacing: '-0.02em' }}>
@@ -494,37 +527,39 @@ function StatBody({ widget }: { widget: WidgetConfig }) {
           </span>
         </div>
         <div className="muted" style={{ fontSize: 12 }}>
-          services and topics a documented process accounts for
+          services and topics {data.filtered ? 'inside this filter ' : ''}a documented process accounts for
         </div>
       </div>
     )
   }
 
   if (kind === 'teams' || kind === 'crossTeam' || kind === 'undocumented') {
-    const [value, note] =
+    const [value, estate, note] =
       kind === 'teams'
         ? [
+            data.teams.registered,
             status.teams?.registered ?? 0,
-            status.teams?.unregistered
-              ? `registered, and ${status.teams.unregistered} the registry does not have`
-              : `across ${status.teams?.departments ?? 0} departments`,
+            data.teams.unregistered
+              ? `registered, and ${data.teams.unregistered} the registry does not have`
+              : `across ${data.teams.departments} departments`,
           ]
         : kind === 'crossTeam'
-          ? [status.handoffs?.crossTeam ?? 0, "handoffs where one team's work becomes another's"]
-          : [status.handoffs?.undocumented ?? 0, 'cross-team handoffs no pack mentions']
+          ? [data.handoffs.crossTeam, status.handoffs?.crossTeam ?? 0, "handoffs where one team's work becomes another's"]
+          : [data.handoffs.undocumented, status.handoffs?.undocumented ?? 0, 'cross-team handoffs no pack mentions']
     return (
       <div>
         <div className="value" style={{ fontSize: 30, fontWeight: 650, letterSpacing: '-0.02em' }}>
           {full(value)}
         </div>
         <div className="muted" style={{ fontSize: 12 }}>
-          {note}
+          {data.filtered ? outOf(estate) : note}
         </div>
       </div>
     )
   }
 
-  const value = status.counts[kind as keyof typeof status.counts] ?? 0
+  const key = kind as keyof typeof status.counts
+  const value = data.counts[key] ?? 0
   const layerB = kind.startsWith('process')
   return (
     <div>
@@ -532,9 +567,11 @@ function StatBody({ widget }: { widget: WidgetConfig }) {
         {full(value)}
       </div>
       <div className="muted" style={{ fontSize: 12 }}>
-        {layerB
-          ? `across ${status.counts.processPacks} authored ${status.counts.processPacks === 1 ? 'pack' : 'packs'}`
-          : `across ${status.repos.length} scanned ${status.repos.length === 1 ? 'repo' : 'repos'}`}
+        {data.filtered
+          ? outOf(status.counts[key] ?? 0)
+          : layerB
+            ? `across ${status.counts.processPacks} authored ${status.counts.processPacks === 1 ? 'pack' : 'packs'}`
+            : `across ${status.repos.length} scanned ${status.repos.length === 1 ? 'repo' : 'repos'}`}
       </div>
     </div>
   )
@@ -559,12 +596,13 @@ function MapBody({ widget }: { widget: WidgetConfig }) {
 
 function NodeListBody({ widget }: { widget: WidgetConfig }) {
   const kind = (widget.options.nodeKind || 'service') as NodeKind
-  const { data } = useQuery<{ nodes: GraphNode[] }>('/nodes', {
+  const { data } = useQuery<{ nodes: GraphNode[]; filtered?: boolean }>('/nodes', {
     ...widgetExtra(widget.options),
     kinds: kind,
   })
   if (!data) return null
-  if (!data.nodes.length) return <Empty title={`No ${KIND_PLURAL[kind].toLowerCase()} yet`} />
+  if (!data.nodes.length)
+    return data.filtered ? filteredOut(KIND_PLURAL[kind].toLowerCase()) : <Empty title={`No ${KIND_PLURAL[kind].toLowerCase()} yet`} />
 
   return (
     <DataGrid
@@ -594,12 +632,13 @@ function NodeListBody({ widget }: { widget: WidgetConfig }) {
 }
 
 function EdgeListBody({ widget }: { widget: WidgetConfig }) {
-  const { data } = useQuery<{ edges: GraphEdge[] }>('/edges', {
+  const { data } = useQuery<{ edges: GraphEdge[]; filtered?: boolean }>('/edges', {
     ...widgetExtra(widget.options),
     kinds: widget.options.edgeKind || 'kafka.produce',
   })
   if (!data) return null
-  if (!data.edges.length) return <Empty title="No relationships of that kind" />
+  if (!data.edges.length)
+    return data.filtered ? filteredOut('relationships of that kind') : <Empty title="No relationships of that kind" />
 
   return (
     <DataGrid
@@ -626,9 +665,10 @@ function TopicFlowBody({ widget }: { widget: WidgetConfig }) {
   </Empty>
   if (!data) return null
 
-  const side = (label: string, slot: string, rows: TopicFlow['producers']) => (
+  const side = (label: string, slot: string, rows: TopicFlow['producers'], total = rows.length) => (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div className="nav-group-label">{label}</div>
+      <FilteredNote shown={rows.length} total={total} what={label.toLowerCase()} />
       {rows.length ? (
         <DataGrid
           rows={rows}
@@ -644,7 +684,7 @@ function TopicFlowBody({ widget }: { widget: WidgetConfig }) {
             { key: 'description', label: 'Why', wide: true, value: (e) => e.description ?? '' },
           ]}
         />
-      ) : (
+      ) : total ? null : (
         <p className="muted" style={{ fontSize: 12 }}>None</p>
       )}
     </div>
@@ -652,8 +692,8 @@ function TopicFlowBody({ widget }: { widget: WidgetConfig }) {
 
   return (
     <div className="row" style={{ gap: 16, alignItems: 'flex-start' }}>
-      {side('Producers', 'producers', data.producers)}
-      {side('Consumers', 'consumers', data.consumers)}
+      {side('Producers', 'producers', data.producers, data.total?.producers)}
+      {side('Consumers', 'consumers', data.consumers, data.total?.consumers)}
     </div>
   )
 }
@@ -663,7 +703,7 @@ function ContractVersionsBody({ widget }: { widget: WidgetConfig }) {
     skewOnly: widget.options.skewOnly || '',
   })
   if (!data) return null
-  if (!data.contracts.length) return <Empty title="No contract bindings yet" />
+  if (!data.contracts.length) return data.filtered ? filteredOut('contracts') : <Empty title="No contract bindings yet" />
 
   return (
     <DataGrid
@@ -770,10 +810,11 @@ function participants(f: DriftFinding): { id: string | null; label: string; note
 
 function DriftBody({ widget }: { widget: WidgetConfig }) {
   const { status } = useScope()
-  const { data } = useQuery<{ findings: DriftFinding[] }>('/drift', {
+  const { data } = useQuery<{ findings: DriftFinding[]; filtered?: boolean }>('/drift', {
     severity: widget.options.severity || '',
   })
   if (!data) return null
+  if (!data.findings.length && data.filtered) return filteredOut('drift findings')
   if (!data.findings.length) {
     const n = status?.repos.length ?? 0
     return (
@@ -982,9 +1023,9 @@ function Finding({ finding }: { finding: DriftFinding }) {
 }
 
 function UnresolvedBody({ widget }: { widget: WidgetConfig }) {
-  const { data } = useQuery<{ unresolved: UnresolvedRow[] }>('/unresolved', widgetExtra(widget.options))
+  const { data } = useQuery<{ unresolved: UnresolvedRow[]; filtered?: boolean }>('/unresolved', widgetExtra(widget.options))
   if (!data) return null
-  if (!data.unresolved.length) return <Empty title="Nothing unresolved" />
+  if (!data.unresolved.length) return data.filtered ? filteredOut('unresolved references') : <Empty title="Nothing unresolved" />
 
   return (
     <DataGrid
@@ -1048,12 +1089,34 @@ const nothingHere = (packs: number | undefined, filtered: boolean, what: string)
 
 function ProcessTreeBody({ widget }: { widget: WidgetConfig }) {
   const { status } = useScope()
-  const { data } = useQuery<{ processes: Process[] }>('/processes', {
-    root: widget.options.rootCode || '',
+  // "Start at" is `<pack>#<code>`, like every process reference since codes
+  // became per pack. A bare code — which is how it was written before — has
+  // its pack looked up, and is answered while only one pack uses it; sending
+  // it as it was got a 400 and a widget left blank with no reason on it.
+  const raw = (widget.options.rootCode || '').trim()
+  const hash = raw.indexOf('#')
+  const named = hash === -1 ? '' : raw.slice(0, hash)
+  const code = raw.slice(hash + 1).replace(/^[Ll]/, '')
+  const lookup = useQuery<ProcessDetail>(code && !named ? '/process' : null, { code })
+  const pack = named || lookup.data?.process.pack || ''
+  const { data, error } = useQuery<{ processes: Process[]; filtered?: boolean }>(code && !pack ? null : '/processes', {
+    root: code,
+    pack: code ? pack : '',
     maxLevel: widget.options.maxLevel || '',
   })
+  const failed = (code && !named ? lookup.error : null) || error
+  if (failed) {
+    return code ? (
+      <NoSuchProcess code={code} error={failed} />
+    ) : (
+      <Empty title="The tree could not be read">
+        <span className="muted" style={{ fontSize: 12 }}>{failed}</span>
+      </Empty>
+    )
+  }
   if (!data) return null
   if (!data.processes.length) {
+    if (data.filtered && status?.counts.processPacks) return filteredOut('processes')
     return nothingHere(
       status?.counts.processPacks,
       !!(widget.options.rootCode || widget.options.maxLevel),
@@ -1101,60 +1164,72 @@ function ProcessChildrenBody({ widget }: { widget: WidgetConfig }) {
       </Empty>
     )
 
+  // The page's filter row thins the parts; the process itself is still the
+  // one asked for. A part kept only for what is beneath it is dimmed.
+  const scoped = data.inScope
+  const context = new Set(scoped?.context ?? [])
+  const kept = scoped ? new Set([...scoped.children, ...scoped.context]) : null
+  const parts = kept ? data.children.filter((c) => kept.has(c.id)) : data.children
+  if (!parts.length) return filteredOut(`parts of ${displayCode(data.process.code)}`)
+
   return (
-    <DataGrid
-      rows={data.children}
-      rowKey={(p) => p.id}
-      storageKey={`w.${widget.i}`}
-      defaultSort={null}
-      columns={[
-        {
-          key: 'code',
-          label: 'Code',
-          value: (p) => p.code,
-          search: (p) => displayCode(p.code),
-          render: (p) => <Link to={processHref(p.pack, p.code)}>{displayCode(p.code)}</Link>,
-        },
-        {
-          key: 'name',
-          label: 'What happens',
-          wide: true,
-          value: (p) => p.name,
-          render: (p) => <Link to={processHref(p.pack, p.code)}>{p.name}</Link>,
-        },
-        {
-          key: 'node',
-          label: 'At',
-          value: (p) => (p.node ? idValue(p.node) : ''),
-          render: (p) =>
-            !p.node ? (
-              <span className="muted">—</span>
-            ) : p.unresolved.node ? (
-              <span className="proc-missing" title="No such component in the map">
-                {idValue(p.node)}
-              </span>
-            ) : (
-              <NodeLink id={p.node} />
-            ),
-        },
-        {
-          key: 'edge',
-          label: 'Over',
-          value: (p) => (p.edge ? `${EDGE_LABEL[p.edge.kind]} ${idValue(p.edge.to)}` : ''),
-          render: (p) =>
-            !p.edge ? (
-              <span className="muted">—</span>
-            ) : (
-              <span
-                className={p.unresolved.edge ? 'proc-missing' : undefined}
-                title={p.unresolved.edge ? 'No scanned repository does this' : undefined}
-              >
-                {EDGE_LABEL[p.edge.kind]} {idValue(p.edge.to)}
-              </span>
-            ),
-        },
-      ]}
-    />
+    <div className="stack" style={{ gap: 6 }}>
+      <FilteredNote shown={parts.length} total={data.children.length} what="parts" context={context.size} />
+      <DataGrid
+        rows={parts}
+        rowKey={(p) => p.id}
+        rowClass={(p) => (context.has(p.id) ? 'context' : undefined)}
+        storageKey={`w.${widget.i}`}
+        defaultSort={null}
+        columns={[
+          {
+            key: 'code',
+            label: 'Code',
+            value: (p) => p.code,
+            search: (p) => displayCode(p.code),
+            render: (p) => <Link to={processHref(p.pack, p.code)}>{displayCode(p.code)}</Link>,
+          },
+          {
+            key: 'name',
+            label: 'What happens',
+            wide: true,
+            value: (p) => p.name,
+            render: (p) => <Link to={processHref(p.pack, p.code)}>{p.name}</Link>,
+          },
+          {
+            key: 'node',
+            label: 'At',
+            value: (p) => (p.node ? idValue(p.node) : ''),
+            render: (p) =>
+              !p.node ? (
+                <span className="muted">—</span>
+              ) : p.unresolved.node ? (
+                <span className="proc-missing" title="No such component in the map">
+                  {idValue(p.node)}
+                </span>
+              ) : (
+                <NodeLink id={p.node} />
+              ),
+          },
+          {
+            key: 'edge',
+            label: 'Over',
+            value: (p) => (p.edge ? `${EDGE_LABEL[p.edge.kind]} ${idValue(p.edge.to)}` : ''),
+            render: (p) =>
+              !p.edge ? (
+                <span className="muted">—</span>
+              ) : (
+                <span
+                  className={p.unresolved.edge ? 'proc-missing' : undefined}
+                  title={p.unresolved.edge ? 'No scanned repository does this' : undefined}
+                >
+                  {EDGE_LABEL[p.edge.kind]} {idValue(p.edge.to)}
+                </span>
+              ),
+          },
+        ]}
+      />
+    </div>
   )
 }
 
@@ -1230,18 +1305,25 @@ function ProcessHandoffsBody({ widget }: { widget: WidgetConfig }) {
   const total = data.links.out.length + data.links.in.length + data.links.inside.length
   if (!total)
     return <Empty title={`${displayCode(data.process.code)} hands off to nobody, and nobody hands off to it`} />
+  const kept = data.inScope ? new Set(data.inScope.links) : null
+  const pick = (hs: Handoff[]) => (kept ? hs.filter((h) => kept.has(h.id)) : hs)
+  const [out, into, inside] = [pick(data.links.out), pick(data.links.in), pick(data.links.inside)]
+  const shown = out.length + into.length + inside.length
+  if (!shown) return filteredOut(`handoffs of ${displayCode(data.process.code)}`)
   return (
     <div className="stack" style={{ gap: 12 }}>
-      <HandoffList title="Hands off to" handoffs={data.links.out} side="to" />
-      <HandoffList title="Picked up from" handoffs={data.links.in} side="from" />
-      <HandoffList title="Inside this process" handoffs={data.links.inside} side="both" />
+      <FilteredNote shown={shown} total={total} what="handoffs" />
+      <HandoffList title="Hands off to" handoffs={out} side="to" />
+      <HandoffList title="Picked up from" handoffs={into} side="from" />
+      <HandoffList title="Inside this process" handoffs={inside} side="both" />
     </div>
   )
 }
 
 function TeamListBody({ widget }: { widget: WidgetConfig }) {
-  const { data } = useQuery<{ configured: boolean; departments: Department[]; teams: Team[] }>('/teams')
+  const { data } = useQuery<{ configured: boolean; departments: Department[]; teams: Team[]; filtered?: boolean }>('/teams')
   if (!data) return null
+  if (!data.teams.length && data.filtered) return filteredOut('teams')
   if (!data.teams.length)
     return (
       <Empty title="No teams yet">
@@ -1284,8 +1366,9 @@ function TeamListBody({ widget }: { widget: WidgetConfig }) {
  * that is a shade.
  */
 function TeamMatrixBody({ widget }: { widget: WidgetConfig }) {
-  const { data } = useQuery<{ handoffs: Handoff[] }>('/handoffs', { crossTeam: 'true' })
+  const { data } = useQuery<{ handoffs: Handoff[]; filtered?: boolean }>('/handoffs', { crossTeam: 'true' })
   if (!data) return null
+  if (!data.handoffs.length && data.filtered) return filteredOut('cross-team handoffs')
   if (!data.handoffs.length)
     return (
       <Empty title="No handoff crosses a team">
@@ -1340,10 +1423,11 @@ function TeamMatrixBody({ widget }: { widget: WidgetConfig }) {
 
 function ProcessCoverageBody({ widget }: { widget: WidgetConfig }) {
   const kind = (widget.options.nodeKind || 'service') as NodeKind
-  const { data } = useQuery<{ components: CoverageRow[] }>('/coverage', { kinds: kind })
+  const { data } = useQuery<{ components: CoverageRow[]; filtered?: boolean }>('/coverage', { kinds: kind })
   const { status } = useScope()
   if (!data) return null
-  if (!data.components.length) return <Empty title={`No ${KIND_PLURAL[kind].toLowerCase()} in the map`} />
+  if (!data.components.length)
+    return data.filtered ? filteredOut(KIND_PLURAL[kind].toLowerCase()) : <Empty title={`No ${KIND_PLURAL[kind].toLowerCase()} in the map`} />
   if (!status?.counts.processPacks) return NO_PACKS
 
   const covered = data.components.filter((c) => c.covered).length
@@ -1403,12 +1487,13 @@ function ProcessCoverageBody({ widget }: { widget: WidgetConfig }) {
 
 function ProcessListBody({ widget }: { widget: WidgetConfig }) {
   const { status } = useScope()
-  const { data } = useQuery<{ processes: Process[] }>('/processes', {
+  const { data } = useQuery<{ processes: Process[]; filtered?: boolean }>('/processes', {
     owner: widget.options.owner || '',
     limit: widget.options.limit || '',
   })
   if (!data) return null
-  const leaves = data.processes.filter((p) => p.childCount === 0)
+  const leaves = data.processes.filter((p) => p.childCount === 0 && !p.context)
+  if (!leaves.length && data.filtered && status?.counts.processPacks) return filteredOut('actions')
   if (!leaves.length) {
     return nothingHere(status?.counts.processPacks, !!(widget.options.owner || widget.options.limit), 'actions')
   }
@@ -1454,8 +1539,9 @@ function ProcessListBody({ widget }: { widget: WidgetConfig }) {
 }
 
 function ReposBody({ widget }: { widget: WidgetConfig }) {
-  const { data } = useQuery<{ repos: RepoRow[]; configured: boolean }>('/repos')
+  const { data } = useQuery<{ repos: RepoRow[]; configured: boolean; filtered?: boolean }>('/repos')
   if (!data) return null
+  if (!data.repos.length && data.configured && data.filtered) return filteredOut('repositories')
   if (!data.repos.length) {
     return <Empty title="No repositories configured">
       <span className="muted" style={{ fontSize: 12 }}>Copy repos.example.json to repos.json.</span>

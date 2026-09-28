@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import { api, type Dashboard, type WidgetConfig } from '../lib/api'
-import { DEFAULT_SCOPE, useScope, type Scope } from '../lib/scope'
+import { DEFAULT_SCOPE, UnderFilterRow, useScope, type Scope } from '../lib/scope'
 import { ACTIVE_KEY, newWidgetId, useDashboards } from '../lib/dashboards'
 import { ScopeBar } from '../components/ScopeBar'
 import { Banner, Empty, Modal } from '../components/ui'
@@ -274,156 +274,160 @@ export function PageView() {
   if (!active) return null
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>{active.name}</h1>
-          <p>
-            Drag a card by its header, resize from the corner — everything is saved, and the filter
-            row below belongs to this page.
-          </p>
-        </div>
-        <div className="row">
-          <button type="button" className="ghost" onClick={() => setRenaming(true)}>
-            Rename
-          </button>
-          <button type="button" className="ghost" onClick={() => void resetPage()}>
-            Reset layout
-          </button>
-          <button
-            type="button"
-            className="ghost"
-            title="Use this layout for new pages"
-            onClick={() => void saveAsDefault()}
-          >
-            Save as default
-          </button>
-          {!active.slug && (
-            <button type="button" className="ghost danger" onClick={() => void removePage()}>
-              Delete page
-            </button>
-          )}
-          <button type="button" className="primary" onClick={() => setAdding(true)}>
-            + Add widget
-          </button>
-        </div>
-      </div>
-
-      <ScopeBar />
-
-      {error && (
-        <Banner
-          kind="error"
-          title="Page error"
-          actions={
-            <button type="button" className="ghost" onClick={() => setError(null)}>
-              Dismiss
-            </button>
-          }
-        >
-          {error}
-        </Banner>
-      )}
-
-      {active.layout.length === 0 ? (
-        <Empty title="This page is empty">
-          <button type="button" className="primary" onClick={() => setAdding(true)}>
-            + Add a widget
-          </button>
-        </Empty>
-      ) : (
-        <DashGrid
-          layout={active.layout}
-          minSize={(widgetId) => {
-            const w = active.layout.find((l) => l.i === widgetId)
-            const def = w ? widgetDef(w.type) : undefined
-            return { w: def?.minW ?? 2, h: def?.minH ?? 2 }
-          }}
-          onChange={updateLayout}
-          onCommit={commit}
-          render={(item, handles) => {
-            const widget = active.layout.find((w) => w.i === item.i)!
-            return (
-              <>
-                <div className="widget-head" onPointerDown={handles.onMoveDown}>
-                  <span className="widget-title">{widget.title || defaultTitle(widget)}</span>
-                  {widget.w >= 4 && (
-                    <WidgetQuickBar widget={widget} onPatch={(p) => patchWidget(widget.i, p)} />
-                  )}
-                  <span className="row" style={{ gap: 2, flexShrink: 0 }}>
-                    <button
-                      type="button"
-                      className="ghost widget-btn"
-                      aria-label="Expand widget to full screen"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={() => setFullscreenId(widget.i)}
-                    >
-                      ⛶
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost widget-btn"
-                      aria-label="Configure widget"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={() => setEditing(widget)}
-                    >
-                      ⚙
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost widget-btn"
-                      aria-label="Remove widget"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={() => removeWidget(widget.i)}
-                    >
-                      ✕
-                    </button>
-                  </span>
-                </div>
-                <div className="widget-body" style={{ maxHeight: bodyHeight(widget.h) + 8 }}>
-                  <WidgetBody widget={widget} />
-                </div>
-                <div className="resize-handle" onPointerDown={handles.onResizeDown} aria-hidden="true" />
-              </>
-            )
-          }}
-        />
-      )}
-
-      {adding && (
-        <Modal title="Add a widget" onClose={() => setAdding(false)}>
-          <div className="type-grid">
-            {WIDGETS.filter((def) => !def.hidden).map((def) => (
-              <button key={def.type} type="button" className="type-card" onClick={() => addWidget(def)}>
-                <strong>{def.label}</strong>
-                <span>{def.desc}</span>
-              </button>
-            ))}
+    // Everything on a page answers to its filter row — the fullscreen copy of a
+    // widget included, which a portal keeps inside this context.
+    <UnderFilterRow>
+      <div className="page">
+        <div className="page-head">
+          <div>
+            <h1>{active.name}</h1>
+            <p>
+              Drag a card by its header, resize from the corner — everything is saved, and the filter
+              row below belongs to this page.
+            </p>
           </div>
-        </Modal>
-      )}
-
-      {editing && <WidgetEditor widget={editing} onSave={saveWidget} onClose={closeEditor} />}
-
-      {renaming && (
-        <Modal title="Rename page" onClose={() => setRenaming(false)}>
-          <RenameForm initial={active.name} onSubmit={(name) => void renamePage(name)} />
-        </Modal>
-      )}
-
-      {fullscreenId &&
-        (() => {
-          const w = active.layout.find((l) => l.i === fullscreenId)
-          return w ? (
-            <FullscreenWidget
-              widget={w}
-              onClose={() => setFullscreenId(null)}
-              onEdit={() => setEditing(w)}
-              onPatch={(patch) => patchWidget(w.i, patch)}
-            />
-          ) : null
-        })()}
-    </div>
+          <div className="row">
+            <button type="button" className="ghost" onClick={() => setRenaming(true)}>
+              Rename
+            </button>
+            <button type="button" className="ghost" onClick={() => void resetPage()}>
+              Reset layout
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              title="Use this layout for new pages"
+              onClick={() => void saveAsDefault()}
+            >
+              Save as default
+            </button>
+            {!active.slug && (
+              <button type="button" className="ghost danger" onClick={() => void removePage()}>
+                Delete page
+              </button>
+            )}
+            <button type="button" className="primary" onClick={() => setAdding(true)}>
+              + Add widget
+            </button>
+          </div>
+        </div>
+  
+        <ScopeBar />
+  
+        {error && (
+          <Banner
+            kind="error"
+            title="Page error"
+            actions={
+              <button type="button" className="ghost" onClick={() => setError(null)}>
+                Dismiss
+              </button>
+            }
+          >
+            {error}
+          </Banner>
+        )}
+  
+        {active.layout.length === 0 ? (
+          <Empty title="This page is empty">
+            <button type="button" className="primary" onClick={() => setAdding(true)}>
+              + Add a widget
+            </button>
+          </Empty>
+        ) : (
+          <DashGrid
+            layout={active.layout}
+            minSize={(widgetId) => {
+              const w = active.layout.find((l) => l.i === widgetId)
+              const def = w ? widgetDef(w.type) : undefined
+              return { w: def?.minW ?? 2, h: def?.minH ?? 2 }
+            }}
+            onChange={updateLayout}
+            onCommit={commit}
+            render={(item, handles) => {
+              const widget = active.layout.find((w) => w.i === item.i)!
+              return (
+                <>
+                  <div className="widget-head" onPointerDown={handles.onMoveDown}>
+                    <span className="widget-title">{widget.title || defaultTitle(widget)}</span>
+                    {widget.w >= 4 && (
+                      <WidgetQuickBar widget={widget} onPatch={(p) => patchWidget(widget.i, p)} />
+                    )}
+                    <span className="row" style={{ gap: 2, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        className="ghost widget-btn"
+                        aria-label="Expand widget to full screen"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={() => setFullscreenId(widget.i)}
+                      >
+                        ⛶
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost widget-btn"
+                        aria-label="Configure widget"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={() => setEditing(widget)}
+                      >
+                        ⚙
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost widget-btn"
+                        aria-label="Remove widget"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={() => removeWidget(widget.i)}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  </div>
+                  <div className="widget-body" style={{ maxHeight: bodyHeight(widget.h) + 8 }}>
+                    <WidgetBody widget={widget} />
+                  </div>
+                  <div className="resize-handle" onPointerDown={handles.onResizeDown} aria-hidden="true" />
+                </>
+              )
+            }}
+          />
+        )}
+  
+        {adding && (
+          <Modal title="Add a widget" onClose={() => setAdding(false)}>
+            <div className="type-grid">
+              {WIDGETS.filter((def) => !def.hidden).map((def) => (
+                <button key={def.type} type="button" className="type-card" onClick={() => addWidget(def)}>
+                  <strong>{def.label}</strong>
+                  <span>{def.desc}</span>
+                </button>
+              ))}
+            </div>
+          </Modal>
+        )}
+  
+        {editing && <WidgetEditor widget={editing} onSave={saveWidget} onClose={closeEditor} />}
+  
+        {renaming && (
+          <Modal title="Rename page" onClose={() => setRenaming(false)}>
+            <RenameForm initial={active.name} onSubmit={(name) => void renamePage(name)} />
+          </Modal>
+        )}
+  
+        {fullscreenId &&
+          (() => {
+            const w = active.layout.find((l) => l.i === fullscreenId)
+            return w ? (
+              <FullscreenWidget
+                widget={w}
+                onClose={() => setFullscreenId(null)}
+                onEdit={() => setEditing(w)}
+                onPatch={(patch) => patchWidget(w.i, patch)}
+              />
+            ) : null
+          })()}
+      </div>
+    </UnderFilterRow>
   )
 }
 

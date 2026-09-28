@@ -108,8 +108,14 @@ function Branch({
   const expanded = open.has(process.id)
 
   return (
-    <li className={`proc-row level-${process.level}`}>
-      <div className="proc-line">
+    <li className={`proc-row level-${process.level}${process.context ? ' context' : ''}`}>
+      {/* A context row is an ancestor of what a filter asked for, there so the
+          tree stays a tree. It says so, rather than leaving the reader to
+          wonder why it is grey. */}
+      <div
+        className="proc-line"
+        title={process.context ? "Not in this page's filter — shown for what is beneath it" : undefined}
+      >
         {kids.length ? (
           <button
             type="button"
@@ -135,9 +141,12 @@ function Branch({
             repeating it down the tree would be noise on every line. */}
         {process.level === 1 && <span className="muted proc-pack">{process.pack}</span>}
 
+        {/* "2 of 5" when a filter has thinned them: a process listed with two
+            parts is a different process unless it says it has five. */}
         {kids.length > 0 && (
           <span className="muted proc-count">
-            {kids.length} {kids.length === 1 ? 'part' : 'parts'}
+            {kids.length < process.childCount ? `${kids.length} of ${process.childCount}` : kids.length}{' '}
+            {process.childCount === 1 ? 'part' : 'parts'}
           </span>
         )}
 

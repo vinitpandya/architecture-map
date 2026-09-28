@@ -72,6 +72,7 @@ export function DataGrid<T>({
   rows,
   columns,
   rowKey,
+  rowClass,
   storageKey,
   defaultSort = null,
   maxHeight,
@@ -80,6 +81,8 @@ export function DataGrid<T>({
   rows: T[]
   columns: GridColumn<T>[]
   rowKey: (row: T, index: number) => string | number
+  /** A class for a row that reads differently — a dimmed context row. */
+  rowClass?: (row: T) => string | undefined
   storageKey?: string
   defaultSort?: Sort
   maxHeight?: number
@@ -196,7 +199,7 @@ export function DataGrid<T>({
   if (!rows.length) return <p className="muted" style={{ fontSize: 12.5 }}>{emptyText}</p>
 
   const renderRow = (row: T, i: number) => (
-    <tr key={rowKey(row, i)}>
+    <tr key={rowKey(row, i)} className={rowClass?.(row)}>
       {columns.map((col) => (
         <td key={col.key} className={cellClass(col)} title={col.title?.(row)}>
           {renderCell(col, row)}

@@ -291,6 +291,71 @@ contracts" rather than "Everything".
   map already keys its own memory by, under a different prefix; a widget that
   draws two grids adds a slot (`.producers`, `.consumers`).
 
+## Every widget follows the filter row
+
+- **One rule, applied by every endpoint a widget reads.** It is `/graph`'s
+  node filter, lifted out as `readScope` in `routes.js` and read the same way
+  everywhere. Before, a page filtered to one team drew that team's map beside
+  an estate-wide process tree, estate-wide stat tiles, every team in the org
+  and a handoff matrix that read `team` while the page sent `teams`.
+- **The filter has two halves, because they combine differently.** Focus +
+  Depth and Process bound a *region*: anything with two ends needs both inside
+  it, which is what the map draws. Teams, repos and External *pick* among
+  nodes: a relationship needs only one end picked, because a line that leaves
+  the team is the reason to filter by one. This is the rule `/edges` already
+  had for teams, extended to the region.
+- **Show (kinds) is what the map draws, and a widget that names its own kind
+  has chosen for itself** — a list of topics, a Topics tile, a coverage table
+  of services. Same rule as every other widget option: its own wins.
+- **What has no node is placed through the nodes it touches, and the filter
+  drops what it cannot place.** An unresolved reference, a configured repo, a
+  quarantined manifest are placed by their repo's nodes; a team by the nodes
+  it owns; a finding about a team cannot sit inside a focus and is dropped by
+  one; a declared handoff with no topic carrying it cannot be placed by a
+  focus or a repo. "Show me this team's", never "this team's plus everything
+  unattributable" — the rule `/drift` already stated.
+- **The focus stays exempt from the picks, as it always was on the map**; the
+  exemption from Show is the map's alone. A list of services with a topic at
+  the centre is still a list of services.
+- **A process filtered by team means the team that owns it**, inherited owner
+  included — the list the team's own page shows — with every ancestor kept as
+  dimmed context so a tree filtered to one team is still a tree. A repo or a
+  focus can only reach a process through its components, since a process has
+  an owner and has no repo. The filter row's process is a subtree, the same as
+  the tree's own "Start at", which wins when set; a widget's own `owner` wins
+  over the row's teams.
+- **A widget about one thing thins its lists and keeps its diagrams whole.**
+  The parts of a process, its handoffs, a topic's producers and consumers
+  drop what is outside the filter and say "2 of 5 — the rest are outside this
+  page's filter". The sequence, flow, lanes and tree diagrams and the process
+  map draw the whole process: a sequence with steps cut out of it is a false
+  sequence. `/api/process` returns everything and an `inScope` list of ids,
+  so one response serves both. A part kept only because something beneath it
+  is — 2.3 is trading's, 2.3.4 under it is wallet's — is dimmed, as in the tree.
+- **A contract stays in when any service inside the filter binds it, and is
+  shown whole.** Skew is a fact about the contract across the estate: filtered
+  to one team, the other team's older version is the thing worth seeing.
+- **A team in the teams list is shown whole.** Its component, process and
+  handoff counts are facts about the team, not about the filter.
+- **Stat tiles count inside the filter and say what out of**: "4 — of 46
+  across the estate". A new `/api/counts` computes every tile through the same
+  rule as the list it summarises, so a tile and the table beside it cannot
+  disagree; with no filter its numbers are `/status`'s, which a check asserts.
+  `/status` stays the estate.
+- **Only a page with a filter row sends the filter.** The scope is one piece of
+  state kept from whichever page set it last, and `useQuery` used to send it
+  from every screen — so the Teams page, whose job is to put every service in
+  a team, listed only the services of whatever team the last page was
+  filtered to, with no filter row on screen to say so. The page grid is
+  wrapped in `UnderFilterRow`; everywhere else reads the estate.
+- **An empty widget says whether the filter emptied it.** "No services yet" on a
+  page filtered to a team with none sends somebody off to run a scan that would
+  change nothing.
+- **The tree's "Start at" is `<pack>#<code>`.** Since codes became per pack a
+  bare code there sent `root` with no pack, got a 400, and left the widget
+  blank with nothing on it. A bare code now has its pack looked up and is
+  answered while one pack uses it; an error is shown rather than swallowed.
+
 ## Layer B — processes (phases 7–11)
 
 ### The migration
