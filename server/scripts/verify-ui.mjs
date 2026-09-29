@@ -1822,7 +1822,7 @@ console.log('\nGrids: search, sort and group, on every table')
   const hits = await rowsOf()
   ok('typing narrows the rows', hits.length > 0 && hits.length < all.length, `${hits.length} of ${all.length}`)
   ok('  …to rows containing the text', hits.every((r) => r.toLowerCase().includes('wallet')), hits.join(' | '))
-  is('  …and the toolbar says how many', await page.$eval(`${grid} .grid-count`, (e) => e.innerText), `${hits.length} of ${all.length} rows`)
+  is('  …and the toolbar says how many', await page.$eval(`${grid} .search-count`, (e) => e.innerText), `${hits.length} of ${all.length} rows`)
 
   await page.fill(`${grid} input[aria-label="Search rows"]`, 'no such service anywhere')
   await page.waitForTimeout(200)
@@ -1886,6 +1886,139 @@ console.log('\nGrids: search, sort and group, on every table')
   is('a sort chosen in full screen is the tile’s sort when it closes', await page.$eval(`${grid} th:has-text("Team")`, (e) => e.getAttribute('aria-sort')), 'ascending')
   is('  …and so is the grouping', await page.$eval(`${grid} .grid-toolbar select`, (e) => e.value), 'ownerRepo')
   ok('no console errors driving a grid', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+/* ---- every list that is not a grid can be searched too */
+
+console.log('\nLists: a search on every one that is not a grid')
+{
+  // Where each hand-built list lives, and how many search boxes of its own
+  // the screen should carry. Counted, so a list losing its box is noticed.
+  for (const [name, url, ready, expected] of [
+    ['the processes page', '/processes', '.proc-tree', 1],
+    ['a process', '/process?pack=order-and-execution&code=2', '.proc-flow', 4], // parts, components, teams, handoffs
+    ['a topic with a finding', `/node?id=${encodeURIComponent('topic:risk.flagged.v1')}`, '.evidence-list', 2], // findings, citations
+    ['a topic with none', `/node?id=${encodeURIComponent('topic:orders.matched.v1')}`, '.evidence-list', 1], // citations
+    ['a team', '/team?id=wallet', '.handoff-list', 1],
+    ['the health page', `/d/${pageId('health')}`, '.drift-list', 1],
+    ['the ingest log', '/manifests', '.card', 1],
+  ]) {
+    const { ctx, page, problems } = await open(url)
+    await page.waitForSelector(ready, { timeout: 20000 })
+    await page.waitForTimeout(400)
+    is(`${name}: its lists carry a search`, (await page.$$('.list-toolbar input[type="search"]')).length, expected)
+    ok(`${name}: no console errors`, problems.length === 0, problems.join(' | '))
+    await ctx.close()
+  }
+}
+
+{
+  // The tree: a hit arrives with the way down to it, opened, and says why.
+  const { ctx, page, problems } = await open('/processes')
+  await page.waitForSelector('.proc-tree .proc-row', { timeout: 20000 })
+  const box = '.proc-tree-wrap input[aria-label="Search processes"]'
+  const codes = () => page.$$eval('.proc-tree .proc-row > .proc-line .proc-code', (els) => els.map((e) => e.textContent.trim()))
+  const all = (await api('/processes')).processes.length
+
+  await page.fill(box, 'L2.3.4')
+  await page.waitForTimeout(200)
+  is('searching the tree for an L3 shows it with its L2 and L1, opened', (await codes()).join(','), 'L2,L2.3,L2.3.4')
+  is('  …the count says one of all of them', await page.$eval('.proc-tree-wrap .search-count', (e) => e.textContent), `1 of ${all} processes`)
+  is('  …and the match is marked', await page.$eval('.proc-tree mark', (e) => e.textContent), 'L2.3.4')
+
+  await page.fill(box, 'wallet')
+  await page.waitForTimeout(200)
+  const hits = await page.$$eval('.proc-tree .proc-row', (rows) =>
+    rows.filter((r) => r.querySelector(':scope > .proc-line mark')).length
+  )
+  ok('a search by what a process happens at finds the ones at it', hits > 0, `${hits} marked rows`)
+
+  await page.fill(box, 'Order and execution')
+  await page.waitForTimeout(200)
+  const parent = await codes()
+  ok('a hit on a parent still opens onto its parts', parent[0] === 'L2' && parent.length > 1, parent.join(','))
+  ok('  …and says how many of them it holds', (await page.$eval('.proc-tree .proc-row .proc-count', (e) => e.textContent.trim())).endsWith('parts'))
+
+  await page.fill(box, 'nothing is called this')
+  await page.waitForTimeout(200)
+  ok('a search matching nothing says so and keeps the box', !!(await page.$('.proc-tree-wrap .no-match')) && !!(await page.$(box)))
+  await page.press(box, 'Escape')
+  await page.waitForTimeout(200)
+  ok('Escape brings the whole tree back', (await codes()).length > 3 && !(await page.$('.proc-tree-wrap .no-match')))
+  ok('no console errors searching the tree', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+{
+  // One process's page: each list narrows to what matches.
+  const { ctx, page, problems } = await open('/process?pack=order-and-execution&code=2')
+  await page.waitForSelector('.proc-flow .proc-step', { timeout: 20000 })
+  const within = (label) => `.card:has(input[aria-label="${label}"])`
+
+  const steps = (await page.$$('.proc-flow .proc-step')).length
+  await page.fill('input[aria-label="Search parts"]', 'matching')
+  await page.waitForTimeout(200)
+  const kept = await page.$$eval('.proc-flow .proc-step', (els) => els.map((e) => e.innerText.toLowerCase()))
+  ok('a process’s parts narrow to the ones that match', kept.length > 0 && kept.length < steps && kept.every((t) => t.includes('matching')), kept.join(' | '))
+  // 2.2 matches on its outcome, which the list does not show; it has to say so
+  // rather than sit there as a hit with no reason.
+  const why = await page.$$eval('.proc-flow .proc-step .matched-in', (els) => els.map((e) => e.textContent))
+  ok('  …and a part matched on something it does not show says what', why.some((t) => t.startsWith('Ends with:') && t.includes('matching')), why.join(' | '))
+
+  await page.fill('input[aria-label="Search components"]', 'orders')
+  await page.waitForTimeout(200)
+  const comps = await page.$$eval(`${within('Search components')} .proc-components li`, (els) => els.map((e) => e.innerText.toLowerCase()))
+  ok('its components narrow to the ones that match', comps.length > 0 && comps.every((t) => t.includes('orders')), comps.join(' | '))
+
+  const handoffs = (await page.$$(`${within('Search handoffs')} .handoff-list li`)).length
+  await page.fill('input[aria-label="Search handoffs"]', 'ledger')
+  await page.waitForTimeout(200)
+  const hand = await page.$$eval(`${within('Search handoffs')} .handoff-list li`, (els) => els.map((e) => e.innerText.toLowerCase()))
+  ok('its handoffs narrow to the ones that match', hand.length > 0 && hand.length < handoffs && hand.every((t) => t.includes('ledger')), `${hand.length} of ${handoffs}`)
+  ok('no console errors searching a process', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+{
+  const { ctx, page, problems } = await open(`/node?id=${encodeURIComponent('topic:orders.matched.v1')}`)
+  await page.waitForSelector('.evidence-list li', { timeout: 20000 })
+  const cites = (await page.$$('.evidence-list li')).length
+  const first = await page.$eval('.evidence-list li .evidence-where', (e) => e.textContent.split('·')[0].trim())
+  await page.fill('input[aria-label="Search citations"]', first)
+  await page.waitForTimeout(200)
+  const where = await page.$$eval('.evidence-list li .evidence-where', (els) => els.map((e) => e.textContent))
+  ok('citations narrow to a repo', where.length > 0 && where.length <= cites && where.every((t) => t.includes(first)), `${where.length} of ${cites} in ${first}`)
+  ok('no console errors searching citations', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+{
+  // The Drift widget: grouped findings, searched across the groups.
+  const { ctx, page, problems } = await open(`/d/${pageId('health')}`)
+  const widget = '[data-grid-id="hl-5"]'
+  await page.waitForSelector(`${widget} .drift-finding`, { timeout: 20000 })
+  const before = (await page.$$(`${widget} .drift-finding`)).length
+  await page.fill(`${widget} input[aria-label="Search findings"]`, 'ledger')
+  await page.waitForTimeout(200)
+  const after = (await page.$$(`${widget} .drift-finding`)).length
+  const said = await page.$eval(`${widget} .search-count`, (e) => e.textContent)
+  ok('the Drift widget narrows its findings across every group', after > 0 && after < before, `${after} of ${before}`)
+  is('  …and counts what it kept', said, `${after} of ${before} findings`)
+  ok('no console errors searching findings', problems.length === 0, problems.join(' | '))
+  await ctx.close()
+}
+
+{
+  // The ingest log only grows, so the one worth finding has to be findable.
+  const { ctx, page, problems } = await open('/manifests')
+  await page.waitForSelector('.card', { timeout: 20000 })
+  const cards = (await page.$$('.card')).length
+  await page.fill('input[aria-label="Search the ingest log"]', 'reporting')
+  await page.waitForTimeout(200)
+  const kept = await page.$$eval('.card', (els) => els.map((e) => e.innerText.toLowerCase()))
+  ok('the ingest log narrows to the documents that match', kept.length > 0 && kept.length < cards && kept.every((t) => t.includes('reporting')), `${kept.length} of ${cards}`)
+  ok('no console errors searching the ingest log', problems.length === 0, problems.join(' | '))
   await ctx.close()
 }
 

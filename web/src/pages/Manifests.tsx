@@ -4,6 +4,42 @@ import { api, type ManifestRow, type ProcessPack } from '../lib/api'
 import { idValue } from '../lib/nodes'
 import { useScope } from '../lib/scope'
 import { Banner, Card, Empty } from '../components/ui'
+import { ListSearch, MatchedIn, NoMatch, textOf, useSearch } from '../components/SearchBox'
+
+type Doc = { kind: 'pack'; pack: ProcessPack } | { kind: 'manifest'; manifest: ManifestRow }
+
+const errorText = (e: { path: string; message: string }) => textOf(e.path, e.message)
+
+/**
+ * What an ingested document is found by. Superseded ones are kept, so this
+ * log only grows, and the one worth finding is usually a single quarantined
+ * file — by its repo, its pack, its status, or the words of its error.
+ */
+const docText = (d: Doc) =>
+  d.kind === 'pack'
+    ? textOf(
+        d.pack.name,
+        d.pack.pack,
+        d.pack.status,
+        d.pack.producer_kind,
+        d.pack.source_file,
+        d.pack.prompt_version,
+        d.pack.description,
+        d.pack.source?.title,
+        d.pack.covers?.team,
+        ...(d.pack.covers?.services ?? []),
+        ...(d.pack.errors ?? []).map(errorText)
+      )
+    : textOf(
+        d.manifest.repo,
+        d.manifest.status,
+        d.manifest.producer_kind,
+        d.manifest.commit_sha,
+        d.manifest.service_id,
+        d.manifest.source_file,
+        d.manifest.prompt_version,
+        ...(d.manifest.errors ?? []).map(errorText)
+      )
 
 /**
  * The ingest log, for both things that arrive through the inbox: scan
@@ -21,6 +57,13 @@ export function ManifestsPage() {
   const [open, setOpen] = useState<string | null>(null)
   const [applying, setApplying] = useState<number | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
+  const docs: Doc[] = [
+    ...packs.map((pack) => ({ kind: 'pack' as const, pack })),
+    ...rows.map((manifest) => ({ kind: 'manifest' as const, manifest })),
+  ]
+  const search = useSearch(docs, docText)
+  const shownPacks = search.matches.flatMap((d) => (d.kind === 'pack' ? [d.pack] : []))
+  const shownRows = search.matches.flatMap((d) => (d.kind === 'manifest' ? [d.manifest] : []))
 
   useEffect(() => {
     api
@@ -79,16 +122,21 @@ export function ManifestsPage() {
     )
   }
 
-  const errors = (key: string, list: { path: string; message: string }[] | null | undefined) =>
-    open === key && list ? (
+  // An open error list the search reaches into shows the errors that matched,
+  // when any did; a document found by its name shows all of them.
+  const errors = (key: string, list: { path: string; message: string }[] | null | undefined) => {
+    if (open !== key || !list) return null
+    const hits = search.q ? list.filter((e) => errorText(e).toLowerCase().includes(search.q)) : []
+    return (
       <ul className="error-list">
-        {list.map((e, i) => (
+        {(hits.length ? hits : list).map((e, i) => (
           <li key={i}>
             <code>{e.path}</code> — {e.message}
           </li>
         ))}
       </ul>
-    ) : null
+    )
+  }
 
   const toggle = (key: string, count: number) => (
     <button type="button" className="ghost" onClick={() => setOpen(open === key ? null : key)}>
@@ -106,10 +154,20 @@ export function ManifestsPage() {
         </Banner>
       )}
 
-      {packs.length > 0 && (
+      <ListSearch
+        query={search.query}
+        onChange={search.setQuery}
+        shown={search.matches.length}
+        total={docs.length}
+        noun="documents"
+        label="Search the ingest log"
+      />
+      {search.narrowed && !search.matches.length && <NoMatch query={search.query} />}
+
+      {shownPacks.length > 0 && (
         <>
           <div className="nav-group-label">Process packs</div>
-          {packs.map((p) => {
+          {shownPacks.map((p) => {
             const key = `pack-${p.id}`
             return (
               <Card
@@ -151,6 +209,13 @@ export function ManifestsPage() {
                     <Link to="/processes">See its processes →</Link>
                   </p>
                 )}
+                {open !== key && (
+                  <MatchedIn
+                    q={search.q}
+                    shown={[p.name, p.pack, p.status, p.producer_kind, p.source_file, p.prompt_version, p.description, p.source?.title, p.covers?.team, ...(p.covers?.services ?? []).map((x) => idValue(x))]}
+                    hidden={(p.errors ?? []).map((e) => ['Error', errorText(e)] as [string, string])}
+                  />
+                )}
                 {errors(key, p.errors)}
               </Card>
             )
@@ -158,12 +223,12 @@ export function ManifestsPage() {
         </>
       )}
 
-      {rows.length > 0 && (
+      {shownRows.length > 0 && (
         <>
           <div className="nav-group-label" style={{ paddingTop: 10 }}>
             Scan manifests
           </div>
-          {rows.map((m) => {
+          {shownRows.map((m) => {
             const key = `manifest-${m.id}`
             return (
               <Card
@@ -194,6 +259,13 @@ export function ManifestsPage() {
                   {m.source_file ? ` · ${m.source_file}` : ''}
                   {m.prompt_version ? ` · prompt ${m.prompt_version}` : ''}
                 </div>
+                {open !== key && (
+                  <MatchedIn
+                    q={search.q}
+                    shown={[m.repo, m.status, m.producer_kind, m.commit_sha, m.service_id, m.source_file, m.prompt_version]}
+                    hidden={(m.errors ?? []).map((e) => ['Error', errorText(e)] as [string, string])}
+                  />
+                )}
                 {errors(key, m.errors)}
               </Card>
             )

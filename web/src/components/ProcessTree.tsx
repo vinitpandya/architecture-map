@@ -2,6 +2,21 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Process } from '../lib/api'
 import { displayCode, idValue, nodeHref, processHref } from '../lib/nodes'
+import { Highlight, ListSearch, MatchedIn, NoMatch, textOf } from './SearchBox'
+
+/** What a process is found by: its code either way it is written, and what it names. */
+const processText = (p: Process) =>
+  textOf(
+    displayCode(p.code),
+    p.code,
+    p.name,
+    p.pack,
+    p.owner,
+    p.teamName,
+    p.teamId,
+    p.node,
+    p.edge && `${p.edge.from} ${p.edge.kind} ${p.edge.to}`
+  )
 
 /**
  * The L1/L2/L3 hierarchy as an indented, collapsible tree. Ordered by the
@@ -22,6 +37,8 @@ export function ProcessTree({
   showOwner?: boolean
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set())
+  const [query, setQuery] = useState('')
+  const q = query.trim().toLowerCase()
 
   // Keyed on which processes are here, not on the array's identity. The widget
   // fetches `/processes` through the shared scope params, so touching any
@@ -57,10 +74,43 @@ export function ProcessTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openToLevel])
 
+  // A search keeps a tree a tree: what matched, the way down to it, and what
+  // is beneath it — so a hit on "Order and execution" still opens onto its
+  // parts, and a hit on an L3 arrives with the L1 and L2 it belongs to.
+  const byId = useMemo(() => new Map(processes.map((p) => [p.id, p])), [processes])
+  const found = useMemo(() => {
+    if (!q) return null
+    const hits = new Set(processes.filter((p) => processText(p).toLowerCase().includes(q)).map((p) => p.id))
+    const up = new Set<string>()
+    for (const id of hits) {
+      for (let a = byId.get(id)?.parentId; a && byId.has(a) && !up.has(a); a = byId.get(a)!.parentId) up.add(a)
+    }
+    const down = new Set<string>()
+    for (const p of processes) {
+      for (let a = p.parentId; a && byId.has(a); a = byId.get(a)!.parentId) {
+        if (hits.has(a)) {
+          down.add(p.id)
+          break
+        }
+      }
+    }
+    return { hits, up, down }
+  }, [q, processes, byId])
+
+  // The way down to every hit opens, so a hit is on screen rather than folded
+  // under a collapsed L1. What the reader opens or closes after that is theirs.
+  useEffect(() => {
+    if (found) setOpen((prev) => new Set([...prev, ...found.up]))
+  }, [found])
+
+  const visible = found
+    ? processes.filter((p) => found.hits.has(p.id) || found.up.has(p.id) || found.down.has(p.id))
+    : processes
+
   const children = useMemo(() => {
     const by = new Map<string, Process[]>()
-    const ids = new Set(processes.map((p) => p.id))
-    for (const p of processes) {
+    const ids = new Set(visible.map((p) => p.id))
+    for (const p of visible) {
       // A root here is anything whose parent is not in this slice, so a
       // widget rooted at 2.1 renders 2.1 at the top rather than nothing.
       const key = p.parentId && ids.has(p.parentId) ? p.parentId : '·root'
@@ -68,7 +118,7 @@ export function ProcessTree({
       by.get(key)!.push(p)
     }
     return by
-  }, [processes])
+  }, [visible])
 
   const toggle = (id: string) =>
     setOpen((prev) => {
@@ -78,12 +128,37 @@ export function ProcessTree({
       return next
     })
 
+  // Counted over what was asked for: a filter row's context rows are there to
+  // hold the tree up, and are not processes the reader is looking for.
+  const asked = processes.filter((p) => !p.context)
   return (
-    <ul className="proc-tree">
-      {(children.get('·root') ?? []).map((p) => (
-        <Branch key={p.id} process={p} children={children} open={open} onToggle={toggle} showOwner={showOwner} />
-      ))}
-    </ul>
+    <div className="proc-tree-wrap">
+      <ListSearch
+        query={query}
+        onChange={setQuery}
+        shown={found ? asked.filter((p) => found.hits.has(p.id)).length : asked.length}
+        total={asked.length}
+        noun="processes"
+        label="Search processes"
+      />
+      {visible.length ? (
+        <ul className="proc-tree">
+          {(children.get('·root') ?? []).map((p) => (
+            <Branch
+              key={p.id}
+              process={p}
+              children={children}
+              open={open}
+              onToggle={toggle}
+              showOwner={showOwner}
+              q={q}
+            />
+          ))}
+        </ul>
+      ) : (
+        <NoMatch query={query} />
+      )}
+    </div>
   )
 }
 
@@ -97,12 +172,15 @@ function Branch({
   open,
   onToggle,
   showOwner,
+  q,
 }: {
   process: Process
   children: Map<string, Process[]>
   open: Set<string>
   onToggle: (id: string) => void
   showOwner: boolean
+  /** The search, lower-cased; marked where it occurs so a hit says why. */
+  q: string
 }) {
   const kids = children.get(process.id) ?? []
   const expanded = open.has(process.id)
@@ -131,10 +209,10 @@ function Branch({
         )}
 
         <Link to={processHref(process.pack, process.code)} className="proc-code">
-          {displayCode(process.code)}
+          <Highlight text={displayCode(process.code)} q={q} />
         </Link>
         <Link to={processHref(process.pack, process.code)} className="proc-name">
-          {process.name}
+          <Highlight text={process.name} q={q} />
         </Link>
 
         {/* Only at the top. Every row under it is in the same pack, and
@@ -158,13 +236,36 @@ function Branch({
                 {idValue(process.node)}
               </span>
             ) : (
-              <Link to={nodeHref(process.node)}>{idValue(process.node)}</Link>
+              <Link to={nodeHref(process.node)}>
+                <Highlight text={idValue(process.node)} q={q} />
+              </Link>
             )}
           </span>
         )}
 
-        {showOwner && process.owner && <span className="muted proc-owner">{process.owner}</span>}
+        {showOwner && process.owner && (
+          <span className="muted proc-owner">
+            <Highlight text={process.owner} q={q} />
+          </span>
+        )}
         {process.optional && <span className="pill">optional</span>}
+        <MatchedIn
+          q={q}
+          shown={[
+            displayCode(process.code),
+            process.name,
+            process.level === 1 && process.pack,
+            !kids.length && process.node && idValue(process.node),
+            showOwner && process.owner,
+          ]}
+          hidden={[
+            ['Team', process.teamName],
+            ['Owner', process.owner],
+            ['Pack', process.pack],
+            ['At', process.node],
+            ['Over', process.edge && `${process.edge.from} ${process.edge.kind} ${process.edge.to}`],
+          ]}
+        />
       </div>
 
       {expanded && kids.length > 0 && (
@@ -177,6 +278,7 @@ function Branch({
               open={open}
               onToggle={onToggle}
               showOwner={showOwner}
+              q={q}
             />
           ))}
         </ul>

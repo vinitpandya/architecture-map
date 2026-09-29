@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { type Department, type GraphNode, type Team } from '../lib/api'
 import { useQuery, useScope } from '../lib/scope'
 import { Card, Empty } from '../components/ui'
+import { ListSearch, NoMatch, textOf, useSearch } from '../components/SearchBox'
 import { DataGrid } from '../components/DataGrid'
 import { TeamEditor } from '../components/TeamEditor'
 import { nodeHref, teamHref } from '../lib/nodes'
@@ -25,6 +26,7 @@ export function TeamsPage() {
   const { status, reload } = useScope()
   const navigate = useNavigate()
   const [editing, setEditing] = useState<Team | null>(null)
+  const problems = useSearch(data?.problems ?? [], (p) => textOf(p.kind, p.id, p.detail))
   if (!data) return null
 
   const unregistered = data.teams.filter((t) => !t.registered)
@@ -69,8 +71,17 @@ export function TeamsPage() {
           title={`${data.problems.length} ${data.problems.length === 1 ? 'problem' : 'problems'} in teams.json`}
           sub="The registry exists to catch naming drift, and it cannot catch it in its own contents"
         >
+          <ListSearch
+            query={problems.query}
+            onChange={problems.setQuery}
+            shown={problems.matches.length}
+            total={data.problems.length}
+            noun="problems"
+            label="Search problems"
+          />
+          {problems.narrowed && !problems.matches.length && <NoMatch query={problems.query} />}
           <ul className="stack" style={{ gap: 6, margin: 0, paddingLeft: 18, fontSize: 13 }}>
-            {data.problems.map((p, i) => (
+            {problems.matches.map((p, i) => (
               <li key={`${i}:${p.kind}`}>{p.detail}</li>
             ))}
           </ul>

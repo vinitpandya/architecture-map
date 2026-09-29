@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { full } from '../lib/format'
+import { SearchBox } from './SearchBox'
 
 export type GridColumn<T> = {
   key: string
@@ -208,33 +209,17 @@ export function DataGrid<T>({
     </tr>
   )
 
-  const narrowed = query.trim() !== ''
-
   return (
     <div className="data-grid">
       <div className="grid-toolbar">
-        <input
-          type="search"
-          value={query}
-          placeholder="Search…"
-          aria-label="Search rows"
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            // Escape clears the box; only an already-empty box lets it go on
-            // to whatever is listening above — a full-screen widget closes
-            // on it, and clearing a search must not exit the screen.
-            if (e.key === 'Escape' && query) {
-              setQuery('')
-              e.stopPropagation()
-            }
-          }}
+        <SearchBox
+          query={query}
+          onChange={setQuery}
+          shown={filtered.length}
+          total={rows.length}
+          noun="rows"
+          label="Search rows"
         />
-        {/* Always mounted, so the live region exists before it has anything
-            to say; a region that appears already holding its text is read
-            as nothing. */}
-        <span className="grid-count" aria-live="polite" aria-atomic="true">
-          {narrowed ? `${filtered.length} of ${rows.length} rows` : ''}
-        </span>
         {groupable.length > 0 && (
           <label>
             Group by{' '}

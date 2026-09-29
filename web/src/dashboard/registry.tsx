@@ -21,8 +21,10 @@ import {
 } from '../graph/processDiagrams'
 import { ProcessTree } from '../components/ProcessTree'
 import { full } from '../lib/format'
-import { DRIFT_KINDS } from '../lib/drift'
-import { HandoffList } from '../components/HandoffList'
+import { DRIFT_KINDS, driftTitle } from '../lib/drift'
+import { HandoffSections } from '../components/HandoffList'
+import { findingHidden, findingText } from '../components/FindingsCard'
+import { ListSearch, MatchedIn, NoMatch, textOf, useSearch } from '../components/SearchBox'
 import { teamHref } from '../lib/nodes'
 import type {
   ContractVersions,
@@ -813,6 +815,9 @@ function DriftBody({ widget }: { widget: WidgetConfig }) {
   const { data } = useQuery<{ findings: DriftFinding[]; filtered?: boolean }>('/drift', {
     severity: widget.options.severity || '',
   })
+  // Over the widget's findings, grouped or accepted alike; a group the search
+  // empties drops out, as an empty one always has.
+  const search = useSearch(data?.findings ?? [], (f) => textOf(findingText(f), f.subject_id && subjectLabel(f.subject_id)))
   if (!data) return null
   if (!data.findings.length && data.filtered) return filteredOut('drift findings')
   if (!data.findings.length) {
@@ -832,9 +837,9 @@ function DriftBody({ widget }: { widget: WidgetConfig }) {
      the end. Hiding them outright would make the count move for a reason the
      reader cannot see, and an accepted finding has not gone away — somebody
      decided to live with it. */
-  const accepted = data.findings.filter((f) => f.state === 'accepted')
+  const accepted = search.matches.filter((f) => f.state === 'accepted')
   const byKind = new Map<string, DriftFinding[]>()
-  for (const f of data.findings) {
+  for (const f of search.matches) {
     if (f.state === 'accepted') continue
     if (!byKind.has(f.kind)) byKind.set(f.kind, [])
     byKind.get(f.kind)!.push(f)
@@ -842,6 +847,15 @@ function DriftBody({ widget }: { widget: WidgetConfig }) {
 
   return (
     <div className="stack" style={{ gap: 14 }}>
+      <ListSearch
+        query={search.query}
+        onChange={search.setQuery}
+        shown={search.matches.length}
+        total={data.findings.length}
+        noun="findings"
+        label="Search findings"
+      />
+      {search.narrowed && !search.matches.length && <NoMatch query={search.query} />}
       {[...byKind].map(([kind, findings]) => (
         <section key={kind}>
           <div className="drift-group-head">
@@ -851,7 +865,7 @@ function DriftBody({ widget }: { widget: WidgetConfig }) {
           {DRIFT_KINDS[kind] && <p className="muted drift-why">{DRIFT_KINDS[kind].why}</p>}
           <ul className="drift-list">
             {findings.map((f) => (
-              <Finding key={f.id} finding={f} />
+              <Finding key={f.id} finding={f} q={search.q} />
             ))}
           </ul>
         </section>
@@ -867,7 +881,7 @@ function DriftBody({ widget }: { widget: WidgetConfig }) {
           </p>
           <ul className="drift-list">
             {accepted.map((f) => (
-              <Finding key={f.id} finding={f} />
+              <Finding key={f.id} finding={f} q={search.q} />
             ))}
           </ul>
         </section>
@@ -876,7 +890,7 @@ function DriftBody({ widget }: { widget: WidgetConfig }) {
   )
 }
 
-function Finding({ finding }: { finding: DriftFinding }) {
+function Finding({ finding, q = '' }: { finding: DriftFinding; q?: string }) {
   const { reload } = useScope()
   const [open, setOpen] = useState(false)
   const [evidence, setEvidence] = useState<Evidence[] | null>(null)
@@ -924,7 +938,14 @@ function Finding({ finding }: { finding: DriftFinding }) {
       <button type="button" className="drift-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <span className={`drift-dot ${finding.severity}`} aria-hidden="true" />
         <span className="drift-subject">{subject ? subjectLabel(subject) : 'the estate'}</span>
-        <span className="drift-detail">{finding.detail}</span>
+        <span className="drift-detail">
+          {finding.detail}{' '}
+          <MatchedIn
+            q={q}
+            shown={[subject && subjectLabel(subject), finding.detail, finding.team_id, finding.state_note, driftTitle(finding.kind)]}
+            hidden={findingHidden(finding)}
+          />
+        </span>
         {accepted && (
           /* On the row, not only inside it. Accepting collapses the finding
              again, and a reason nobody can see without re-opening it is a
@@ -968,7 +989,7 @@ function Finding({ finding }: { finding: DriftFinding }) {
               {evidence === null ? (
                 <span className="spinner" />
               ) : evidence.length ? (
-                <EvidenceList evidence={evidence} />
+                <EvidenceList evidence={evidence} searchable={false} />
               ) : (
                 <p className="muted" style={{ fontSize: 12 }}>
                   No citation on the subject itself — its edges carry the evidence.
@@ -1313,9 +1334,13 @@ function ProcessHandoffsBody({ widget }: { widget: WidgetConfig }) {
   return (
     <div className="stack" style={{ gap: 12 }}>
       <FilteredNote shown={shown} total={total} what="handoffs" />
-      <HandoffList title="Hands off to" handoffs={out} side="to" />
-      <HandoffList title="Picked up from" handoffs={into} side="from" />
-      <HandoffList title="Inside this process" handoffs={inside} side="both" />
+      <HandoffSections
+        sections={[
+          { title: 'Hands off to', handoffs: out, side: 'to' },
+          { title: 'Picked up from', handoffs: into, side: 'from' },
+          { title: 'Inside this process', handoffs: inside, side: 'both' },
+        ]}
+      />
     </div>
   )
 }

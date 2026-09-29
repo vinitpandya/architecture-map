@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, type IngestResult, type ProcessPack, type RepoRow } from '../lib/api'
 import { useScope } from '../lib/scope'
 import { Banner, Card, Empty } from '../components/ui'
+import { ListSearch, NoMatch, textOf, useSearch } from '../components/SearchBox'
 import { relative } from '../lib/format'
 import { DataGrid } from '../components/DataGrid'
 
@@ -215,6 +216,11 @@ export function ScanPage() {
  * result is shown — a quarantined file's ajv path is the only thing that tells
  * an operator what to fix, and it used to exist nowhere but the database.
  */
+const kindLabel = (r: IngestResult) =>
+  r.kind === 'process-pack' ? 'process pack' : r.kind === 'manifest' ? 'manifest' : 'not ingestable'
+const outcome = (r: IngestResult) => (r.ok ? 'ingested' : r.refused ? 'set aside' : 'quarantined')
+const errorText = (e: { path: string; message: string }) => textOf(e.path || '/', e.message)
+
 function Inbox({
   onFiles,
   onSweep,
@@ -228,6 +234,12 @@ function Inbox({
 }) {
   const [over, setOver] = useState(false)
   const input = useRef<HTMLInputElement>(null)
+  // A sweep of forty files is a list somebody has to find the one failure in.
+  // A file is found by its name, what it was, what happened to it, and any of
+  // its errors — whose list then shows the errors that matched.
+  const search = useSearch(results ?? [], (r) =>
+    textOf(r.file, kindLabel(r), outcome(r), r.repo, r.pack, ...(r.errors ?? []).map(errorText))
+  )
   const take = (list: FileList | null) => {
     const files = [...(list ?? [])].filter((f) => f.name.endsWith('.json'))
     if (files.length) void onFiles(files)
@@ -278,36 +290,49 @@ function Inbox({
         </span>
       </div>
 
+      {results && results.length > 0 && (
+        <ListSearch
+          query={search.query}
+          onChange={search.setQuery}
+          shown={search.matches.length}
+          total={results.length}
+          noun="files"
+          label="Search results"
+        />
+      )}
+      {search.narrowed && !search.matches.length && <NoMatch query={search.query} />}
       {results && (
         <ul className="ingest-results">
           {results.length === 0 && (
             <li className="muted">The inbox was empty — nothing to sweep.</li>
           )}
-          {results.map((r, i) => (
-            <li key={`${i}:${r.file}`} className={r.ok ? 'ok' : 'bad'}>
-              <div className="row" style={{ gap: 8, alignItems: 'baseline' }}>
-                <code>{r.file}</code>
-                <span className="muted" style={{ fontSize: 12 }}>
-                  {r.kind === 'process-pack' ? 'process pack' : r.kind === 'manifest' ? 'manifest' : 'not ingestable'}
-                </span>
-                <span className={`pill ${r.ok ? 'good' : 'bad'}`}>
-                  {r.ok ? 'ingested' : r.refused ? 'set aside' : 'quarantined'}
-                </span>
-              </div>
-              {r.errors?.length ? (
-                <ul className="ingest-errors">
-                  {r.errors.slice(0, 8).map((e, j) => (
-                    <li key={`${j}:${e.path}`}>
-                      <code>{e.path || '/'}</code> {e.message}
-                    </li>
-                  ))}
-                  {r.errors.length > 8 && (
-                    <li className="muted">…and {r.errors.length - 8} more</li>
-                  )}
-                </ul>
-              ) : null}
-            </li>
-          ))}
+          {search.matches.map((r) => {
+            // The errors the search found, when it found any — past the first
+            // eight if that is where they are; otherwise the first eight.
+            const hits = search.q ? (r.errors ?? []).filter((e) => errorText(e).toLowerCase().includes(search.q)) : []
+            const errors = hits.length ? hits : (r.errors ?? [])
+            return (
+              <li key={`${results.indexOf(r)}:${r.file}`} className={r.ok ? 'ok' : 'bad'}>
+                <div className="row" style={{ gap: 8, alignItems: 'baseline' }}>
+                  <code>{r.file}</code>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {kindLabel(r)}
+                  </span>
+                  <span className={`pill ${r.ok ? 'good' : 'bad'}`}>{outcome(r)}</span>
+                </div>
+                {errors.length ? (
+                  <ul className="ingest-errors">
+                    {errors.slice(0, 8).map((e, j) => (
+                      <li key={`${j}:${e.path}`}>
+                        <code>{e.path || '/'}</code> {e.message}
+                      </li>
+                    ))}
+                    {errors.length > 8 && <li className="muted">…and {errors.length - 8} more</li>}
+                  </ul>
+                ) : null}
+              </li>
+            )
+          })}
         </ul>
       )}
     </Card>

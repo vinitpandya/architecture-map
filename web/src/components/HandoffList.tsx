@@ -1,6 +1,62 @@
 import { Link } from 'react-router-dom'
 import type { Handoff } from '../lib/api'
 import { displayCode, idValue, nodeHref, processHref, teamHref } from '../lib/nodes'
+import { ListSearch, MatchedIn, NoMatch, textOf, useSearch } from './SearchBox'
+
+type Side = 'to' | 'from' | 'both'
+
+/** What a handoff is found by: both ends, both teams, what carries it, and what the badge says. */
+const handoffText = (h: Handoff) =>
+  textOf(
+    displayCode(h.from.code),
+    h.from.code,
+    h.from.name,
+    h.from.pack,
+    h.from.teamName,
+    h.from.teamId,
+    displayCode(h.to.code),
+    h.to.code,
+    h.to.name,
+    h.to.pack,
+    h.to.teamName,
+    h.to.teamId,
+    h.viaNode,
+    h.note,
+    badgeOf(h).label
+  )
+
+/**
+ * The lists a screen shows together — out, in, inside — under one search,
+ * because the reader is looking for a handoff, not for a section. A section
+ * the search empties drops out, as an empty one always has.
+ */
+export function HandoffSections({ sections }: { sections: { title: string; handoffs: Handoff[]; side: Side }[] }) {
+  const all = sections.flatMap((s) => s.handoffs)
+  const search = useSearch(all, handoffText)
+  const kept = new Set(search.matches)
+  return (
+    <div className="stack" style={{ gap: 14 }}>
+      <ListSearch
+        query={search.query}
+        onChange={search.setQuery}
+        shown={search.matches.length}
+        total={all.length}
+        noun="handoffs"
+        label="Search handoffs"
+      />
+      {search.narrowed && !search.matches.length && <NoMatch query={search.query} />}
+      {sections.map((s) => (
+        <HandoffList
+          key={s.title}
+          title={s.title}
+          handoffs={s.handoffs.filter((h) => kept.has(h))}
+          side={s.side}
+          q={search.q}
+        />
+      ))}
+    </div>
+  )
+}
 
 /**
  * Handoffs as a list rather than a table, because the interesting part of each
@@ -14,11 +70,14 @@ export function HandoffList({
   title,
   handoffs,
   side,
+  q = '',
 }: {
   title?: string
   handoffs: Handoff[]
   /** Which end to lead with: the one that is NOT the subject. */
-  side: 'to' | 'from' | 'both'
+  side: Side
+  /** The search its section is under, for saying why a row matched. */
+  q?: string
 }) {
   if (!handoffs.length) return null
   return (
@@ -51,7 +110,25 @@ export function HandoffList({
               ) : (
                 'no message or call carries it'
               )}
-              {h.note && <> · {h.note}</>}
+              {h.note && <> · {h.note}</>}{' '}
+              <MatchedIn
+                q={q}
+                shown={[
+                  ...(side === 'both' ? [h.from, h.to] : [side === 'to' ? h.to : h.from]).flatMap((e) => [
+                    displayCode(e.code),
+                    e.name,
+                    e.teamName ?? e.teamId,
+                  ]),
+                  h.viaNode && idValue(h.viaNode),
+                  h.note,
+                  badgeOf(h).label,
+                ]}
+                hidden={[
+                  ['From', `${displayCode(h.from.code)} ${h.from.name} · ${h.from.pack} · ${h.from.teamName ?? h.from.teamId ?? ''}`],
+                  ['To', `${displayCode(h.to.code)} ${h.to.name} · ${h.to.pack} · ${h.to.teamName ?? h.to.teamId ?? ''}`],
+                  ['Over', h.viaNode],
+                ]}
+              />
             </div>
           </li>
         ))}
@@ -81,28 +158,19 @@ function End({ end }: { end: Handoff['from'] }) {
  * is the good case and says least; a claim with nothing behind it says most,
  * because the person reading the page is the person who can fix it.
  */
-function Badge({ h }: { h: Handoff }) {
-  if (h.derived && h.declared)
-    return (
-      <span className="pill good" title="The code does this and a pack says so">
-        agreed
-      </span>
-    )
-  if (h.derived)
-    return (
-      <span className="pill" title="Derived from the topology; no pack mentions it">
-        undocumented
-      </span>
-    )
+function badgeOf(h: Handoff): { label: string; tone: string; title: string } {
+  if (h.derived && h.declared) return { label: 'agreed', tone: 'good', title: 'The code does this and a pack says so' }
+  if (h.derived) return { label: 'undocumented', tone: '', title: 'Derived from the topology; no pack mentions it' }
   if (h.support === 'none')
-    return (
-      <span className="pill bad" title="Declared, and the two processes share no component at all">
-        nothing behind it
-      </span>
-    )
+    return { label: 'nothing behind it', tone: 'bad', title: 'Declared, and the two processes share no component at all' }
+  return { label: 'declared', tone: '', title: 'Declared, and the two processes touch the same component' }
+}
+
+function Badge({ h }: { h: Handoff }) {
+  const b = badgeOf(h)
   return (
-    <span className="pill" title="Declared, and the two processes touch the same component">
-      declared
+    <span className={b.tone ? `pill ${b.tone}` : 'pill'} title={b.title}>
+      {b.label}
     </span>
   )
 }

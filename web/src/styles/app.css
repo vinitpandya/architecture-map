@@ -1011,7 +1011,10 @@ select.rag-paused { color: var(--text-muted); }
 
 /* ---------------------------------------------------------- data grids */
 
-.grid-toolbar {
+/* A grid's toolbar, and the same box above a list that is not a grid: one
+   search, one look, wherever there is something to find in. */
+.grid-toolbar,
+.list-toolbar {
   display: flex;
   flex-wrap: wrap; /* a three-column widget is ~210px wide; the label drops whole */
   justify-content: flex-end;
@@ -1031,7 +1034,8 @@ select.rag-paused { color: var(--text-muted); }
 }
 /* Small at rest — it sits above two-row tables as often as long ones — and
    given room once it has something in it. */
-.grid-toolbar input[type='search'] {
+.grid-toolbar input[type='search'],
+.list-toolbar input[type='search'] {
   font-size: 12px;
   padding: 3px 8px;
   flex: 0 1 112px;
@@ -1040,18 +1044,38 @@ select.rag-paused { color: var(--text-muted); }
   transition: width 120ms ease;
 }
 .grid-toolbar input[type='search']:focus,
-.grid-toolbar input[type='search']:not(:placeholder-shown) {
+.grid-toolbar input[type='search']:not(:placeholder-shown),
+.list-toolbar input[type='search']:focus,
+.list-toolbar input[type='search']:not(:placeholder-shown) {
   flex-basis: 176px;
   width: 176px;
 }
-.grid-toolbar .grid-count {
+.search-count {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 /* Always mounted so the live region exists before it speaks; empty, it must
    not also take a gap of its own. */
-.grid-toolbar .grid-count:empty {
+.search-count:empty {
   margin-left: -10px;
+}
+/* Nothing matches — said in the list's place, with the box still above it. */
+.no-match {
+  margin: 4px 0;
+  font-size: 12.5px;
+}
+/* Why a row is a hit when what matched is not on it: "Ends with: …the
+   matching engine has it". Small, and after what the row already says. */
+.matched-in {
+  display: inline-block;
+  font-size: 12px;
+}
+/* Where a search matched, inside a hit — the same wash the Search page uses. */
+mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: var(--selected-wash);
+  color: inherit;
 }
 /* A row kept for what is beneath it, not for itself. */
 table.data tr.context td {

@@ -291,6 +291,44 @@ contracts" rather than "Everything".
   map already keys its own memory by, under a different prefix; a widget that
   draws two grids adds a slot (`.producers`, `.consumers`).
 
+### Lists that are not grids
+
+- **Every hand-built list carries the same search as a grid**: the process
+  tree (Processes page and widget), findings (Drift widget, node and process
+  pages), handoffs (widget, process and team pages), a process's parts,
+  components and teams, evidence citations, the Scan page's ingest results,
+  the ingest log, and the teams.json problems list. One `SearchBox` serves all
+  of them and `DataGrid` too — the same Escape rule, the same count, not
+  remembered — so there is one behaviour to learn and one place to change it.
+- **A tree searched is still a tree.** A hit keeps the way down to it, opened,
+  and what is beneath it, so a hit on "Order and execution" still opens onto
+  its parts and a hit on an L3 arrives with its L1 and L2. The count is over
+  the hits, not the rows kept to hold them up, and a filter row's context rows
+  are not counted as processes at all.
+- **A hit says why it is one.** A row that matched only on something it does
+  not show — a part's outcome, a process's team, a party a finding names, an
+  error in a collapsed card — shows that field, labelled and marked: "Ends
+  with: …the matching engine has it". Found by a browser check expecting every
+  kept part to contain what was typed; the premise was wrong about the row and
+  right about the reader, so the row changed, not the check — the same thing
+  the map's search taught.
+- **Lists shown together are one search.** A process's handoffs out, in and
+  inside are three lists and one question; a box on each would be three
+  searches for one handoff.
+- **A list inside one row of a searched list has no box of its own.** A
+  finding's parties and its first three citations are part of that finding;
+  the findings search reads the parties, and the finding links to the node
+  page, whose citations are searchable in full.
+- **A search reaches into the lists nested in what it finds.** An ingest
+  result's errors, and a quarantined document's in the ingest log, show the
+  errors that matched — past the first eight if that is where they are.
+- **A finding is found by the values in its `data`, never its keys**, or
+  "repo" would match every finding that has one.
+- **The diagrams and the map's own panels are not searched.** A sequence with
+  steps cut out is a false sequence, as with the filter row; and everything in
+  the map's panels — what a line runs through, what is not drawn as a line —
+  is on the map, which has its own find that reaches it.
+
 ## Every widget follows the filter row
 
 - **One rule, applied by every endpoint a widget reads.** It is `/graph`'s

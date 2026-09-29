@@ -1,5 +1,6 @@
 import type { Evidence } from '../lib/api'
 import { Empty } from './ui'
+import { ListSearch, NoMatch, textOf, useSearch } from './SearchBox'
 
 /**
  * Where a fact is visible in the source. Every edge carries at least one of
@@ -16,19 +17,28 @@ import { Empty } from './ui'
 export function EvidenceList({
   evidence,
   empty = 'Nothing cites this directly; its edges carry the evidence.',
+  searchable = true,
 }: {
   evidence: Evidence[]
   empty?: string
+  /**
+   * Off where the list sits inside one row of a list that is itself searched
+   * — a finding's first three citations — rather than standing on its own.
+   */
+  searchable?: boolean
 }) {
+  // Found by where it is and by what it says: a repo, a file, a line number,
+  // or the name of whatever the snippet calls.
+  const search = useSearch(evidence, (e) => textOf(e.repo, `${e.file}:${e.line}`, e.snippet))
   if (!evidence.length) {
     return <Empty title="No citation of its own">
       <span className="muted" style={{ fontSize: 12 }}>{empty}</span>
     </Empty>
   }
 
-  return (
+  const list = (
     <ul className="evidence-list">
-      {evidence.map((e) => (
+      {search.matches.map((e) => (
         <li key={e.id}>
           <div className="evidence-where muted">
             {e.repo} · {e.file}:{e.line}
@@ -40,5 +50,19 @@ export function EvidenceList({
         </li>
       ))}
     </ul>
+  )
+  if (!searchable) return list
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <ListSearch
+        query={search.query}
+        onChange={search.setQuery}
+        shown={search.matches.length}
+        total={evidence.length}
+        noun="citations"
+        label="Search citations"
+      />
+      {search.matches.length ? list : <NoMatch query={search.query} />}
+    </div>
   )
 }

@@ -50,7 +50,7 @@ npm run dev           # UI http://localhost:5173 · API http://localhost:8787
 
 ```bash
 npm run verify                       # §14, SPEC-PROCESSES §10 and SPEC-ORG §10 — 604 assertions
-npm run build && npm run verify:ui   # the checks that need a browser — 292 more
+npm run build && npm run verify:ui   # the checks that need a browser — 327 more
 npm run verify:dev                   # the 11 that only fail in dev mode
 npm run seed:demo -- --remove        # clear the demo estate and its packs out of the database
 npm run validate -- <file>           # routes by shape: manifest or process pack
@@ -282,7 +282,7 @@ through 452 server assertions and 191 browser checks, because neither of them
 runs the build that says so. This one opens every page against `npm run dev`
 and fails on any console error.
 
-**`npm run verify:ui` — 292 checks in Chromium at 1280×900, all passing.**
+**`npm run verify:ui` — 327 checks in Chromium at 1280×900, all passing.**
 
 A finding says how long it has been true rather than "just now", names the team
 that should look at it, and can be accepted with a reason and reopened again —
@@ -875,6 +875,39 @@ row — then clicks through to the Teams page and counts all ten services.
 narrow (seen on the Process map page at 7 columns with the inspector open);
 it predates this change. The filter row's Process picker does not narrow to
 the team selected beside it.
+
+## Every list can be searched
+
+The grids had search; the lists built by hand did not — the process tree
+first among them. Now every one does, with the same box a grid carries:
+
+| Where | What |
+|---|---|
+| Processes page, process-tree widget | the tree — hits keep the way down to them, opened, and what is beneath them |
+| Drift widget; node and process pages | findings, across every group |
+| Process-handoffs widget; process and team pages | handoffs — one box over out, in and inside |
+| A process's page | its parts, its components, the teams it reaches |
+| Node page | evidence citations |
+| Scan | the ingest results of a sweep or a drop, reaching into their errors |
+| Manifests | the ingest log, packs and manifests together, reaching into their errors |
+| Teams | the teams.json problems list |
+
+`DataGrid` was moved onto the same `SearchBox`, so a grid and a list behave
+the same way — Escape clears and stops there, `N of M` beside the box, nothing
+remembered. A row that matched only on something it does not show says what
+did ("Ends with: …the matching engine has it"), because the first run of the
+browser checks found a part kept by its outcome with no visible reason.
+
+Not given a box, deliberately: a finding's parties and first three citations
+(inside one row of a searched list), the diagrams, the map's own panels (the
+map's find reaches everything in them), and the Search page, which is one.
+
+The browser suite counts the boxes on seven screens and drives the tree (an L3
+arrives with its L2 and L1, the count, the mark, a parent still opening onto
+its parts, no match, Escape), a process's parts, components and handoffs, the
+matched-in line, citations, the Drift widget across its groups, and the ingest
+log. Not driven in the browser: the Scan page's results, which need a sweep
+that would add quarantined rows to the suite's estate.
 
 ## What the scale pass found
 

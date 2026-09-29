@@ -3,10 +3,10 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api, type Evidence, type GraphEdge, type GraphNode, type NodeDetail, type Team } from '../lib/api'
 import { useQuery, useScope } from '../lib/scope'
 import { Card, Empty } from '../components/ui'
+import { FindingsCard } from '../components/FindingsCard'
 import { DataGrid, type GridColumn } from '../components/DataGrid'
 import { EvidenceList } from '../components/EvidenceList'
 import { assignTeam } from '../lib/teams'
-import { driftTitle } from '../lib/drift'
 import {
   EDGE_LABEL,
   KIND_LABEL,
@@ -87,18 +87,7 @@ export function NodePage() {
 
       <Owner node={node} onSaved={() => setReload((n) => n + 1)} />
 
-      {data.drift.length > 0 && (
-        <Card title={`Findings (${data.drift.length})`} sub="What the link pass noticed about this node">
-          <ul className="stack" style={{ gap: 6, margin: 0, paddingLeft: 18 }}>
-            {data.drift.map((f) => (
-              <li key={f.id}>
-                <strong>{driftTitle(f.kind)}</strong> — {f.detail}
-                {f.state === 'accepted' && <span className="muted"> · accepted</span>}
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
+      <FindingsCard drift={data.drift} sub="What the link pass noticed about this node" />
 
       <KindBody detail={data} />
 

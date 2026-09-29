@@ -6,7 +6,7 @@ import { TeamEditor } from '../components/TeamEditor'
 import { Card, Empty } from '../components/ui'
 import { DataGrid } from '../components/DataGrid'
 import { KIND_LABEL, displayCode, idValue, nodeHref, processHref, teamHref } from '../lib/nodes'
-import { HandoffList } from '../components/HandoffList'
+import { HandoffSections } from '../components/HandoffList'
 
 /**
  * One team: what it owns, what it runs, and where its work meets everybody
@@ -120,10 +120,12 @@ export function TeamPage() {
             usually means its processes are not documented yet, rather than that it works alone.
           </p>
         ) : (
-          <div className="stack" style={{ gap: 14 }}>
-            {handoffs.out.length > 0 && <HandoffList title="Out" handoffs={handoffs.out} side="to" />}
-            {handoffs.in.length > 0 && <HandoffList title="In" handoffs={handoffs.in} side="from" />}
-          </div>
+          <HandoffSections
+            sections={[
+              { title: 'Out', handoffs: handoffs.out, side: 'to' },
+              { title: 'In', handoffs: handoffs.in, side: 'from' },
+            ]}
+          />
         )}
       </Card>
 

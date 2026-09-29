@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, type Process, type ProcessComponent, type ProcessDetail, type ProcessSource, type TeamReach, type Handoff } from '../lib/api'
 import { Card, Empty } from '../components/ui'
+import { FindingsCard } from '../components/FindingsCard'
+import { Highlight, ListSearch, MatchedIn, NoMatch, textOf, useSearch } from '../components/SearchBox'
 import { DataGrid } from '../components/DataGrid'
 import { relative } from '../lib/format'
-import { driftTitle } from '../lib/drift'
-import { HandoffList } from '../components/HandoffList'
+import { HandoffSections } from '../components/HandoffList'
 import { Mermaid } from '../graph/ProcessFlow'
 import {
   DIAGRAM_LABEL,
@@ -82,11 +83,6 @@ export function ProcessPage() {
   if (!data) return null
 
   const { process, ancestors, children, components, services, links, teams, drift, pack } = data
-  const byKind = new Map<string, ProcessComponent[]>()
-  for (const c of components) {
-    if (!byKind.has(c.kind)) byKind.set(c.kind, [])
-    byKind.get(c.kind)!.push(c)
-  }
 
   return (
     <div className="page">
@@ -163,30 +159,7 @@ export function ProcessPage() {
         </Card>
       )}
 
-      <Card
-        title={`Components used (${components.length})`}
-        sub="Rolled up from everything underneath this process"
-      >
-        {components.length ? (
-          <div className="stack" style={{ gap: 12 }}>
-            {[...byKind].map(([kind, list]) => (
-              <div key={kind}>
-                <span className="nav-group-label">{KIND_PLURAL[kind as NodeKind] ?? kind}</span>
-                <ul className="proc-components">
-                  {list.map((c) => (
-                    <li key={c.id}>
-                      <Link to={nodeHref(c.id)}>{c.name}</Link>
-                      <span className="muted"> · {VIA_LABEL[c.via] ?? c.via}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <Empty title="Nothing in the map is bound to this process yet" />
-        )}
-      </Card>
+      <ComponentsCard components={components} />
 
       <Card
         title="On the map"
@@ -255,18 +228,7 @@ export function ProcessPage() {
         )}
       </Card>
 
-      {drift.length > 0 && (
-        <Card title={`Findings (${drift.length})`} sub="Where this document and the code disagree">
-          <ul className="stack" style={{ gap: 6, margin: 0, paddingLeft: 18 }}>
-            {drift.map((f) => (
-              <li key={f.id}>
-                <strong>{driftTitle(f.kind)}</strong> — {f.detail}
-                {f.state === 'accepted' && <span className="muted"> · accepted</span>}
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
+      <FindingsCard drift={drift} sub="Where this document and the code disagree" />
 
       {(pack?.source || process.source) && <Source source={process.source ?? pack?.source ?? null} pack={pack} />}
     </div>
@@ -288,6 +250,9 @@ const DIAGRAM_KEY = 'architecture-map.process-diagram'
 function Flow({ detail }: { detail: ProcessDetail }) {
   const { process, children, descendants, components, links } = detail
   const [view, setView] = useState<'list' | 'diagram'>('list')
+  // The list is searched; the diagrams are not — a sequence with steps cut out
+  // of it is a false sequence, whatever cut them.
+  const search = useSearch(children, stepText)
   const [kind, setKind] = useState<DiagramKind>(() => {
     const saved = localStorage.getItem(DIAGRAM_KEY)
     return KINDS.includes(saved as DiagramKind) ? (saved as DiagramKind) : 'sequence'
@@ -379,11 +344,85 @@ function Flow({ detail }: { detail: ProcessDetail }) {
           )}
         </div>
       ) : (
-        <ol className="proc-flow">
-          {children.map((c) => (
-            <Step key={c.id} process={c} />
+        <div className="stack" style={{ gap: 8 }}>
+          <ListSearch
+            query={search.query}
+            onChange={search.setQuery}
+            shown={search.matches.length}
+            total={children.length}
+            noun="parts"
+            label="Search parts"
+          />
+          {search.matches.length ? (
+            <ol className="proc-flow">
+              {search.matches.map((c) => (
+                <Step key={c.id} process={c} q={search.q} />
+              ))}
+            </ol>
+          ) : (
+            <NoMatch query={search.query} />
+          )}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+/** Everything the process touches, rolled up, by kind — searchable across the kinds. */
+function ComponentsCard({ components }: { components: ProcessComponent[] }) {
+  const search = useSearch(components, (c) =>
+    textOf(c.name, c.id, KIND_PLURAL[c.kind as NodeKind], VIA_LABEL[c.via] ?? c.via, c.teamName, c.ownerRepo)
+  )
+  // A kind the search empties drops out rather than standing there headed
+  // over nothing.
+  const byKind = new Map<string, ProcessComponent[]>()
+  for (const c of search.matches) {
+    if (!byKind.has(c.kind)) byKind.set(c.kind, [])
+    byKind.get(c.kind)!.push(c)
+  }
+  return (
+    <Card
+      title={`Components used (${components.length})`}
+      sub="Rolled up from everything underneath this process"
+    >
+      {components.length ? (
+        <div className="stack" style={{ gap: 12 }}>
+          <ListSearch
+            query={search.query}
+            onChange={search.setQuery}
+            shown={search.matches.length}
+            total={components.length}
+            noun="components"
+            label="Search components"
+          />
+          {search.narrowed && !search.matches.length && <NoMatch query={search.query} />}
+          {[...byKind].map(([kind, list]) => (
+            <div key={kind}>
+              <span className="nav-group-label">{KIND_PLURAL[kind as NodeKind] ?? kind}</span>
+              <ul className="proc-components">
+                {list.map((c) => (
+                  <li key={c.id}>
+                    <Link to={nodeHref(c.id)}>
+                      <Highlight text={c.name} q={search.q} />
+                    </Link>
+                    <span className="muted"> · {VIA_LABEL[c.via] ?? c.via}</span>{' '}
+                    <MatchedIn
+                      q={search.q}
+                      shown={[c.name, VIA_LABEL[c.via] ?? c.via, KIND_PLURAL[c.kind as NodeKind]]}
+                      hidden={[
+                        ['Id', c.id],
+                        ['Team', c.teamName],
+                        ['Repo', c.ownerRepo],
+                      ]}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </div>
           ))}
-        </ol>
+        </div>
+      ) : (
+        <Empty title="Nothing in the map is bound to this process yet" />
       )}
     </Card>
   )
@@ -391,28 +430,67 @@ function Flow({ detail }: { detail: ProcessDetail }) {
 
 /* ------------------------------------------------------------------ parts */
 
+/** What a part is found by: its code either way, what it says, and what it happens at. */
+const stepText = (p: Process) =>
+  textOf(
+    displayCode(p.code),
+    p.code,
+    p.name,
+    p.description,
+    p.notes,
+    p.trigger,
+    p.outcome,
+    p.owner,
+    p.teamName,
+    p.node,
+    p.edge && `${p.edge.from} ${p.edge.kind} ${p.edge.to}`
+  )
+
 /** One child, as a numbered line of the flow. */
-function Step({ process }: { process: Process }) {
+function Step({ process, q = '' }: { process: Process; q?: string }) {
   return (
     <li className="proc-step">
       <div className="proc-step-head">
         <Link to={processHref(process.pack, process.code)} className="proc-code">
-          {displayCode(process.code)}
+          <Highlight text={displayCode(process.code)} q={q} />
         </Link>
         <Link to={processHref(process.pack, process.code)} className="proc-step-name">
-          {process.name}
+          <Highlight text={process.name} q={q} />
         </Link>
         {process.optional && <span className="pill">optional</span>}
         {process.childCount > 0 && (
           <span className="muted proc-count">{process.childCount} parts</span>
         )}
       </div>
-      {process.description && <p className="proc-step-desc">{process.description}</p>}
-      {process.notes && (
-        <p className="proc-step-desc proc-notes">
-          <span className="nav-group-label">Note</span> {process.notes}
+      {process.description && (
+        <p className="proc-step-desc">
+          <Highlight text={process.description} q={q} />
         </p>
       )}
+      {process.notes && (
+        <p className="proc-step-desc proc-notes">
+          <span className="nav-group-label">Note</span> <Highlight text={process.notes} q={q} />
+        </p>
+      )}
+      <MatchedIn
+        q={q}
+        shown={[
+          displayCode(process.code),
+          process.name,
+          process.description,
+          process.notes,
+          process.node && idValue(process.node),
+          process.edge && `${idValue(process.edge.from)} ${idValue(process.edge.to)}`,
+        ]}
+        hidden={[
+          ['Starts when', process.trigger],
+          ['Ends with', process.outcome],
+          ['Owner', process.owner],
+          ['Team', process.teamName],
+          ['At', process.node],
+          ['Over', process.edge && `${process.edge.from} ${process.edge.kind} ${process.edge.to}`],
+        ]}
+      />
       <Binding process={process} compact />
     </li>
   )
@@ -431,6 +509,14 @@ function TeamsCard({ process, teams }: { process: Process; teams: TeamReach[] })
     if (!others.has(t.id)) others.set(t.id, [])
     others.get(t.id)!.push(t)
   }
+  // One row per team, found by its name and by whatever carries the process
+  // into it — so "ledger" finds the team a ledger topic leads to.
+  const reached = [...others]
+  const search = useSearch(reached, ([id, rows]) =>
+    textOf(id, rows[0].name, ...rows.map((r) => (r.via === 'handoff' ? 'hands off' : r.viaNode)))
+  )
+  const ownerShown =
+    !search.narrowed || (!!owner && textOf(owner.id, owner.name, 'accountable').toLowerCase().includes(search.q))
 
   return (
     <Card
@@ -441,24 +527,35 @@ function TeamsCard({ process, teams }: { process: Process; teams: TeamReach[] })
           : 'Everything this process touches belongs to its own team'
       }
     >
+      <ListSearch
+        query={search.query}
+        onChange={search.setQuery}
+        shown={search.matches.length + (owner && ownerShown ? 1 : 0)}
+        total={reached.length + (owner ? 1 : 0)}
+        noun="teams"
+        label="Search teams"
+      />
+      {search.narrowed && !search.matches.length && !ownerShown && <NoMatch query={search.query} />}
       <ul className="team-reach">
-        <li>
-          {owner ? (
-            <>
-              <Link to={teamHref(owner.id)} className="pill good">
-                {owner.name ?? owner.id}
-              </Link>
-              <span className="via">
-                accountable{process.teamVia === 'inherited' ? ', inherited from the process above' : ''}
+        {ownerShown && (
+          <li>
+            {owner ? (
+              <>
+                <Link to={teamHref(owner.id)} className="pill good">
+                  {owner.name ?? owner.id}
+                </Link>
+                <span className="via">
+                  accountable{process.teamVia === 'inherited' ? ', inherited from the process above' : ''}
+                </span>
+              </>
+            ) : (
+              <span className="muted" style={{ fontSize: 13 }}>
+                Nobody is named as the owner of this process.
               </span>
-            </>
-          ) : (
-            <span className="muted" style={{ fontSize: 13 }}>
-              Nobody is named as the owner of this process.
-            </span>
-          )}
-        </li>
-        {[...others].map(([id, rows]) => {
+            )}
+          </li>
+        )}
+        {search.matches.map(([id, rows]) => {
           const viaComponent = rows.filter((r) => r.via === 'component')
           const viaHandoff = rows.some((r) => r.via === 'handoff')
           return (
@@ -481,7 +578,12 @@ function TeamsCard({ process, teams }: { process: Process; teams: TeamReach[] })
                     {viaComponent.length > 3 && ` and ${viaComponent.length - 3} more`}
                   </>
                 )}
-              </span>
+              </span>{' '}
+              <MatchedIn
+                q={search.q}
+                shown={[id, rows[0].name, viaHandoff && 'hands off', ...viaComponent.slice(0, 3).map((r) => idValue(r.viaNode))]}
+                hidden={viaComponent.slice(3).map((r) => ['Through', r.viaNode] as [string, string])}
+              />
             </li>
           )
         })}
@@ -540,11 +642,13 @@ function HandoffsCard({ process, links }: { process: Process; links: ProcessDeta
       title={`Handoffs (${total})`}
       sub="Where this process ends and another begins. Derived from the events the code publishes; declared where the code cannot show it"
     >
-      <div className="stack" style={{ gap: 14 }}>
-        <HandoffList title="Hands off to" handoffs={out} side="to" />
-        <HandoffList title="Picked up from" handoffs={into} side="from" />
-        <HandoffList title="Inside this process" handoffs={links.inside} side="both" />
-      </div>
+      <HandoffSections
+        sections={[
+          { title: 'Hands off to', handoffs: out, side: 'to' },
+          { title: 'Picked up from', handoffs: into, side: 'from' },
+          { title: 'Inside this process', handoffs: links.inside, side: 'both' },
+        ]}
+      />
     </Card>
   )
 }
